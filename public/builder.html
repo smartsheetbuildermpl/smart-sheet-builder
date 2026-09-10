@@ -174,9 +174,25 @@
   .empty-hint { font-size: 13px; color: #888; margin-top: 12px; }
   .item-btn-row { display: flex; gap: 8px; }
   .item-btn-row button { width: auto; padding: 4px 10px; font-size: 12px; flex-shrink: 0; }
+  .direct-access-lock {
+    display: none; position: fixed; inset: 0; z-index: 5000; align-items: center; justify-content: center;
+    padding: 24px; background: rgba(15, 23, 42, 0.76);
+  }
+  .direct-access-lock .lock-card {
+    width: min(420px, 100%); border-radius: 18px; background: #fff; border: 1px solid #dbeafe;
+    padding: 24px; box-shadow: 0 18px 50px rgba(15, 23, 42, 0.28);
+  }
+  .direct-access-lock h2 { margin: 0 0 8px; font-size: 22px; color: #0f172a; }
+  .direct-access-lock p { margin: 0; color: #475569; font-size: 14px; }
 </style>
 </head>
 <body>
+<div id="directAccessLock" class="direct-access-lock">
+  <div class="lock-card">
+    <h2>Open through Smart Sheet Builder</h2>
+    <p>This builder is managed by the Master PrintLab access page. Please open the main app page to use trial, account, or subscribed exports.</p>
+  </div>
+</div>
 <div class="container">
   <div class="top-row">
     <div>
@@ -184,7 +200,7 @@
         <h1 data-i18n="title">Smart Sheet Builder</h1>
         <p class="brand-byline" data-i18n="brandByline">by Master PrintLab</p>
       </div>
-      <p class="subtitle" data-i18n="subtitle">V5.2.4 — multi-machine TIFF export for DTF, UV-DTF, and Tarpaulin. Upload your designs, set quantity, size, and vibrance, then auto-arrange on the sheet.</p>
+      <p class="subtitle" data-i18n="subtitle">V5.3A — multi-machine TIFF export for DTF, UV-DTF, and Tarpaulin. Upload your designs, set quantity, size, and vibrance, then auto-arrange on the sheet.</p>
     </div>
     <div class="top-controls">
       <div class="top-unit-field">
@@ -319,11 +335,74 @@
 
 <script>
 (function(){
+  var directOnlineAccess = window.top === window.self &&
+    location.protocol !== 'file:' &&
+    location.hostname !== 'localhost' &&
+    location.hostname !== '127.0.0.1';
+  if (directOnlineAccess) {
+    var directAccessLock = document.getElementById('directAccessLock');
+    if (directAccessLock) directAccessLock.style.display = 'flex';
+  }
+
+  var exportRequestSeq = 0;
+  function localStandaloneExportGate(kind) {
+    try {
+      var key = 'smart-sheet-builder-standalone-guest-exports';
+      var used = Number(localStorage.getItem(key) || '0');
+      if (used >= 2) {
+        alert('Guest trial limit reached. Open the Smart Sheet Builder app page and create a free account.');
+        return Promise.resolve(false);
+      }
+      localStorage.setItem(key, String(used + 1));
+      return Promise.resolve(true);
+    } catch (err) {
+      return Promise.resolve(true);
+    }
+  }
+
+  function requestExportAccess(kind) {
+    if (directOnlineAccess) {
+      alert('Please open the main Smart Sheet Builder app page to export.');
+      return Promise.resolve(false);
+    }
+    if (window.parent === window || !window.parent) {
+      return localStandaloneExportGate(kind);
+    }
+
+    return new Promise(function(resolve){
+      var requestId = 'export-' + Date.now() + '-' + (++exportRequestSeq);
+      var finished = false;
+      var timeout = setTimeout(function(){
+        if (finished) return;
+        finished = true;
+        window.removeEventListener('message', onMessage);
+        resolve(false);
+      }, 5000);
+
+      function onMessage(event) {
+        var payload = event.data || {};
+        if (payload.type !== 'SMART_SHEET_EXPORT_RESPONSE' || payload.requestId !== requestId) return;
+        finished = true;
+        clearTimeout(timeout);
+        window.removeEventListener('message', onMessage);
+        if (!payload.allowed && payload.message) alert(payload.message);
+        resolve(Boolean(payload.allowed));
+      }
+
+      window.addEventListener('message', onMessage);
+      window.parent.postMessage({
+        type: 'SMART_SHEET_EXPORT_REQUEST',
+        requestId: requestId,
+        exportKind: kind || 'download'
+      }, '*');
+    });
+  }
+
   var translations = {
     tl: {
       title: 'Smart Sheet Builder',
       brandByline: 'by Master PrintLab',
-      subtitle: 'V5.2.4 — multi-machine TIFF export para sa DTF, UV-DTF, at Tarpaulin. I-upload ang mga design, i-set ang quantity, size, at vibrance, tapos awtomatikong iaayos sa sheet.',
+      subtitle: 'V5.3A — multi-machine TIFF export para sa DTF, UV-DTF, at Tarpaulin. I-upload ang mga design, i-set ang quantity, size, at vibrance, tapos awtomatikong iaayos sa sheet.',
       uploadLabel: 'Mga design (PNG, transparent background) \u2014 pwede paulit-ulit, dadagdag lang',
       emptyHint: 'Wala pang napiling design.',
       settingsHeading: 'Setting ng sheet',
@@ -418,7 +497,7 @@
     en: {
       title: 'Smart Sheet Builder',
       brandByline: 'by Master PrintLab',
-      subtitle: 'V5.2.4 — multi-machine TIFF export for DTF, UV-DTF, and Tarpaulin. Upload your designs, set quantity, size, and vibrance, then auto-arrange on the sheet.',
+      subtitle: 'V5.3A — multi-machine TIFF export for DTF, UV-DTF, and Tarpaulin. Upload your designs, set quantity, size, and vibrance, then auto-arrange on the sheet.',
       uploadLabel: 'Designs (PNG, transparent background) \u2014 select multiple times, they will add up',
       emptyHint: 'No designs selected yet.',
       settingsHeading: 'Sheet settings',
@@ -1761,9 +1840,10 @@
     if (job) { await downloadTiff(job.sheet, job.idx, profile); }
   });
 
-  function downloadPng(sheet, idx) {
+  async function downloadPng(sheet, idx) {
     var canvas = sheet.renderCanvas;
     if (!canvas) return;
+    if (!(await requestExportAccess('png'))) return;
     canvas.toBlob(function(blob){
       if (!blob) return;
       triggerBlobDownload(blob, 'dtf-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '.png');
@@ -2190,13 +2270,14 @@
   function filenameForExport(profile, idx) {
     var machine = profile.machine.toLowerCase().replace(/"/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     var mode = profile.label.toLowerCase().replace(/\+/g, 'plus').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    return machine + '-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '-' + mode + '-v524.tif';
+    return machine + '-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '-' + mode + '-v530a.tif';
   }
 
   async function downloadTiff(sheet, idx, profile) {
     var ui = sheet.exportUi || {};
     var canvas = sheet.renderCanvas;
     if (!canvas) return;
+    if (!(await requestExportAccess('tiff'))) return;
     if (ui.tiffBtn) ui.tiffBtn.disabled = true;
     if (ui.pngBtn) ui.pngBtn.disabled = true;
     if (ui.progress) { ui.progress.style.color = '#2457d6'; ui.progress.textContent = t('exportPreparing'); }

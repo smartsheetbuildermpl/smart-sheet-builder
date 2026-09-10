@@ -14,14 +14,216 @@ body {
   width: 100vw;
   height: 100vh;
   background: #f4f3ee;
+  display: flex;
+  flex-direction: column;
 }
 
 .builder-frame {
   display: block;
   width: 100%;
-  height: 100%;
+  flex: 1;
+  min-height: 0;
   border: 0;
   background: #f4f3ee;
+}
+
+.access-bar {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+  border-bottom: 1px solid #d8d3c7;
+  background: rgba(255, 255, 255, 0.92);
+  color: #111827;
+  font-family: Arial, sans-serif;
+  box-shadow: 0 1px 8px rgba(15, 23, 42, 0.07);
+  z-index: 5;
+}
+
+.access-bar h1,
+.access-bar p {
+  margin: 0;
+}
+
+.access-bar h1 {
+  font-size: 16px;
+}
+
+.access-bar p {
+  font-size: 12px;
+  color: #5f6470;
+}
+
+.access-kicker {
+  margin: 0 0 2px;
+  color: #0369a1;
+  font-size: 11px;
+  font-weight: 800;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.usage-card {
+  margin-left: auto;
+  min-width: 150px;
+  padding: 8px 12px;
+  border: 1px solid #cfe9ff;
+  border-radius: 12px;
+  background: #f0f9ff;
+}
+
+.usage-card span,
+.usage-card small {
+  display: block;
+  font-size: 11px;
+  color: #475569;
+}
+
+.usage-card strong {
+  display: block;
+  color: #0f172a;
+  font-size: 17px;
+}
+
+.access-button {
+  width: auto;
+  border: 0;
+  border-radius: 999px;
+  background: #0f172a;
+  color: #fff;
+  cursor: pointer;
+  font-weight: 800;
+  padding: 10px 14px;
+  white-space: nowrap;
+}
+
+.access-button.ghost {
+  background: #fff;
+  color: #0f172a;
+  border: 1px solid #cbd5e1;
+}
+
+.access-modal {
+  position: fixed;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  padding: 22px;
+  background: rgba(15, 23, 42, 0.62);
+  z-index: 30;
+}
+
+.access-modal-card {
+  position: relative;
+  width: min(440px, 100%);
+  border-radius: 18px;
+  border: 1px solid #dbeafe;
+  background: #fff;
+  padding: 24px;
+  color: #111827;
+  font-family: Arial, sans-serif;
+  box-shadow: 0 18px 50px rgba(15, 23, 42, 0.28);
+}
+
+.access-modal-card h2 {
+  margin: 0 0 8px;
+  font-size: 24px;
+}
+
+.modal-copy {
+  margin: 0 0 16px;
+  color: #4b5563;
+  font-size: 14px;
+  line-height: 1.5;
+}
+
+.modal-close {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  width: 32px;
+  height: 32px;
+  border: 0;
+  border-radius: 50%;
+  background: #f1f5f9;
+  color: #0f172a;
+  cursor: pointer;
+  font-size: 22px;
+}
+
+.auth-form {
+  display: grid;
+  gap: 11px;
+}
+
+.auth-tabs {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+
+.auth-tabs button,
+.auth-form button {
+  border: 0;
+  border-radius: 10px;
+  cursor: pointer;
+  padding: 11px 12px;
+  font-weight: 800;
+}
+
+.auth-tabs button {
+  background: #e5e7eb;
+  color: #374151;
+}
+
+.auth-tabs button.active,
+.auth-form button {
+  background: #0f172a;
+  color: #fff;
+}
+
+.auth-form label {
+  display: grid;
+  gap: 5px;
+  color: #374151;
+  font-size: 13px;
+  font-weight: 700;
+}
+
+.auth-form input {
+  border: 1px solid #cbd5e1;
+  border-radius: 10px;
+  padding: 11px 12px;
+  font-size: 15px;
+}
+
+.auth-message {
+  margin: 12px 0 0;
+  color: #0369a1;
+  font-size: 13px;
+}
+
+.coming-soon-box {
+  margin-top: 14px;
+  border-radius: 12px;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  padding: 12px;
+  color: #475569;
+  font-size: 13px;
+  line-height: 1.45;
+}
+
+@media (max-width: 760px) {
+  .access-bar {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .usage-card {
+    margin-left: 0;
+  }
 }
 
 .noscript-message {
