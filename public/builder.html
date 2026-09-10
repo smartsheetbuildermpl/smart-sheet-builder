@@ -200,7 +200,7 @@
         <h1 data-i18n="title">Smart Sheet Builder</h1>
         <p class="brand-byline" data-i18n="brandByline">by Master PrintLab</p>
       </div>
-      <p class="subtitle" data-i18n="subtitle">V5.3A — multi-machine TIFF export for DTF, UV-DTF, and Tarpaulin. Upload your designs, set quantity, size, and vibrance, then auto-arrange on the sheet.</p>
+      <p class="subtitle" data-i18n="subtitle">V5.3B — multi-machine TIFF export for DTF, UV-DTF, and Tarpaulin. Upload your designs, set quantity, size, and vibrance, then auto-arrange on the sheet.</p>
     </div>
     <div class="top-controls">
       <div class="top-unit-field">
@@ -402,7 +402,7 @@
     tl: {
       title: 'Smart Sheet Builder',
       brandByline: 'by Master PrintLab',
-      subtitle: 'V5.3A — multi-machine TIFF export para sa DTF, UV-DTF, at Tarpaulin. I-upload ang mga design, i-set ang quantity, size, at vibrance, tapos awtomatikong iaayos sa sheet.',
+      subtitle: 'V5.3B — multi-machine TIFF export para sa DTF, UV-DTF, at Tarpaulin. I-upload ang mga design, i-set ang quantity, size, at vibrance, tapos awtomatikong iaayos sa sheet.',
       uploadLabel: 'Mga design (PNG, transparent background) \u2014 pwede paulit-ulit, dadagdag lang',
       emptyHint: 'Wala pang napiling design.',
       settingsHeading: 'Setting ng sheet',
@@ -497,7 +497,7 @@
     en: {
       title: 'Smart Sheet Builder',
       brandByline: 'by Master PrintLab',
-      subtitle: 'V5.3A — multi-machine TIFF export for DTF, UV-DTF, and Tarpaulin. Upload your designs, set quantity, size, and vibrance, then auto-arrange on the sheet.',
+      subtitle: 'V5.3B — multi-machine TIFF export for DTF, UV-DTF, and Tarpaulin. Upload your designs, set quantity, size, and vibrance, then auto-arrange on the sheet.',
       uploadLabel: 'Designs (PNG, transparent background) \u2014 select multiple times, they will add up',
       emptyHint: 'No designs selected yet.',
       settingsHeading: 'Sheet settings',
@@ -2270,7 +2270,7 @@
   function filenameForExport(profile, idx) {
     var machine = profile.machine.toLowerCase().replace(/"/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     var mode = profile.label.toLowerCase().replace(/\+/g, 'plus').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    return machine + '-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '-' + mode + '-v530a.tif';
+    return machine + '-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '-' + mode + '-v53b.tif';
   }
 
   async function downloadTiff(sheet, idx, profile) {
