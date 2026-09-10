@@ -1,6 +1,6 @@
 {
   "name": "smart-sheet-builder",
-  "version": "5.2.0",
+  "version": "5.2.2",
   "private": true,
   "scripts": {
     "dev": "next dev",

@@ -1,6 +1,6 @@
 # Smart Sheet Builder by Master PrintLab
 
-Vercel-ready Next.js wrapper for the stable Smart Sheet Builder V5.2 HTML app.
+Vercel-ready Next.js wrapper for the stable Smart Sheet Builder V5.2.2 HTML app.
 
 ## Local Run
 
@@ -22,5 +22,5 @@ Open `http://localhost:3000`.
 ## Current Architecture
 
 - `app/page.jsx` loads the working builder through `/public/builder.html`.
-- `public/builder.html` contains the stable Smart Sheet Builder V5.2 logic.
+- `public/builder.html` contains the stable Smart Sheet Builder V5.2.2 logic.
 - This keeps the working TIFF export behavior intact while preparing the app for login, account controls, and backend export later.
