@@ -222,17 +222,21 @@ export function usageForGuest(guestUsage) {
 }
 
 export async function recordUsageExport({ userId = null, guestId = null, exportKind = 'download' }) {
-  await supabaseFetch('/rest/v1/usage_exports', {
-    method: 'POST',
-    service: true,
-    body: [
-      {
-        user_id: userId,
-        guest_id: guestId,
-        export_kind: String(exportKind || 'download').slice(0, 40),
-      },
-    ],
-  });
+  try {
+    await supabaseFetch('/rest/v1/usage_exports', {
+      method: 'POST',
+      service: true,
+      body: [
+        {
+          user_id: userId,
+          guest_id: guestId,
+          export_kind: String(exportKind || 'download').slice(0, 40),
+        },
+      ],
+    });
+  } catch {
+    // Export history is useful for audit logs, but the counter should remain the source of truth.
+  }
 }
 
 export async function incrementProfileUsage(profile, user, exportKind) {
@@ -301,12 +305,22 @@ export async function incrementGuestUsage(guestId, exportKind) {
     updated_at: new Date().toISOString(),
   };
 
-  await supabaseFetch('/rest/v1/guest_usage?on_conflict=guest_id', {
-    method: 'POST',
-    service: true,
-    headers: { Prefer: 'resolution=merge-duplicates' },
-    body: [body],
-  });
+  if (guestUsage.guest_id) {
+    await supabaseFetch(`/rest/v1/guest_usage?guest_id=eq.${encodeURIComponent(guestId)}`, {
+      method: 'PATCH',
+      service: true,
+      body: {
+        exports_used: nextUsed,
+        last_export_at: body.last_export_at,
+      },
+    });
+  } else {
+    await supabaseFetch('/rest/v1/guest_usage', {
+      method: 'POST',
+      service: true,
+      body: [body],
+    });
+  }
   await recordUsageExport({ guestId, exportKind });
 
   return {
