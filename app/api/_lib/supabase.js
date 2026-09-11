@@ -1,5 +1,6 @@
 const GUEST_LIMIT = 2;
 const FREE_LIMIT = 5;
+const OWNER_EMAILS = ['masterprintlabcorp@gmail.com'];
 
 export function getSupabaseConfig() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -27,10 +28,11 @@ export function normalizeEmail(email) {
 }
 
 export function getAdminEmails() {
-  return String(process.env.SMART_SHEET_ADMIN_EMAILS || process.env.NEXT_PUBLIC_SMART_SHEET_ADMIN_EMAILS || '')
+  const configuredEmails = String(process.env.SMART_SHEET_ADMIN_EMAILS || process.env.NEXT_PUBLIC_SMART_SHEET_ADMIN_EMAILS || '')
     .split(',')
     .map((email) => normalizeEmail(email))
     .filter(Boolean);
+  return [...new Set(OWNER_EMAILS.concat(configuredEmails))];
 }
 
 export async function supabaseFetch(path, options = {}) {
@@ -138,7 +140,7 @@ async function updateProfileEmail(profile, user) {
     updated_at: new Date().toISOString(),
   };
 
-  if (isAdmin && profile.plan !== 'admin') {
+  if (isAdmin && (profile.role !== 'admin' || profile.plan !== 'admin')) {
     patch.role = 'admin';
     patch.plan = 'admin';
   }
@@ -190,13 +192,14 @@ export async function migrateGuestUsageToProfile(user, guestId) {
 export function usageForProfile(profile, user) {
   const plan = profile?.plan || 'free';
   const role = profile?.role || 'customer';
-  const unlimited = plan === 'subscriber' || plan === 'admin' || role === 'admin';
+  const owner = getAdminEmails().includes(normalizeEmail(user.email || profile?.email));
+  const unlimited = owner || plan === 'subscriber' || plan === 'admin' || role === 'admin';
   const used = Number(profile?.exports_used || 0);
 
   return {
     email: normalizeEmail(user.email || profile?.email),
-    label: unlimited ? (role === 'admin' || plan === 'admin' ? 'Admin' : 'Subscribed') : 'Free account',
-    plan,
+    label: unlimited ? (owner || role === 'admin' || plan === 'admin' ? 'Admin' : 'Subscribed') : 'Free account',
+    plan: owner ? 'admin' : plan,
     limit: unlimited ? null : FREE_LIMIT,
     used,
     remaining: unlimited ? null : Math.max(0, FREE_LIMIT - used),

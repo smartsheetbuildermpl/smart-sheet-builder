@@ -8,6 +8,7 @@ const LOCAL_TEST_KEY = 'smart-sheet-builder-v53b-local-test';
 const LEGACY_LOCAL_KEY = 'smart-sheet-builder-v53-access';
 const GUEST_LIMIT = 2;
 const REGISTERED_LIMIT = 5;
+const OWNER_EMAILS = ['masterprintlabcorp@gmail.com'];
 
 function normalizeEmail(email) {
   return String(email || '').trim().toLowerCase();
@@ -29,20 +30,22 @@ function makeGuestId() {
 }
 
 function getAdminEmails() {
-  return String(process.env.NEXT_PUBLIC_SMART_SHEET_ADMIN_EMAILS || '')
+  const configuredEmails = String(process.env.NEXT_PUBLIC_SMART_SHEET_ADMIN_EMAILS || '')
     .split(',')
     .map((email) => normalizeEmail(email))
     .filter(Boolean);
+  return [...new Set(OWNER_EMAILS.concat(configuredEmails))];
 }
 
 function usageForLocalState(state) {
   const email = normalizeEmail(state.currentEmail);
   const account = email ? state.accounts[email] : null;
+  const isAdmin = getAdminEmails().includes(email);
 
-  if (account?.plan === 'admin' || account?.plan === 'subscriber') {
+  if (isAdmin || account?.plan === 'admin' || account?.plan === 'subscriber') {
     return {
       email,
-      label: account.plan === 'admin' ? 'Admin' : 'Subscribed',
+      label: isAdmin || account.plan === 'admin' ? 'Admin' : 'Subscribed',
       limit: null,
       used: Number(account.exportsUsed || 0),
       remaining: null,
