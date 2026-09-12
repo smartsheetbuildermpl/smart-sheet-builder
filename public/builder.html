@@ -1939,13 +1939,15 @@
       return out;
     }));
     var unicodeNames = concatBytes(spotNames.map(utf16beNameWithNull));
-    var spotDisplayInfo = new Uint8Array([
-      0, 0,
+    // Photoshop resource 1077: a 4-byte version followed by one 13-byte
+    // display record per alpha channel. Mode 2 marks both channels as spots.
+    var oneDisplayInfo = new Uint8Array([
+      0, 2,
       255, 255, 0, 0, 0, 0, 0, 0,
       0, 100,
       2
     ]);
-    var displayInfos = concatBytes([u32be(1)].concat(spotNames.map(function(){ return spotDisplayInfo; })));
+    var displayInfos = concatBytes([u32be(1)].concat(spotNames.map(function(){ return oneDisplayInfo; })));
     var alphaIds = concatBytes(spotNames.map(function(_name, i){ return u32be(4 + i); }));
     return concatBytes([
       photoshopResource(1006, alphaNames),
@@ -2268,7 +2270,7 @@
   function filenameForExport(profile, idx) {
     var machine = profile.machine.toLowerCase().replace(/"/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
     var mode = profile.label.toLowerCase().replace(/\+/g, 'plus').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
-    return machine + '-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '-' + mode + '-v53b4.tif';
+    return machine + '-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '-' + mode + '-v53b6.tif';
   }
 
   async function downloadTiff(sheet, idx, profile) {

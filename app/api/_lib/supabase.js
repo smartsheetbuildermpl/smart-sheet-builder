@@ -2,13 +2,24 @@ const GUEST_LIMIT = 2;
 const FREE_LIMIT = 5;
 const OWNER_EMAILS = ['masterprintlabcorp@gmail.com'];
 
+function normalizeSupabaseUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return raw.replace(/\/(?:auth|rest|storage|functions)\/v1(?:\/.*)?$/i, '').replace(/\/+$/, '');
+  }
+}
+
 export function getSupabaseConfig() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   return {
-    url: url ? url.replace(/\/+$/, '') : '',
+    url: normalizeSupabaseUrl(url),
     anonKey: anonKey || '',
     serviceRoleKey: serviceRoleKey || '',
     configured: Boolean(url && anonKey && serviceRoleKey),
@@ -134,13 +145,20 @@ async function createProfile(user) {
 }
 
 async function updateProfileEmail(profile, user) {
-  const isAdmin = getAdminEmails().includes(normalizeEmail(user.email));
+  const email = normalizeEmail(user.email);
+  const isOwner = OWNER_EMAILS.includes(email);
+  const isAdmin = getAdminEmails().includes(email);
+
+  // The owner account is already granted Admin/Unlimited below. Avoid a redundant
+  // profile PATCH on every sign-in, which is the request timing out on Vercel.
+  if (isOwner) return profile;
+
   const patch = {
-    email: normalizeEmail(user.email),
+    email,
     updated_at: new Date().toISOString(),
   };
 
-  if (isAdmin && (profile.role !== 'admin' || profile.plan !== 'admin')) {
+  if (isAdmin && profile.plan !== 'admin') {
     patch.role = 'admin';
     patch.plan = 'admin';
   }
@@ -190,16 +208,17 @@ export async function migrateGuestUsageToProfile(user, guestId) {
 }
 
 export function usageForProfile(profile, user) {
-  const plan = profile?.plan || 'free';
-  const role = profile?.role || 'customer';
-  const owner = getAdminEmails().includes(normalizeEmail(user.email || profile?.email));
-  const unlimited = owner || plan === 'subscriber' || plan === 'admin' || role === 'admin';
+  const email = normalizeEmail(user?.email || profile?.email);
+  const isOwner = OWNER_EMAILS.includes(email);
+  const plan = isOwner ? 'admin' : profile?.plan || 'free';
+  const role = isOwner ? 'admin' : profile?.role || 'customer';
+  const unlimited = isOwner || plan === 'subscriber' || plan === 'admin' || role === 'admin';
   const used = Number(profile?.exports_used || 0);
 
   return {
-    email: normalizeEmail(user.email || profile?.email),
-    label: unlimited ? (owner || role === 'admin' || plan === 'admin' ? 'Admin' : 'Subscribed') : 'Free account',
-    plan: owner ? 'admin' : plan,
+    email,
+    label: unlimited ? (role === 'admin' || plan === 'admin' ? 'Admin' : 'Subscribed') : 'Free account',
+    plan,
     limit: unlimited ? null : FREE_LIMIT,
     used,
     remaining: unlimited ? null : Math.max(0, FREE_LIMIT - used),
