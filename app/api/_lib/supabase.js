@@ -178,6 +178,99 @@ export async function ensureProfile(user) {
   return updateProfileEmail(current, user);
 }
 
+export function isAdminProfile(profile, user) {
+  const email = normalizeEmail(user?.email || profile?.email);
+  return getAdminEmails().includes(email) || profile?.role === 'admin' || profile?.plan === 'admin';
+}
+
+export async function getLibraryActor(request, { admin = false } = {}) {
+  const user = await getUserFromRequest(request);
+  if (!user) {
+    const error = new Error('Please sign in to use the Design Library.');
+    error.status = 401;
+    error.code = 'invalid_session';
+    throw error;
+  }
+  const profile = await ensureProfile(user);
+  if (profile?.status === 'blocked') {
+    const error = new Error('This account is blocked. Please contact support.');
+    error.status = 403;
+    error.code = 'account_blocked';
+    throw error;
+  }
+  if (admin && !isAdminProfile(profile, user)) {
+    const error = new Error('Admin access is required to manage the Design Library.');
+    error.status = 403;
+    error.code = 'admin_required';
+    throw error;
+  }
+  return { user, profile, isAdmin: isAdminProfile(profile, user) };
+}
+
+export async function librarySignedUrl(storagePath) {
+  const config = getSupabaseConfig();
+  const encodedPath = String(storagePath || '')
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/');
+  const response = await fetch(`${config.url}/storage/v1/object/sign/smart-sheet-library/${encodedPath}`, {
+    method: 'POST',
+    headers: {
+      apikey: config.serviceRoleKey,
+      Authorization: `Bearer ${config.serviceRoleKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ expiresIn: 3600 }),
+    cache: 'no-store',
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !(data.signedURL || data.signedUrl)) {
+    const error = new Error('Unable to prepare the library image.');
+    error.status = response.status || 500;
+    throw error;
+  }
+  const signedPath = data.signedURL || data.signedUrl;
+  return signedPath.startsWith('http') ? signedPath : `${config.url}/storage/v1${signedPath}`;
+}
+
+export async function uploadLibraryPng(storagePath, bytes) {
+  const config = getSupabaseConfig();
+  const response = await fetch(
+    `${config.url}/storage/v1/object/smart-sheet-library/${String(storagePath).split('/').map(encodeURIComponent).join('/')}`,
+    {
+      method: 'POST',
+      headers: {
+        apikey: config.serviceRoleKey,
+        Authorization: `Bearer ${config.serviceRoleKey}`,
+        'Content-Type': 'image/png',
+        'x-upsert': 'false',
+      },
+      body: bytes,
+      cache: 'no-store',
+    }
+  );
+  if (!response.ok) {
+    const error = new Error('Unable to save the PNG to Supabase Storage.');
+    error.status = response.status;
+    throw error;
+  }
+}
+
+export async function deleteLibraryObject(storagePath) {
+  if (!storagePath) return;
+  const config = getSupabaseConfig();
+  await fetch(`${config.url}/storage/v1/object/smart-sheet-library`, {
+    method: 'DELETE',
+    headers: {
+      apikey: config.serviceRoleKey,
+      Authorization: `Bearer ${config.serviceRoleKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ prefixes: [storagePath] }),
+    cache: 'no-store',
+  });
+}
+
 export async function getGuestUsage(guestId) {
   if (!guestId) return { guest_id: '', exports_used: 0 };
   const rows = await supabaseFetch(`/rest/v1/guest_usage?guest_id=eq.${encodeURIComponent(guestId)}&select=*`, {

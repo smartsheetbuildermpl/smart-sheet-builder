@@ -27,7 +27,11 @@ for (const [a,b] of [
     const hook=`window.testBuilder={get designs(){return designs},get instances(){return instances},get sheets(){return sheets},packSheet,decodeImageCanvas,removeConnectedEdgeBackground,removeTinySpecks,enhanceDesign,drawSheetCanvas,createInstancesForDesign,appendDesignToCurrentLayout,rotatePlacementOnSheet,qualityForPlacement,renderAllDesigns};`;
     const html=testSource.replace(/\}\)\(\);\s*<\/script>/,hook+'})();</script>');
     assert.notEqual(html,testSource,'test hook inserted');
-    await page.route('http://localhost:4178/**',route=>route.fulfill({body:html,contentType:'text/html'}));
+    await page.route('http://localhost:4178/**',route=> {
+      const name = new URL(route.request().url()).pathname;
+      if (name === '/sheet-workspace.js' || name === '/sheet-workspace.css') return route.fulfill({ body: fs.readFileSync('public' + name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css' });
+      return route.fulfill({body:html,contentType:'text/html'});
+    });
     await page.goto('http://localhost:4178/builder.html');
     await page.evaluate(()=>{
       document.getElementById('dpi').value=100;
@@ -148,8 +152,22 @@ for (const [a,b] of [
     await page.getByRole('button',{name:'Arrange on sheet',exact:true}).click();
     await page.waitForFunction(()=>window.testBuilder.instances.length===5 && !document.getElementById('packBtn').disabled);
     assert.equal(await page.evaluate(()=>window.testBuilder.sheets.reduce((n,s)=>n+s.placements.length,0)),5);
+    const imported = await page.evaluate(async(pngBase64) => {
+      const bytes = Uint8Array.from(atob(pngBase64), char => char.charCodeAt(0));
+      const blob = new Blob([bytes], { type: 'image/png' });
+      window.postMessage({ type: 'SMART_SHEET_LIBRARY_IMPORT', fileName: 'library-import.png', blob }, location.origin);
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      const design = window.testBuilder.designs.find((item) => item.file.name === 'library-import.png');
+      if (!design) throw Error('library design was not routed through the upload path');
+      design.widthIn = 1; design.heightIn = 1; design.qty = 1;
+      window.testBuilder.appendDesignToCurrentLayout(design);
+      const hasInstance = window.testBuilder.instances.some((item) => item.designId === design.id && item.canvas === design.originalCanvas);
+      const rendered = window.testBuilder.sheets.some((sheet) => sheet.placements.some((placement) => placement.inst.designId === design.id));
+      return { hasInstance, rendered, width: design.originalCanvas.width, height: design.originalCanvas.height };
+    }, png);
+    assert.deepEqual(imported, { hasInstance: true, rendered: true, width: 120, height: 80 });
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({protectedBlocks:'unchanged',imageTests,ui:'Enhance/Undo, physical size, live PPI, no overflow at 1440/375/320px',layoutTests,pageErrors:errors},null,2));
+    console.log(JSON.stringify({protectedBlocks:'unchanged',imageTests,ui:'Enhance/Undo, physical size, live PPI, no overflow at 1440/375/320px',libraryImport:'Library PNG passed through the normal source-preserving upload, layout, and render path',layoutTests,pageErrors:errors},null,2));
   }finally{await browser.close()}
 })().catch(e=>{console.error(e);process.exitCode=1});
 

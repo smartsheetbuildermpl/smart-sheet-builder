@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Smart Sheet Builder by Master PrintLab</title>
+<link rel="stylesheet" href="/sheet-workspace.css">
 <style>
   * { box-sizing: border-box; }
   body {
@@ -354,6 +355,7 @@
   </div>
 </div>
 
+<script src="/sheet-workspace.js"></script>
 <script>
 (function(){
   var directOnlineAccess = window.top === window.self &&
@@ -1328,40 +1330,47 @@
     designList.appendChild(wrap);
   }
 
-  fileInput.addEventListener('change', async function(){
-    errorMsg.style.display = 'none';
-    var files = Array.from(fileInput.files || []);
+  async function createDesignFromFile(file) {
+    var sourceUrl = URL.createObjectURL(file);
+    var img;
+    try { img = await loadImage(sourceUrl); } finally { URL.revokeObjectURL(sourceUrl); }
+    var trimmed = decodeImageCanvas(img);
     var dpi = parseFloat(dpiInput.value) || 300;
+    return {
+      id: designIdCounter++, file: file, trimmed: trimmed, aspect: trimmed.w / trimmed.h,
+      widthIn: trimmed.w / dpi, heightIn: trimmed.h / dpi, qty: 1, vibrance: 0,
+      previewUrl: thumbnailUrl(trimmed.canvas), originalCanvas: trimmed.canvas,
+      bgTolerance: 42, wasEdited: false
+    };
+  }
+
+  async function addDesignFiles(fileList) {
+    errorMsg.style.display = 'none';
+    var files = Array.from(fileList || []);
     for (var i = 0; i < files.length; i++) {
       try {
-        var sourceUrl = URL.createObjectURL(files[i]);
-        var img;
-        try { img = await loadImage(sourceUrl); } finally { URL.revokeObjectURL(sourceUrl); }
-        // Keep the source alpha intact on upload. Automatic binarizing here caused
-        // soft PNG edges to become jagged/pixelated before the user chose any tool.
-        var trimmed = decodeImageCanvas(img);
-        var originalCanvas = trimmed.canvas;
-        designs.push({
-          id: designIdCounter++,
-          file: files[i],
-          trimmed: trimmed,
-          aspect: trimmed.w / trimmed.h,
-          widthIn: trimmed.w / dpi,
-          heightIn: trimmed.h / dpi,
-          qty: 1,
-          vibrance: 0,
-          previewUrl: thumbnailUrl(trimmed.canvas),
-          originalCanvas: originalCanvas,
-          bgTolerance: 42,
-          wasEdited: false
-        });
+        designs.push(await createDesignFromFile(files[i]));
       } catch (err) {
         errorMsg.textContent = t('fileReadError') + (err && err.message ? err.message : '');
         errorMsg.style.display = 'block';
       }
     }
     renderAllDesigns();
+  }
+
+  fileInput.addEventListener('change', async function(){
+    await addDesignFiles(fileInput.files);
     fileInput.value = '';
+  });
+
+  // Library imports are converted to a File and use the same source-preserving upload path as local PNGs.
+  window.addEventListener('message', function(event){
+    var payload = event.data || {};
+    if (event.origin !== location.origin || payload.type !== 'SMART_SHEET_LIBRARY_IMPORT' || !(payload.blob instanceof Blob)) return;
+    var name = String(payload.fileName || 'library-design.png').replace(/[^a-z0-9._ -]/gi, '_');
+    if (!/\.png$/i.test(name)) name += '.png';
+    var file = new File([payload.blob], name, { type: 'image/png' });
+    addDesignFiles([file]);
   });
 
   function createInstancesForDesign(design, dpi) {
@@ -1445,6 +1454,7 @@
 
   function updateSelectionControls() {
     if (rotateSelectedBtn) rotateSelectedBtn.disabled = selectedInstanceIds.size === 0;
+    if (window.smartSheetWorkspace) window.smartSheetWorkspace.syncSelection();
   }
 
   function setOverlapState(ids) {
@@ -1520,8 +1530,23 @@
     return result;
   }
 
-  function packSheet(items, binW, binH, gapPx, allowRotation) {
+  function subtractOccupiedRect(rects, used) {
+    var remaining = [];
+    rects.forEach(function(fr){
+      if (!rectsOverlap(fr, used)) { remaining.push(fr); return; }
+      if (used.x > fr.x) remaining.push({ x: fr.x, y: fr.y, w: used.x - fr.x, h: fr.h });
+      if (used.x + used.w < fr.x + fr.w) remaining.push({ x: used.x + used.w, y: fr.y, w: fr.x + fr.w - used.x - used.w, h: fr.h });
+      if (used.y > fr.y) remaining.push({ x: fr.x, y: fr.y, w: fr.w, h: used.y - fr.y });
+      if (used.y + used.h < fr.y + fr.h) remaining.push({ x: fr.x, y: used.y + used.h, w: fr.w, h: fr.y + fr.h - used.y - used.h });
+    });
+    return pruneContained(remaining);
+  }
+
+  function packSheet(items, binW, binH, gapPx, allowRotation, occupied) {
     var freeRects = [{ x: 0, y: 0, w: binW + gapPx, h: binH + gapPx }];
+    (occupied || []).forEach(function(p){
+      freeRects = subtractOccupiedRect(freeRects, { x: p.x, y: p.y, w: p.w + gapPx, h: p.h + gapPx });
+    });
     var placements = [];
     var unplaced = [];
     var sorted = items.slice().sort(function(a, b){
@@ -1732,6 +1757,13 @@
     function onUp() {
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
+      if (window.smartSheetWorkspace && window.smartSheetWorkspace.opened && !window.smartSheetWorkspace.validate(p, sheet, p)) {
+        p.x=original.x; p.y=original.y; p.w=original.w; p.h=original.h;
+        p.inst.baseW=original.baseW; p.inst.baseH=original.baseH;
+        p.inst.manualX=p.x; p.inst.manualY=p.y;
+        drawSheetCanvas(canvasEl,sheet);
+        window.smartSheetWorkspace.showStatus('Resize cancelled: keep the configured spacing and sheet boundaries.',true);
+      }
       setOverlapState(computeAllOverlaps());
       setQualityState(computeAllLowRes());
       renderOverlayFor(overlayEl, sheet, canvasEl, true);
@@ -1754,6 +1786,15 @@
         (isSelected ? ' selected quality-' + quality.level : '') +
         (overlappingInstanceIds.has(p.inst.id) ? ' overlap' : '');
       handle.dataset.instanceId = String(p.inst.id);
+      handle.tabIndex = 0;
+      handle.setAttribute('role', 'button');
+      handle.setAttribute('aria-label', 'Select ' + ((designForInstance(p.inst) || {}).file || {}).name + ', ' + placementSizeLabel(p));
+      handle.addEventListener('keydown', function(e){
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        e.preventDefault(); selectedInstanceIds.clear(); selectedInstanceIds.add(p.inst.id);
+        renderOverlayFor(overlayEl, sheet, canvasEl, true);
+        if (window.smartSheetWorkspace && window.smartSheetWorkspace.opened) document.getElementById('sw-width').focus();
+      });
       handle.style.left = (p.x / sheet.widthPx * 100) + '%';
       handle.style.top = (p.y / sheet.heightPx * 100) + '%';
       handle.style.width = (p.w / sheet.widthPx * 100) + '%';
@@ -1815,6 +1856,11 @@
         function onUp(){
           document.removeEventListener('pointermove', onMove);
           document.removeEventListener('pointerup', onUp);
+          if (window.smartSheetWorkspace && window.smartSheetWorkspace.opened && moving.some(function(p){return !window.smartSheetWorkspace.validate(p,sheet,p);})) {
+            originals.forEach(function(o){o.p.x=o.x;o.p.y=o.y;o.p.inst.manualX=o.x;o.p.inst.manualY=o.y;});
+            drawSheetCanvas(canvasEl,sheet);
+            window.smartSheetWorkspace.showStatus('Move cancelled: another piece needs its spacing.',true);
+          }
           setOverlapState(computeAllOverlaps());
           renderOverlayFor(overlayEl, sheet, canvasEl, true);
         }
@@ -1825,6 +1871,7 @@
 
       var rotateBtn = document.createElement('button');
       rotateBtn.className = 'rotate-btn';
+      rotateBtn.setAttribute('aria-label', 'Rotate design 90 degrees');
       rotateBtn.innerHTML = '&#8635;';
       rotateBtn.style.left = ((p.x + p.w) / sheet.widthPx * 100) + '%';
       rotateBtn.style.top = (p.y / sheet.heightPx * 100) + '%';
@@ -1976,6 +2023,7 @@
     drawSheetCanvas(canvas, sheet);
     renderOverlayFor(overlay, sheet, canvas, false);
     attachMagnifier(stage, canvas);
+    if (window.smartSheetWorkspace) window.smartSheetWorkspace.refresh();
   }
 
   function renderAllSheets() {
@@ -2042,6 +2090,7 @@
       renderOverlayFor(overlay, sheet, canvas, interactive);
       attachMagnifier(stage, canvas);
     });
+    if (window.smartSheetWorkspace) window.smartSheetWorkspace.refresh();
   }
 
   var dtfCheckOverlay = document.getElementById('dtfCheckOverlay');
@@ -2747,6 +2796,21 @@
   }
 
   applyLanguage('en');
+  if (window.installSheetWorkspace) window.installSheetWorkspace({
+    get designs(){return designs;}, set designs(value){designs=value;},
+    get instances(){return instances;}, set instances(value){instances=value;},
+    get sheets(){return sheets;}, set sheets(value){sheets=value;},
+    get selected(){return selectedInstanceIds;}, get dpi(){return dpiGlobal;},
+    settings:getSheetPixelSettings, decodeFile:createDesignFromFile, makeInstances:createInstancesForDesign,
+    pack:packSheet, quality:qualityForPlacement, rotate:rotatePlacementOnSheet,
+    format:formatMeasure, unit:unitSuffix, readMeasure:readMeasureInput,
+    manual:enterManualModeIfNeeded, renderDesigns:renderAllDesigns, renderSheets:renderAllSheets, stats:computeStats,
+    qualityRefresh:function(){setOverlapState(computeAllOverlaps());setQualityState(computeAllLowRes());},
+    autoArrange:function(){
+      designs.forEach(function(d){if(!instances.some(function(i){return i.designId===d.id;}))instances=instances.concat(createInstancesForDesign(d,dpiGlobal));});
+      manualMode=false;repack();
+    }
+  });
 })();
 </script>
 </body>

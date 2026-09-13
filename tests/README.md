@@ -12,6 +12,19 @@ The test serves the current builder HTML through a browser-local route and expos
 
 `protected-builder-blocks.json` fingerprints the user's uncommitted starting implementation of the export gate, export profiles, TIFF encoder, Photoshop resources, spot channels, and color assets. These checks detect changes; they do not verify Photoshop compatibility.
 
+Run the browser checks while the local Next app is running (default `http://localhost:3000`; override with `SMART_SHEET_TEST_URL`):
+
+```sh
+node tests/design-library-ui.test.cjs
+node tests/auth-state.test.cjs
+```
+
+The library entry runs `workspace-ui.test.cjs`: browser-only mock auth/catalog responses, real full-resolution PNG loading, native drags at Fit and 200% with scrolling, invalid drops, repeated additions, selected size/quantity/rotation/removal, packing, reopening, mobile tabs, and admin visibility. It does not write to Supabase.
+
+The auth suite exercises restored local admin access, guest gating, sign-in and registration continuation, persistent sign-out, account summary and empty credential fields, unchanged local 2/5 export limits and owner unlimited access. Supabase login, registration and restored-session responses are mocked; no live account credentials or Supabase data are used. Auth is shared through `app/hooks/useSmartSheetAuth.js`. Local sessions open the workspace directly, while catalog management requires the existing configured server and its authorization checks.
+
+For manual testing: run `npm run dev -- --port 3000`, open localhost:3000, sign in, then use **Design Library** above the sidebar upload card. In local test mode the shared catalog is unavailable; the workspace still opens with the current sheet. Close and reopen to check state preservation. Sign out, open the library again, and sign in to check automatic continuation. No database/configuration changes are needed for this authentication fix.
+
 ## Verification on 2026-09-13
 
 - Production build passed.
