@@ -10,7 +10,7 @@ export async function GET(request) {
     const actor = await getLibraryActor(request);
     const url = new URL(request.url);
     const categoryId = String(url.searchParams.get('category') || '').trim();
-    const visibility = actor.isAdmin && url.searchParams.get('includeHidden') === 'true' ? '' : '&visible=eq.true';
+    const visibility = actor.canManageLibrary && url.searchParams.get('includeHidden') === 'true' ? '' : '&visible=eq.true';
     const categoryFilter = categoryId ? `&category_id=eq.${encodeURIComponent(categoryId)}` : '';
     const rows = await supabaseFetch(
       `/rest/v1/design_library_designs?select=*,design_library_categories(name)&order=created_at.desc${visibility}${categoryFilter}`,
@@ -19,7 +19,7 @@ export async function GET(request) {
     const categories = await supabaseFetch('/rest/v1/design_library_categories?select=*&order=sort_order.asc,name.asc', { service: true });
     return NextResponse.json({
       configured: true,
-      isAdmin: actor.isAdmin,
+      canManageLibrary: actor.canManageLibrary,
       categories: categories || [],
       designs: await Promise.all((rows || []).map(toDesign)),
     });

@@ -287,8 +287,8 @@
           </div>
           <div class="field">
             <label for="gapNumber" data-i18n="gapLabel">Gap sa pagitan (in)</label>
-            <input type="number" id="gapNumber" min="0" max="5" step="0.05" value="0.20" class="small-input" style="margin-bottom:8px;">
-            <input type="range" id="gap" min="0" max="1" step="0.05" value="0.2">
+            <input type="number" id="gapNumber" min="0" max="5" step="0.05" value="0" class="small-input" style="margin-bottom:8px;">
+            <input type="range" id="gap" min="0" max="1" step="0.05" value="0">
           </div>
         </div>
         <div class="row">
@@ -763,7 +763,10 @@
     document.querySelector('label[for="gapNumber"]').textContent = t('gapLabel') + ' (' + suffix + ')';
     setMeasureInputRules(document.getElementById('sheetWidth'));
     setMeasureInputRules(document.getElementById('sheetLength'));
-    setMeasureInputRules(gapNumber);
+    // Spacing can be zero in every unit; size inputs still require positive values.
+    gapNumber.min = '0';
+    gapNumber.step = 'any';
+    gapNumber.max = String(fromInches(5, currentMeasureUnit));
     var preset = currentMachinePreset();
     if (preset.maxWidthIn) document.getElementById('sheetWidth').max = String(fromInches(preset.maxWidthIn, currentMeasureUnit));
     else document.getElementById('sheetWidth').removeAttribute('max');
@@ -795,6 +798,15 @@
 
   function syncGapFromSlider() {
     setMeasureInput(gapNumber, parseFloat(gapSlider.value) || 0);
+    syncSheetGap();
+  }
+
+  function syncSheetGap() {
+    var gapIn = getGapIn();
+    if (!Number.isFinite(gapIn) || gapIn < 0) return;
+    // Apply the selected spacing to manual validation/next additions without
+    // moving existing pieces. Auto-arrange is still an explicit action.
+    sheets.forEach(function(sheet){ sheet.gapPx = Math.ceil(gapIn * dpiGlobal); });
   }
 
   function preserveMeasuresForUnitChange(nextUnit) {
@@ -815,6 +827,7 @@
   gapNumber.addEventListener('input', function(){
     var gapIn = getGapIn();
     gapSlider.value = Math.min(1, Math.max(0, gapIn));
+    syncSheetGap();
   });
   measureUnitSelect.addEventListener('change', function(){ preserveMeasuresForUnitChange(measureUnitSelect.value); });
   machinePresetSelect.addEventListener('change', applyMachinePreset);

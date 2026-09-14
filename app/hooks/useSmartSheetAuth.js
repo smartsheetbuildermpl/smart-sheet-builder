@@ -24,7 +24,7 @@ function localUsage(local) {
 function view(state) {
   const usage = state.mode === 'local' ? localUsage(state.local) : state.usage;
   const signedIn = state.ready && (state.mode === 'local' ? usage.signedIn : Boolean(state.session?.accessToken && usage.signedIn));
-  return { ...state, usage, signedIn, email: signedIn ? usage.email : '', isAdmin: signedIn && (usage.plan === 'admin' || usage.label === 'Admin'), accessToken: state.mode === 'server' && signedIn ? state.session.accessToken : '' };
+  return { ...state, usage, signedIn, email: signedIn ? usage.email : '', isAdmin: signedIn && (usage.isAdmin ?? (usage.plan === 'admin' || usage.label === 'Admin')), canManageLibrary: signedIn && (state.mode === 'local' ? usage.email === 'masterprintlabcorp@gmail.com' : usage.canManageLibrary === true), accessToken: state.mode === 'server' && signedIn ? state.session.accessToken : '' };
 }
 
 async function request(path, options = {}, session) {

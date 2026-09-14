@@ -11,9 +11,9 @@ function defaultDesignForm() {
 }
 
 export default function DesignLibraryDialog({ open, auth, onImport, busy, importMessage, onDragStart, onDragEnd }) {
-  const { accessToken, signedIn, isAdmin, mode } = auth;
+  const { accessToken, signedIn, canManageLibrary, mode } = auth;
   const localPreview = mode === 'local';
-  const [library, setLibrary] = useState({ categories: [], designs: [], isAdmin: false });
+  const [library, setLibrary] = useState({ categories: [], designs: [], canManageLibrary: false });
   const [query, setQuery] = useState('');
   const [categoryId, setCategoryId] = useState('');
   const [includeHidden, setIncludeHidden] = useState(false);
@@ -27,9 +27,12 @@ export default function DesignLibraryDialog({ open, auth, onImport, busy, import
   const [imageSizes, setImageSizes] = useState({});
 
   useEffect(() => {
-    setLibrary({ categories: [], designs: [], isAdmin: false });
+    setLibrary({ categories: [], designs: [], canManageLibrary: false });
     setPreview(null);
-  }, [accessToken, signedIn, mode]);
+    setIncludeHidden(false);
+    setDesignForm(defaultDesignForm());
+    setFile(null);
+  }, [accessToken, signedIn, mode, canManageLibrary]);
 
   async function request(path, options = {}) {
     if (!auth.current().signedIn) throw new Error('Please sign in to continue.');
@@ -50,7 +53,7 @@ export default function DesignLibraryDialog({ open, auth, onImport, busy, import
   async function loadLibrary() {
     if (!signedIn) return;
     if (localPreview) {
-      setLibrary({ categories: [], designs: [], isAdmin });
+      setLibrary({ categories: [], designs: [], canManageLibrary });
       setStatus('You are signed in. The shared design catalog is unavailable in this local preview. Your current sheet and local uploads are ready to use.');
       setLoading(false);
       return;
@@ -61,7 +64,7 @@ export default function DesignLibraryDialog({ open, auth, onImport, busy, import
       const data = await request(`/api/library?includeHidden=${includeHidden ? 'true' : 'false'}`);
       const current = auth.current();
       if (!current.signedIn || current.accessToken !== accessToken || current.mode !== mode) return;
-      setLibrary({ categories: data.categories || [], designs: data.designs || [], isAdmin: isAdmin && Boolean(data.isAdmin) });
+      setLibrary({ categories: data.categories || [], designs: data.designs || [], canManageLibrary: canManageLibrary && data.canManageLibrary === true });
       setCategoryDrafts(Object.fromEntries((data.categories || []).map((category) => [category.id, category.name])));
       setStatus('');
     } catch (error) {
@@ -73,7 +76,7 @@ export default function DesignLibraryDialog({ open, auth, onImport, busy, import
 
   useEffect(() => {
     if (open) loadLibrary();
-  }, [open, includeHidden, accessToken, signedIn, isAdmin, mode]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [open, includeHidden, accessToken, signedIn, canManageLibrary, mode]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const designs = useMemo(() => {
     const needle = query.trim().toLowerCase();
@@ -85,6 +88,7 @@ export default function DesignLibraryDialog({ open, auth, onImport, busy, import
   }, [library.designs, query, categoryId]);
 
   if (!open || !signedIn) return null;
+  const managementVisible = canManageLibrary && library.canManageLibrary;
 
   async function createCategory(event) {
     event.preventDefault();
@@ -190,13 +194,13 @@ export default function DesignLibraryDialog({ open, auth, onImport, busy, import
               {library.categories.map((category) => <option key={category.id} value={category.id}>{category.name}</option>)}
             </select>
           </label>
-          {library.isAdmin && <label className="library-checkbox"><input type="checkbox" checked={includeHidden} onChange={(event) => setIncludeHidden(event.target.checked)} /> Show hidden</label>}
+          {managementVisible && <label className="library-checkbox"><input type="checkbox" checked={includeHidden} onChange={(event) => setIncludeHidden(event.target.checked)} /> Show hidden</label>}
         </div>
 
         {status && <p className="library-status" role="status">{status}</p>}
         {importMessage && <p className="library-status import-status" role="status" aria-live="polite">{importMessage}</p>}
 
-        <div className={library.isAdmin ? 'library-content with-admin' : 'library-content'}>
+        <div className={managementVisible ? 'library-content with-admin' : 'library-content'}>
           {preview && <div className="library-preview">
             <button type="button" onClick={() => setPreview(null)} aria-label="Close design preview">×</button>
             <img src={preview.imageUrl} alt={preview.name} />
@@ -222,7 +226,7 @@ export default function DesignLibraryDialog({ open, auth, onImport, busy, import
                     </div>
                     <div className="library-card-actions">
                       <button type="button" onClick={() => importDesign(design)} disabled={busy || !design.visible}>+ Add to sheet</button>
-                      {library.isAdmin && <>
+                      {managementVisible && <>
                         <button type="button" className="secondary" onClick={() => { setDesignForm({ id: design.id, name: design.name, categoryId: design.categoryId, tags: design.tags.join(', '), visible: design.visible }); document.querySelector('.library-management').open = true; document.querySelector('.library-admin').scrollIntoView({ block: 'start' }); }}>Edit</button>
                         <button type="button" className="danger" onClick={() => deleteDesign(design)}>Remove</button>
                       </>}
@@ -233,7 +237,7 @@ export default function DesignLibraryDialog({ open, auth, onImport, busy, import
             )}
           </div>
 
-          {library.isAdmin && (
+          {managementVisible && (
             <details className="library-management"><summary>Manage library <span>ADMIN</span></summary>
             <aside className="library-admin">
               {localPreview && <p className="modal-copy">Library management becomes available when the shared catalog is connected.</p>}

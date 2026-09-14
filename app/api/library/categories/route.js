@@ -11,7 +11,7 @@ function slugify(value) {
 export async function POST(request) {
   if (libraryUnavailable()) return libraryUnavailableResponse(NextResponse);
   try {
-    await getLibraryActor(request, { admin: true });
+    await getLibraryActor(request, { manage: true });
     const body = await request.json();
     const name = cleanName(body.name, 'Category name');
     const slug = slugify(name);

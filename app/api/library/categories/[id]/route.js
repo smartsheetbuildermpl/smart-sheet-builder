@@ -7,7 +7,7 @@ export const dynamic = 'force-dynamic';
 export async function PATCH(request, { params }) {
   if (libraryUnavailable()) return libraryUnavailableResponse(NextResponse);
   try {
-    await getLibraryActor(request, { admin: true });
+    await getLibraryActor(request, { manage: true });
     const body = await request.json();
     const patch = { updated_at: new Date().toISOString() };
     if (body.name !== undefined) patch.name = cleanName(body.name, 'Category name');
@@ -24,7 +24,7 @@ export async function PATCH(request, { params }) {
 export async function DELETE(request, { params }) {
   if (libraryUnavailable()) return libraryUnavailableResponse(NextResponse);
   try {
-    await getLibraryActor(request, { admin: true });
+    await getLibraryActor(request, { manage: true });
     await supabaseFetch(`/rest/v1/design_library_categories?id=eq.${encodeURIComponent(params.id)}`, { method: 'DELETE', service: true });
     return NextResponse.json({ deleted: true });
   } catch (error) {

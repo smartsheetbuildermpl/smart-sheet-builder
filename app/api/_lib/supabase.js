@@ -183,7 +183,13 @@ export function isAdminProfile(profile, user) {
   return getAdminEmails().includes(email) || profile?.role === 'admin' || profile?.plan === 'admin';
 }
 
-export async function getLibraryActor(request, { admin = false } = {}) {
+export function canManageLibrary(user) {
+  // Only the identity verified by Supabase Auth may grant library management.
+  // Profile roles, plans and configurable admin email lists are not library grants.
+  return OWNER_EMAILS.includes(normalizeEmail(user?.email));
+}
+
+export async function getLibraryActor(request, { manage = false } = {}) {
   const user = await getUserFromRequest(request);
   if (!user) {
     const error = new Error('Please sign in to use the Design Library.');
@@ -198,13 +204,14 @@ export async function getLibraryActor(request, { admin = false } = {}) {
     error.code = 'account_blocked';
     throw error;
   }
-  if (admin && !isAdminProfile(profile, user)) {
-    const error = new Error('Admin access is required to manage the Design Library.');
+  const canManage = canManageLibrary(user);
+  if (manage && !canManage) {
+    const error = new Error('Only the library owner can manage designs and categories.');
     error.status = 403;
-    error.code = 'admin_required';
+    error.code = 'owner_required';
     throw error;
   }
-  return { user, profile, isAdmin: isAdminProfile(profile, user) };
+  return { user, profile, canManageLibrary: canManage };
 }
 
 export async function librarySignedUrl(storagePath) {
@@ -282,7 +289,7 @@ export async function getGuestUsage(guestId) {
 export async function migrateGuestUsageToProfile(user, guestId) {
   if (!guestId) return ensureProfile(user);
   const profile = await ensureProfile(user);
-  if (profile.plan === 'admin' || profile.plan === 'subscriber' || profile.role === 'admin') return profile;
+  if (usageForProfile(profile, user).unlimited) return profile;
 
   const guestUsage = await getGuestUsage(guestId);
   const importedUses = Math.min(Number(guestUsage.exports_used || 0), FREE_LIMIT);
@@ -305,12 +312,15 @@ export function usageForProfile(profile, user) {
   const isOwner = OWNER_EMAILS.includes(email);
   const plan = isOwner ? 'admin' : profile?.plan || 'free';
   const role = isOwner ? 'admin' : profile?.role || 'customer';
-  const unlimited = isOwner || plan === 'subscriber' || plan === 'admin' || role === 'admin';
+  const isAdmin = isOwner || plan === 'admin' || role === 'admin';
+  const unlimited = isAdmin || plan === 'subscriber' || profile?.exports_unlimited === true;
   const used = Number(profile?.exports_used || 0);
 
   return {
     email,
-    label: unlimited ? (role === 'admin' || plan === 'admin' ? 'Admin' : 'Subscribed') : 'Free account',
+    label: isAdmin ? 'Admin' : plan === 'subscriber' ? 'Subscribed' : unlimited ? 'Basic account' : 'Free account',
+    isAdmin,
+    canManageLibrary: profile?.status !== 'blocked' && canManageLibrary(user),
     plan,
     limit: unlimited ? null : FREE_LIMIT,
     used,

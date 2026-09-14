@@ -40,5 +40,10 @@ values ('smart-sheet-library', 'smart-sheet-library', false, 16777216, array['im
 on conflict (id) do nothing;
 
 -- The app's server routes use the service role after they verify the current signed-in
--- user and existing admin role. The bucket stays private; catalog responses contain
+-- user and owner identity. The bucket stays private; catalog responses contain
 -- only short-lived signed image URLs. No browser client receives the service role key.
+alter table public.design_library_categories enable row level security;
+alter table public.design_library_designs enable row level security;
+revoke all on public.design_library_categories, public.design_library_designs from public, anon, authenticated;
+grant all on public.design_library_categories, public.design_library_designs to service_role;
+-- Also run supabase-access-entitlements-v1.sql for profile entitlement and Storage guards.

@@ -53,6 +53,88 @@ Keep `SUPABASE_SERVICE_ROLE_KEY` server-only. Do not expose it in browser code.
 4. In Authentication settings, choose whether email confirmation is required.
 5. Copy the env vars into Vercel and redeploy.
 
+## Owner-only library and unlimited basic account
+
+Spacing now defaults to **0 inches**. The number input and slider accept zero in
+all measurement units. Existing manual placements stay put when spacing changes;
+Auto-arrange applies the selected spacing to all pieces.
+
+Library management is independent of export entitlements:
+
+| Account | Export allowance | Library access |
+| --- | --- | --- |
+| `masterprintlabcorp@gmail.com` | Admin / Unlimited, as before | Browse all designs and manage PNGs/categories/visibility |
+| Basic user with `profiles.exports_unlimited = true` | Basic account / Unlimited | Browse and add visible designs; no management controls |
+| Other admin profiles | Existing admin allowance | Browse and add visible designs; no library management |
+| Ordinary registered user | 5 total exports | Browse and add visible designs |
+| Guest | 2 exports | Sign-in gate |
+
+The server verifies the Supabase Auth identity on every library request. Only the
+owner can mutate the catalog or request hidden designs. No browser email check
+grants the basic account unlimited exports. The existing export endpoints read
+the profile entitlement; blocked accounts remain blocked.
+
+### One-time Supabase setup
+
+1. In **Supabase Dashboard → the same project used by the app → SQL Editor →
+   New query**, run `supabase-access-entitlements-v1.sql`. The existing base and
+   Design Library V1 SQL files must already have been run. This adds
+   `profiles.exports_unlimited` (default false), enables library RLS, restricts
+   profile writes to the server, and protects only the `smart-sheet-library`
+   Storage bucket. It does not delete data or reset export counters.
+2. Supply the existing `NEXT_PUBLIC_SUPABASE_URL`,
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `SUPABASE_SERVICE_ROLE_KEY` through your
+   private server environment or ignored `.env.local`. Do not paste keys or
+   passwords into source files or terminal commands.
+3. From a **private PowerShell terminal in this repository**, run:
+
+   ```powershell
+   & .\scripts\provision-basic-unlimited.ps1
+   ```
+
+   It first checks configuration and the entitlement column, then prompts for a
+   password without echo. It sends that password through a private child-process
+   stdin pipe, never through arguments, environment variables, or files.
+   The command targets only `mpl.smartsheetbuilder@gmail.com`, finds an existing
+   Auth account before creating one, and saves `role = customer`, `plan = free`,
+   `status = active`, `exports_unlimited = true`. Existing passwords and export
+   history are preserved. Email confirmation is set through the Auth Admin API
+   for immediate password sign-in. Rerunning is safe after a partial failure.
+   It refuses to proceed if the target is in the configured admin email list.
+4. Restart localhost after configuring its environment: `npm run dev`.
+
+All browser catalog reads and writes go through the protected app API. The SQL
+intentionally grants no direct browser access to the library tables/bucket;
+visible PNGs are read using the server-issued signed URLs. Existing signed URLs
+remain valid until their one-hour expiry. This uses Supabase's documented
+[server access and Storage RLS model](https://supabase.com/docs/guides/storage/security/access-control).
+
+### Local verification
+
+Open `http://127.0.0.1:3000`. Confirm spacing starts at 0, add pieces with touching
+edges, then download PNG/TIFF normally. Sign in as the owner and confirm **Admin**,
+**Unlimited**, and **Manage library**. Sign out and sign in as the provisioned basic
+user: confirm **Basic account**, **Unlimited**, direct library access, and no
+management or hidden-design controls. Add a visible library PNG, arrange/export,
+refresh, and check the account display again. Sign out and verify the library
+opens the sign-in gate. An ordinary account still has 5 exports; a guest has 2.
+
+Checks (browser tests require Playwright and Chrome):
+
+```text
+npm run build
+node tests/access-permissions.test.cjs
+node tests/auth-state.test.cjs
+node tests/workspace-ui.test.cjs
+node tests/zero-spacing.test.cjs
+node tests/builder.test.cjs
+```
+
+Auth/workspace tests use mocked API responses; access tests execute actual route
+handlers against mocked Supabase. Provisioning tests also use a mock server.
+Zero-spacing tests download PNG and TIFF files and compare decoded pixels. These
+tests do not apply SQL, create live users, verify live RLS, or test Photoshop.
+
 ## Current Architecture
 
 - `app/page.jsx` is the V5.3B access wrapper.

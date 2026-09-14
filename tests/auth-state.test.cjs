@@ -10,16 +10,18 @@ const password = 'test-only-password';
   const browser = await chromium.launch({ channel: 'chrome', headless: true });
   const errors = [];
   try {
-    async function createPage(server = false) {
+    async function createPage(server = false, identity = 'owner') {
       const page = await browser.newPage(); page.on('pageerror', e => errors.push(e.message));
       await page.route('**/api/**', route => {
         const url = new URL(route.request().url());
         if (!server) return route.fulfill({ status: 501, json: { configured: false, message: 'Supabase env vars are not configured' } });
         const guest = { label: 'Guest trial', signedIn: false, remaining: 2, limit: 2, used: 0, plan: 'guest' };
-        const user = { label: 'Admin', email: owner, signedIn: true, unlimited: true, remaining: null, limit: null, used: 0, plan: 'admin' };
+        const isAdmin = identity !== 'basic', canManageLibrary = identity === 'owner';
+        const user = { label: isAdmin ? 'Admin' : 'Basic account', email: canManageLibrary ? owner : identity === 'basic' ? 'mpl.smartsheetbuilder@gmail.com' : 'other-admin@example.test', signedIn: true, unlimited: true, remaining: null, limit: null, used: 12, plan: isAdmin ? 'admin' : 'free', isAdmin, canManageLibrary };
         if (url.pathname === '/api/auth/me') return route.fulfill({ json: { configured: true, usage: user } });
         if (url.pathname === '/api/auth/login' || url.pathname === '/api/auth/register') return route.fulfill({ json: { configured: true, session: { accessToken: 'mock-validated-token', user: { email: owner } }, usage: user } });
-        if (url.pathname === '/api/library') return route.fulfill({ json: { configured: true, isAdmin: true, designs: [], categories: [] } });
+        if (url.pathname === '/api/library') return route.fulfill({ json: { configured: true, canManageLibrary, designs: [], categories: [] } });
+        if (url.pathname === '/api/export/consume') return route.fulfill({ json: { configured: true, allowed: true, usage: user } });
         return route.fulfill({ json: { configured: true, usage: guest } });
       });
       await page.goto(base); await page.locator('.usage-card').getByText(server ? 'Server protected' : 'Local test mode').waitFor();
@@ -79,7 +81,27 @@ const password = 'test-only-password';
     assert.equal(await server.evaluate(k => localStorage.getItem(k), sessionKey), null);
     await entry(server).click(); await server.locator('.auth-form').waitFor(); await server.getByRole('tab', { name: 'Create account', exact: true }).click();
     await enterCredentials(server); await workspace(server).waitFor(); await server.close();
+    for (const identity of ['basic', 'other']) {
+      const page = await createPage(true, identity);
+      await entry(page).click(); await enterCredentials(page, identity === 'basic' ? 'mpl.smartsheetbuilder@gmail.com' : 'other-admin@example.test');
+      await workspace(page).waitFor();
+      assert.equal(await page.locator('.library-admin').count(), 0);
+      assert.equal(await page.getByText('Show hidden', { exact: true }).count(), 0);
+      await closeLibrary(page);
+      assert.match(await page.locator('.usage-card').innerText(), identity === 'basic' ? /Basic account\nUnlimited/ : /Admin\nUnlimited/);
+      for (let i = 0; i < 7; i++) assert((await exportRequest(page)).allowed);
+      await page.getByRole('button', { name: 'Account', exact: true }).click();
+      const account = await page.locator('.access-modal').innerText();
+      assert.match(account, /Unlimited/); if (identity === 'basic') assert(!account.includes('Admin'));
+      await page.getByRole('button', { name: 'Close account' }).click();
+      await page.reload(); await page.getByRole('button', { name: 'Sign out', exact: true }).waitFor();
+      await entry(page).click(); await workspace(page).waitFor();
+      assert.equal(await page.locator('.library-admin').count(), 0);
+      await closeLibrary(page); await page.getByRole('button', { name: 'Sign out', exact: true }).click();
+      await entry(page).click(); await page.locator('.auth-form').waitFor();
+      await page.close();
+    }
     assert.deepEqual(errors, []);
-    console.log('Auth checks passed: local admin direct library access and refresh, guest gate, login/register continuation, sign-out persistence, empty credentials/account summary, local 2/5 export limits and unlimited owner, mocked Supabase login/register/session restore/sign-out.');
+    console.log('Auth checks passed: local owner direct library access and refresh, guest gate, login/register continuation, sign-out persistence, empty credentials/account summary, local 2/5 export limits, mocked Supabase owner/basic-unlimited/other-admin display and library permissions, login/register/session restore/sign-out.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

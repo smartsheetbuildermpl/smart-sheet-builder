@@ -14,7 +14,7 @@ function isPng(bytes) {
 export async function POST(request) {
   if (libraryUnavailable()) return libraryUnavailableResponse(NextResponse);
   try {
-    await getLibraryActor(request, { admin: true });
+    await getLibraryActor(request, { manage: true });
     const form = await request.formData();
     const file = form.get('file');
     const name = cleanName(form.get('name') || file?.name?.replace(/\.png$/i, ''), 'Design name');

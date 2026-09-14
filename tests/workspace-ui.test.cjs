@@ -13,7 +13,7 @@ const output = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-tests-'));
       const page = await browser.newPage({ viewport: { width: 1440, height: 1000 } });
       page.on('pageerror', e => errors.push(e.message));
       await page.addInitScript(() => localStorage.setItem('smart-sheet-builder-v53b-session', JSON.stringify({ accessToken: 'test-token' })));
-      await page.route('**/api/auth/me', r => r.fulfill({ json: { configured: true, usage: { email: 'user@example.test', signedIn: true, unlimited: admin, plan: admin ? 'admin' : 'free', label: admin ? 'Admin' : 'Free account', remaining: 5 } } }));
+      await page.route('**/api/auth/me', r => r.fulfill({ json: { configured: true, usage: { email: admin ? 'masterprintlabcorp@gmail.com' : 'mpl.smartsheetbuilder@gmail.com', signedIn: true, unlimited: true, isAdmin: admin, canManageLibrary: admin, plan: admin ? 'admin' : 'free', label: admin ? 'Admin' : 'Basic account', remaining: null } } }));
       await page.route('**/api/export/consume', r => { consumes++; return r.fulfill({ json: { allowed: true } }); });
       await page.goto(baseUrl);
       const png = await page.evaluate(() => {
@@ -23,7 +23,7 @@ const output = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-tests-'));
         return c.toDataURL().split(',')[1];
       });
       await page.route('**/test-library-source.png', async r => { await new Promise(resolve => setTimeout(resolve, 200)); return r.fulfill({ contentType:'image/png', body:Buffer.from(png,'base64') }); });
-      await page.route('**/api/library?*', r => r.fulfill({ json: { configured:true,isAdmin:admin,categories:[{id:'floral',name:'Floral'}], designs:[{id:'flower',name:'Soft flower',categoryId:'floral',category:'Floral',tags:['summer'],widthPx:120,heightPx:80,visible:true,imageUrl:`${baseUrl}/test-library-source.png`}] } }));
+      await page.route('**/api/library?*', r => r.fulfill({ json: { configured:true,canManageLibrary:admin,categories:[{id:'floral',name:'Floral'}], designs:[{id:'flower',name:'Soft flower',categoryId:'floral',category:'Floral',tags:['summer'],widthPx:120,heightPx:80,visible:true,imageUrl:`${baseUrl}/test-library-source.png`}] } }));
       const frame = page.frameLocator('iframe'); await frame.locator('#openDesignLibrary').waitFor();
       const doc = page.frames().find(f => f.url().includes('builder.html'));
       await frame.locator('#langToggleEN').click();
