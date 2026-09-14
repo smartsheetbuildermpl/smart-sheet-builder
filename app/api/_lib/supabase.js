@@ -2,13 +2,24 @@ const GUEST_LIMIT = 2;
 const FREE_LIMIT = 5;
 const OWNER_EMAILS = ['masterprintlabcorp@gmail.com'];
 
+function normalizeSupabaseUrl(value) {
+  const raw = String(value || '').trim();
+  if (!raw) return '';
+
+  try {
+    return new URL(raw).origin;
+  } catch {
+    return raw.replace(/\/(?:auth|rest|storage|functions)\/v1(?:\/.*)?$/i, '').replace(/\/+$/, '');
+  }
+}
+
 export function getSupabaseConfig() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   return {
-    url: url ? url.replace(/\/+$/, '') : '',
+    url: normalizeSupabaseUrl(url),
     anonKey: anonKey || '',
     serviceRoleKey: serviceRoleKey || '',
     configured: Boolean(url && anonKey && serviceRoleKey),
@@ -134,13 +145,20 @@ async function createProfile(user) {
 }
 
 async function updateProfileEmail(profile, user) {
-  const isAdmin = getAdminEmails().includes(normalizeEmail(user.email));
+  const email = normalizeEmail(user.email);
+  const isOwner = OWNER_EMAILS.includes(email);
+  const isAdmin = getAdminEmails().includes(email);
+
+  // The owner account is already granted Admin/Unlimited below. Avoid a redundant
+  // profile PATCH on every sign-in, which is the request timing out on Vercel.
+  if (isOwner) return profile;
+
   const patch = {
-    email: normalizeEmail(user.email),
+    email,
     updated_at: new Date().toISOString(),
   };
 
-  if (isAdmin && (profile.role !== 'admin' || profile.plan !== 'admin')) {
+  if (isAdmin && profile.plan !== 'admin') {
     patch.role = 'admin';
     patch.plan = 'admin';
   }
@@ -160,6 +178,106 @@ export async function ensureProfile(user) {
   return updateProfileEmail(current, user);
 }
 
+export function isAdminProfile(profile, user) {
+  const email = normalizeEmail(user?.email || profile?.email);
+  return getAdminEmails().includes(email) || profile?.role === 'admin' || profile?.plan === 'admin';
+}
+
+export function canManageLibrary(user) {
+  // Only the identity verified by Supabase Auth may grant library management.
+  // Profile roles, plans and configurable admin email lists are not library grants.
+  return OWNER_EMAILS.includes(normalizeEmail(user?.email));
+}
+
+export async function getLibraryActor(request, { manage = false } = {}) {
+  const user = await getUserFromRequest(request);
+  if (!user) {
+    const error = new Error('Please sign in to use the Design Library.');
+    error.status = 401;
+    error.code = 'invalid_session';
+    throw error;
+  }
+  const profile = await ensureProfile(user);
+  if (profile?.status === 'blocked') {
+    const error = new Error('This account is blocked. Please contact support.');
+    error.status = 403;
+    error.code = 'account_blocked';
+    throw error;
+  }
+  const canManage = canManageLibrary(user);
+  if (manage && !canManage) {
+    const error = new Error('Only the library owner can manage designs and categories.');
+    error.status = 403;
+    error.code = 'owner_required';
+    throw error;
+  }
+  return { user, profile, canManageLibrary: canManage };
+}
+
+export async function librarySignedUrl(storagePath) {
+  const config = getSupabaseConfig();
+  const encodedPath = String(storagePath || '')
+    .split('/')
+    .map(encodeURIComponent)
+    .join('/');
+  const response = await fetch(`${config.url}/storage/v1/object/sign/smart-sheet-library/${encodedPath}`, {
+    method: 'POST',
+    headers: {
+      apikey: config.serviceRoleKey,
+      Authorization: `Bearer ${config.serviceRoleKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ expiresIn: 3600 }),
+    cache: 'no-store',
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok || !(data.signedURL || data.signedUrl)) {
+    const error = new Error('Unable to prepare the library image.');
+    error.status = response.status || 500;
+    throw error;
+  }
+  const signedPath = data.signedURL || data.signedUrl;
+  return signedPath.startsWith('http') ? signedPath : `${config.url}/storage/v1${signedPath}`;
+}
+
+export async function uploadLibraryPng(storagePath, bytes) {
+  const config = getSupabaseConfig();
+  const response = await fetch(
+    `${config.url}/storage/v1/object/smart-sheet-library/${String(storagePath).split('/').map(encodeURIComponent).join('/')}`,
+    {
+      method: 'POST',
+      headers: {
+        apikey: config.serviceRoleKey,
+        Authorization: `Bearer ${config.serviceRoleKey}`,
+        'Content-Type': 'image/png',
+        'x-upsert': 'false',
+      },
+      body: bytes,
+      cache: 'no-store',
+    }
+  );
+  if (!response.ok) {
+    const error = new Error('Unable to save the PNG to Supabase Storage.');
+    error.status = response.status;
+    throw error;
+  }
+}
+
+export async function deleteLibraryObject(storagePath) {
+  if (!storagePath) return;
+  const config = getSupabaseConfig();
+  await fetch(`${config.url}/storage/v1/object/smart-sheet-library`, {
+    method: 'DELETE',
+    headers: {
+      apikey: config.serviceRoleKey,
+      Authorization: `Bearer ${config.serviceRoleKey}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ prefixes: [storagePath] }),
+    cache: 'no-store',
+  });
+}
+
 export async function getGuestUsage(guestId) {
   if (!guestId) return { guest_id: '', exports_used: 0 };
   const rows = await supabaseFetch(`/rest/v1/guest_usage?guest_id=eq.${encodeURIComponent(guestId)}&select=*`, {
@@ -171,7 +289,7 @@ export async function getGuestUsage(guestId) {
 export async function migrateGuestUsageToProfile(user, guestId) {
   if (!guestId) return ensureProfile(user);
   const profile = await ensureProfile(user);
-  if (profile.plan === 'admin' || profile.plan === 'subscriber' || profile.role === 'admin') return profile;
+  if (usageForProfile(profile, user).unlimited) return profile;
 
   const guestUsage = await getGuestUsage(guestId);
   const importedUses = Math.min(Number(guestUsage.exports_used || 0), FREE_LIMIT);
@@ -190,16 +308,20 @@ export async function migrateGuestUsageToProfile(user, guestId) {
 }
 
 export function usageForProfile(profile, user) {
-  const plan = profile?.plan || 'free';
-  const role = profile?.role || 'customer';
-  const owner = getAdminEmails().includes(normalizeEmail(user.email || profile?.email));
-  const unlimited = owner || plan === 'subscriber' || plan === 'admin' || role === 'admin';
+  const email = normalizeEmail(user?.email || profile?.email);
+  const isOwner = OWNER_EMAILS.includes(email);
+  const plan = isOwner ? 'admin' : profile?.plan || 'free';
+  const role = isOwner ? 'admin' : profile?.role || 'customer';
+  const isAdmin = isOwner || plan === 'admin' || role === 'admin';
+  const unlimited = isAdmin || plan === 'subscriber' || profile?.exports_unlimited === true;
   const used = Number(profile?.exports_used || 0);
 
   return {
-    email: normalizeEmail(user.email || profile?.email),
-    label: unlimited ? (owner || role === 'admin' || plan === 'admin' ? 'Admin' : 'Subscribed') : 'Free account',
-    plan: owner ? 'admin' : plan,
+    email,
+    label: isAdmin ? 'Admin' : plan === 'subscriber' ? 'Subscribed' : unlimited ? 'Basic account' : 'Free account',
+    isAdmin,
+    canManageLibrary: profile?.status !== 'blocked' && canManageLibrary(user),
+    plan,
     limit: unlimited ? null : FREE_LIMIT,
     used,
     remaining: unlimited ? null : Math.max(0, FREE_LIMIT - used),
