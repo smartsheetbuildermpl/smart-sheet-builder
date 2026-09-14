@@ -2349,6 +2349,9 @@
     var sampleCount = baseSamples + (profile.normalAlpha ? 1 : 0) + profile.spotNames.length;
     var extraSamples = [];
     if (profile.normalAlpha) extraSamples.push(2);
+    // DTF RGB+W1 has one extra TIFF sample. It is W1, not a TIFF alpha channel:
+    // the Photoshop layer block retains alpha while resource 1006 names this
+    // sample W1. Code 0 (unspecified) is therefore the correct declaration.
     profile.spotNames.forEach(function(){ extraSamples.push(0); });
     var xmpMetadata = buildXmpMetadata(width, height, dpi, profile);
     var softwareName = 'Smart Sheet Builder V5.2.4 TIFF Export';
@@ -2551,9 +2554,13 @@
           channels[3][x] = alpha ? 255 - lut[lutIndex + 2] : 255;
           channels[4][x] = alpha ? 255 - lut[lutIndex + 3] : 255;
         } else {
-          channels[1][x] = rgba[source];
-          channels[2][x] = rgba[source + 1];
-          channels[3][x] = rgba[source + 2];
+          // Keep the hidden base color white for DTF RGB+W1. Photoshop still
+          // uses channel -1 for transparency, while RIPs that ignore that
+          // metadata no longer interpret blank RGB pixels as black.
+          var blankRgbW1 = profile.mode === 'dtf_rgb_w1' && alpha === 0;
+          channels[1][x] = blankRgbW1 ? 255 : rgba[source];
+          channels[2][x] = blankRgbW1 ? 255 : rgba[source + 1];
+          channels[3][x] = blankRgbW1 ? 255 : rgba[source + 2];
         }
       }
       for (var c = 0; c < channels.length; c++) {
@@ -2648,9 +2655,14 @@
               out[outPos++] = rgba[source + 2];
               out[outPos++] = alpha;
             } else {
-              out[outPos++] = Math.floor((rgba[source] * alpha + 127) / 255);
-              out[outPos++] = Math.floor((rgba[source + 1] * alpha + 127) / 255);
-              out[outPos++] = Math.floor((rgba[source + 2] * alpha + 127) / 255);
+              // MainTop can ignore RGB Photoshop-layer transparency and W1
+              // metadata. For the RGB+W1 production layout, give alpha-zero
+              // background pixels a white RGB fallback without altering alpha,
+              // W1, opaque art, partially transparent antialiasing, CMYK, or UV.
+              var blankRgbW1 = profile.mode === 'dtf_rgb_w1' && alpha === 0;
+              out[outPos++] = blankRgbW1 ? 255 : Math.floor((rgba[source] * alpha + 127) / 255);
+              out[outPos++] = blankRgbW1 ? 255 : Math.floor((rgba[source + 1] * alpha + 127) / 255);
+              out[outPos++] = blankRgbW1 ? 255 : Math.floor((rgba[source + 2] * alpha + 127) / 255);
             }
             if (alpha) {
               if (x < bounds.minX) bounds.minX = x;
