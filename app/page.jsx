@@ -15,6 +15,7 @@ export default function HomePage() {
   const [authMessage, setAuthMessage] = useState('');
   const [paywallOpen, setPaywallOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
+  const [backgroundEditorOpen, setBackgroundEditorOpen] = useState(false);
   const pendingAction = useRef(null);
   const accountRef = useRef(null);
   const builderRef = useRef(null);
@@ -78,6 +79,7 @@ export default function HomePage() {
     libraryOpenRef.current = false;
     importRef.current?.abort();
     setLibraryOpen(false);
+    setBackgroundEditorOpen(false);
     builderRef.current?.contentWindow?.smartSheetWorkspace?.setOpen(false);
   }
 
@@ -115,6 +117,8 @@ export default function HomePage() {
     function handleWorkspaceMessage(event) {
       if (event.origin !== window.location.origin || event.source !== builderRef.current?.contentWindow) return;
       const data = event.data || {};
+      if (data.type === 'SMART_SHEET_BACKGROUND_EDITOR_OPEN') { setBackgroundEditorOpen(true); return; }
+      if (data.type === 'SMART_SHEET_BACKGROUND_EDITOR_CLOSE') { setBackgroundEditorOpen(false); return; }
       if (data.type === 'SMART_SHEET_LIBRARY_OPEN') openLibrary();
       if (!libraryOpenRef.current) return;
       if (data.type === 'SMART_SHEET_WORKSPACE_ESCAPE') closeLibrary();
@@ -156,7 +160,7 @@ export default function HomePage() {
 
   return (
     <main className="app-shell">
-      <section className="access-bar" inert={libraryOpen || paywallOpen ? '' : undefined}>
+      <section className="access-bar" hidden={backgroundEditorOpen} inert={libraryOpen || paywallOpen ? '' : undefined}>
         <div>
           <p className="access-kicker">Smart Sheet Builder V5.3B</p>
           <h1>Export access</h1>

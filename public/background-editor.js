@@ -4,14 +4,15 @@
   window.openBackgroundEditor = function(options) {
     if (document.querySelector('.bg-editor')) return;
     var w = options.canvas.width, h = options.canvas.height, count = w * h;
-    var focusBefore = document.activeElement, dialog = document.createElement('dialog');
+    var focusBefore = document.activeElement, pageScroll = {x:window.scrollX, y:window.scrollY}, dialog = document.createElement('dialog');
     dialog.className = 'bg-editor'; dialog.setAttribute('aria-labelledby', 'bg-title');
-    dialog.innerHTML = '<header><div><span class="bg-brand">MASTER PRINTLAB · BACKGROUND STUDIO</span><h2 id="bg-title">Refine Background</h2><p class="bg-name"></p></div><button type="button" data-action="close" aria-label="Close Background Editor">Close</button></header>' +
-      '<div class="bg-body"><aside class="bg-tools"><fieldset><legend>Tools</legend><button type="button" data-tool="wand" aria-pressed="true">Magic Wand</button><button type="button" data-tool="erase" aria-pressed="false">Erase Brush</button><button type="button" data-tool="restore" aria-pressed="false">Restore Brush</button><button type="button" data-tool="pan" aria-pressed="false">Pan</button></fieldset>' +
-      '<fieldset><legend>Magic Wand selection</legend><label>Tolerance <output id="bg-tolerance-value">32</output><input id="bg-tolerance" type="range" min="0" max="255" value="32"></label><label><input id="bg-contiguous" type="checkbox" checked>Contiguous</label><label><input id="bg-antialias" type="checkbox" checked>Anti-alias</label><label>Selection mode<select id="bg-mode"><option value="add">Add to selection</option><option value="subtract">Subtract from selection</option></select></label><button type="button" data-action="erase-selection">Erase selection</button><button type="button" data-action="clear">Clear selection</button></fieldset>' +
-      '<fieldset><legend>Brush</legend><label>Brush size (source pixels) <output id="bg-size-value">40</output><input id="bg-size" type="range" min="1" max="500" value="40"></label></fieldset>' +
-      '<fieldset class="bg-advanced"><legend>Advanced cleanup</legend><label>Edge cleanup sensitivity <output id="bg-auto-tolerance-value">42</output><input id="bg-auto-tolerance" type="range" min="16" max="110" step="2" value="42"></label><button type="button" data-action="auto-edge">Auto-remove edge background</button><button type="button" data-action="tiny-specks">Remove tiny specks</button></fieldset>' +
-      '<p>Cyan marks selected pixels; it is not part of the image. Click additional colors to select uneven or gradient backgrounds. Erase selection to inspect removal, then use Restore Brush to recover original pixels.</p><p id="bg-history-note"></p></aside>' +
+    dialog.innerHTML = '<header><div><span class="bg-brand">MASTER PRINTLAB · BACKGROUND STUDIO</span><h2 id="bg-title">Refine Background</h2><p class="bg-name"></p></div><button type="button" class="bg-close" data-action="close" aria-label="Close Background Editor" title="Close editor">×</button></header>' +
+      '<div class="bg-body"><aside class="bg-tool-rail" aria-label="Editor tools"><button type="button" data-tool="wand" aria-pressed="true" title="Magic Wand"><span aria-hidden="true">✦</span><span>Magic Wand</span></button><button type="button" data-tool="erase" aria-pressed="false" title="Erase Brush"><span aria-hidden="true">⌫</span><span>Erase Brush</span></button><button type="button" data-tool="restore" aria-pressed="false" title="Restore Brush"><span aria-hidden="true">↶</span><span>Restore Brush</span></button><button type="button" data-tool="pan" aria-pressed="false" title="Pan canvas"><span aria-hidden="true">✋</span><span>Pan</span></button></aside>' +
+      '<aside class="bg-options" aria-label="Tool options"><section class="bg-tool-panel is-active" data-tool-panel="wand"><h3>Magic Wand</h3><p class="bg-tool-copy">Click a visible background color to preview a selection. Click again to add more colors.</p><label>Tolerance <output id="bg-tolerance-value">32</output><input id="bg-tolerance" type="range" min="0" max="255" value="32"></label><label><input id="bg-contiguous" type="checkbox" checked>Contiguous</label><label><input id="bg-antialias" type="checkbox" checked>Anti-alias</label><label>Selection mode<select id="bg-mode"><option value="add">Add to selection</option><option value="subtract">Subtract from selection</option></select></label><div class="bg-option-actions"><button type="button" data-action="erase-selection">Erase selection</button><button type="button" data-action="clear">Clear selection</button></div></section>' +
+      '<section class="bg-tool-panel" data-tool-panel="erase"><h3>Erase Brush</h3><p class="bg-tool-copy">Paint directly on unwanted pixels. The soft edge protects anti-aliased artwork.</p><label>Brush size <output id="bg-size-value">40</output><input id="bg-size" type="range" min="1" max="500" value="40"></label><p class="bg-option-note">Soft edge is automatic and scales with the selected brush size.</p></section>' +
+      '<section class="bg-tool-panel" data-tool-panel="restore"><h3>Restore Brush</h3><p class="bg-tool-copy">Paint back pixels from the original uploaded image without changing its print size.</p><label>Brush size <output class="bg-size-mirror">40</output><input class="bg-size-mirror-input" type="range" min="1" max="500" value="40"></label><p class="bg-option-note">Restore recovers color and transparency from the untouched source.</p></section>' +
+      '<section class="bg-tool-panel" data-tool-panel="pan"><h3>Pan canvas</h3><p class="bg-tool-copy">Drag the canvas to inspect details. Use zoom controls above, or arrow keys while the canvas is focused.</p></section>' +
+      '<details class="bg-advanced"><summary>Advanced cleanup</summary><div><label>Edge cleanup sensitivity <output id="bg-auto-tolerance-value">42</output><input id="bg-auto-tolerance" type="range" min="16" max="110" step="2" value="42"></label><button type="button" data-action="auto-edge">Auto-remove edge background</button><button type="button" data-action="tiny-specks">Remove tiny specks</button><p class="bg-option-note">These edits remain reversible until Apply.</p></div></details><p id="bg-history-note"></p></aside>' +
       '<section class="bg-view" aria-label="Image editor"><div class="bg-viewbar"><button type="button" data-action="undo">Undo</button><button type="button" data-action="redo">Redo</button><button type="button" data-action="reset">Reset editor changes</button><button type="button" data-action="out" aria-label="Zoom out">−</button><output id="bg-zoom">100%</output><button type="button" data-action="in" aria-label="Zoom in">+</button><button type="button" data-action="fit">Fit</button><small id="bg-resolution"></small></div><div class="bg-viewport"><div class="bg-stage" tabindex="0" role="application" aria-label="Image editing canvas. Arrow keys move the cursor; Enter uses the selected tool. Use Pan and arrow keys to scroll."><canvas class="bg-image"></canvas><canvas class="bg-overlay"></canvas></div></div></section></div>' +
       '<footer><p class="bg-status" role="status" aria-live="polite">Select a background area to preview a selection. Changes stay here until Apply.</p><div class="bg-actions"><button type="button" data-action="cancel">Cancel</button><button type="button" data-action="apply" class="bg-primary">Apply background removal</button></div></footer>';
     var $ = function(sel){ return dialog.querySelector(sel); };
@@ -27,6 +28,9 @@
     var statusEl = $('.bg-status'), closed = false, busy = false, generation = 0, tool = 'wand', zoom = 1;
     var stroke = null, cursor = {x:Math.floor(w/2), y:Math.floor(h/2)}, frame = 0;
     var history = [], future = [], lastWand = null;
+    function notifyHost(type) {
+      if (window.parent && window.parent !== window) window.parent.postMessage({type:type}, window.location.origin);
+    }
     // Fixed RGBA+selection snapshots are capped by both count and byte budget.
     var historyLimit = Math.min(16, Math.floor(48 * 1024 * 1024 / (count * 5)));
     if (historyLimit < 2) throw new Error('This image is too large for the manual editor memory budget. Use a smaller source for manual editing.');
@@ -39,8 +43,11 @@
       closed = true; generation++; cancelAnimationFrame(frame);
       document.removeEventListener('keydown', keyboard, true);
       dialog.close(); dialog.remove();
+      document.documentElement.classList.remove('bg-editor-open'); document.body.classList.remove('bg-editor-open');
+      notifyHost('SMART_SHEET_BACKGROUND_EDITOR_CLOSE');
       scratch.width = scratch.height = overlay.width = overlay.height = 0;
       pixels = original = selection = null; history = []; future = []; lastWand = null;
+      window.requestAnimationFrame(function(){ window.scrollTo(pageScroll.x, pageScroll.y); });
       if (focusBefore && focusBefore.isConnected) focusBefore.focus({preventScroll:true});
     }
     try {
@@ -53,7 +60,9 @@
       $('.bg-name').textContent = options.name;
       $('#bg-resolution').textContent = w + ' × ' + h + ' px · full resolution';
       $('#bg-history-note').textContent = 'Undo history: up to ' + historyLimit + ' steps for this image. Reset returns to the image at editor opening. Print dimensions stay unchanged.';
+      document.documentElement.classList.add('bg-editor-open'); document.body.classList.add('bg-editor-open');
       document.body.appendChild(dialog); dialog.showModal();
+      notifyHost('SMART_SHEET_BACKGROUND_EDITOR_OPEN');
       document.addEventListener('keydown', keyboard, true);
       render(); fit(); $('[data-tool="wand"]').focus();
     } catch(error) { close(); throw error; }
@@ -68,6 +77,16 @@
       dialog.setAttribute('aria-busy', String(busy));
       dialog.querySelectorAll('button,input,select').forEach(function(el){ el.disabled = busy && el !== button('close') && el !== button('cancel'); });
       if (!busy) { button('undo').disabled = !history.length; button('redo').disabled = !future.length; }
+    }
+    function setTool(nextTool, announce) {
+      tool = nextTool; stage.dataset.tool = tool;
+      dialog.querySelectorAll('button[data-tool]').forEach(function(buttonEl){ buttonEl.setAttribute('aria-pressed',String(buttonEl.dataset.tool===tool)); });
+      dialog.querySelectorAll('[data-tool-panel]').forEach(function(panel){ panel.classList.toggle('is-active',panel.dataset.toolPanel===tool); });
+      if (announce && tool === 'wand') status('Click a visible background color to preview a selection.');
+      if (announce && tool === 'erase') status('Paint over pixels to erase them. Restore Brush can recover them.');
+      if (announce && tool === 'restore') status('Paint to restore pixels from the original uploaded image.');
+      if (announce && tool === 'pan') status('Drag the canvas to pan. Use the toolbar to zoom or fit it.');
+      render();
     }
     function render() {
       if (closed) return;
@@ -218,12 +237,21 @@
       if(e.key==='Enter'||e.key===' '){e.preventDefault();if(tool==='wand')wand(cursor);else if(tool!=='pan'){remember();dab(cursor,history[history.length-1].data);render();}}
     }
     dialog.addEventListener('cancel',function(e){e.preventDefault();close();});
-    dialog.querySelectorAll('button[data-tool]').forEach(function(b){b.onclick=function(){tool=b.dataset.tool;stage.dataset.tool=tool;dialog.querySelectorAll('button[data-tool]').forEach(function(t){t.setAttribute('aria-pressed',String(t===b));});render();};});
-    $('#bg-size').oninput=function(){$('#bg-size-value').textContent=this.value;drawCursor();};
+    dialog.querySelectorAll('button[data-tool]').forEach(function(b){b.onclick=function(){setTool(b.dataset.tool, true);};});
+    function updateBrushSize(value) {
+      $('#bg-size').value = value; $('#bg-size-value').textContent = value;
+      dialog.querySelectorAll('.bg-size-mirror').forEach(function(output){ output.textContent = value; });
+      dialog.querySelectorAll('.bg-size-mirror-input').forEach(function(input){ input.value = value; });
+      drawCursor();
+    }
+    $('#bg-size').oninput=function(){updateBrushSize(this.value);};
+    dialog.querySelectorAll('.bg-size-mirror-input').forEach(function(input){input.oninput=function(){updateBrushSize(this.value);};});
     $('#bg-auto-tolerance').oninput=function(){$('#bg-auto-tolerance-value').textContent=this.value;};
     $('#bg-tolerance').oninput=function(){$('#bg-tolerance-value').textContent=this.value;};
     ['#bg-tolerance','#bg-contiguous','#bg-antialias','#bg-mode'].forEach(function(id){$(id).onchange=function(){if(lastWand)wand(lastWand.at,lastWand.base);};});
-    button('close').onclick=button('cancel').onclick=close;
+    function hasUnappliedEdits() { return history.length > 0 || selection.some(function(value){ return value > 0; }); }
+    button('close').onclick=function(){ if (!hasUnappliedEdits() || window.confirm('Discard unapplied background edits?')) close(); };
+    button('cancel').onclick=close;
     button('in').onclick=function(){setZoom(zoom*1.25);};button('out').onclick=function(){setZoom(zoom/1.25);};button('fit').onclick=fit;
     button('undo').onclick=function(){if(history.length){future.push(snapshot());load(history.pop());status('Undone.');}};
     button('redo').onclick=function(){if(future.length){history.push(snapshot());load(future.pop());status('Redone.');}};
