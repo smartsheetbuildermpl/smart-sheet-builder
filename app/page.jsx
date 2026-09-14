@@ -16,8 +16,12 @@ export default function HomePage() {
   const [paywallOpen, setPaywallOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [backgroundEditorOpen, setBackgroundEditorOpen] = useState(false);
+  const [accessBarOpen, setAccessBarOpen] = useState(false);
   const pendingAction = useRef(null);
   const accountRef = useRef(null);
+  const accessBarRef = useRef(null);
+  const accessHideTimerRef = useRef(null);
+  const accessHandlePointerTypeRef = useRef('');
   const builderRef = useRef(null);
   const workspaceRef = useRef(null);
   const closeLibraryRef = useRef(null);
@@ -27,6 +31,29 @@ export default function HomePage() {
   const [libraryBusy, setLibraryBusy] = useState(false);
   const [libraryMessage, setLibraryMessage] = useState('');
   const [workspaceTab, setWorkspaceTab] = useState('library');
+
+  function clearAccessHideTimer() {
+    if (accessHideTimerRef.current) window.clearTimeout(accessHideTimerRef.current);
+    accessHideTimerRef.current = null;
+  }
+  function revealAccessBar() {
+    clearAccessHideTimer();
+    setAccessBarOpen(true);
+  }
+  function hideAccessBarSoon() {
+    clearAccessHideTimer();
+    accessHideTimerRef.current = window.setTimeout(() => {
+      if (!accessBarRef.current?.contains(document.activeElement)) setAccessBarOpen(false);
+    }, 600);
+  }
+  function toggleAccessBar(event) {
+    clearAccessHideTimer();
+    const wasOpen = event.currentTarget.getAttribute('aria-expanded') === 'true';
+    // Desktop hover is the primary interaction, so a mouse click keeps the
+    // revealed bar available. A touch tap (and keyboard activation) toggles it.
+    setAccessBarOpen(accessHandlePointerTypeRef.current === 'mouse' ? true : !wasOpen);
+    accessHandlePointerTypeRef.current = '';
+  }
 
   function showAccount() {
     setEmail(''); setPassword(''); setAuthMessage(''); setAuthMode('login'); setPaywallOpen(true);
@@ -52,6 +79,8 @@ export default function HomePage() {
   useEffect(() => {
     if (paywallOpen) accountRef.current?.querySelector('input,button')?.focus();
   }, [paywallOpen]);
+  useEffect(() => () => clearAccessHideTimer(), []); // Do not leave a delayed update behind after navigation.
+  useEffect(() => { if (backgroundEditorOpen) { clearAccessHideTimer(); setAccessBarOpen(false); } }, [backgroundEditorOpen]);
   useEffect(() => {
     if (!auth.ready) return;
     if (!auth.signedIn) closeLibrary();
@@ -160,29 +189,34 @@ export default function HomePage() {
 
   return (
     <main className="app-shell">
-      <section className="access-bar" hidden={backgroundEditorOpen} inert={libraryOpen || paywallOpen ? '' : undefined}>
-        <div>
-          <p className="access-kicker">Smart Sheet Builder V5.3B</p>
-          <h1>Export access</h1>
-          <p>
-            Guest users get 2 free exports. Free registered accounts get 5 total exports.
-            PNG/TIFF download is counted as usage.
-          </p>
-        </div>
-        <div className="usage-card">
-          <span>{usage.label}</span>
-          <strong>{remainingText}</strong>
-          <small>{auth.signedIn ? usage.email : 'Not signed in'}</small>
-          <small>{busy ? 'Checking...' : modeText}</small>
-        </div>
-        <button className="access-button" type="button" onClick={showAccount}>
-          {auth.signedIn ? 'Account' : 'Sign in'}
+      <section ref={accessBarRef} className={`access-bar${accessBarOpen ? ' is-open' : ''}`} hidden={backgroundEditorOpen} inert={libraryOpen || paywallOpen ? '' : undefined} onPointerEnter={event => { if (event.pointerType !== 'touch') revealAccessBar(); }} onPointerLeave={event => { if (event.pointerType !== 'touch') hideAccessBarSoon(); }} onFocusCapture={() => { if (!accessHandlePointerTypeRef.current) revealAccessBar(); }} onBlurCapture={event => { if (!accessBarRef.current?.contains(event.relatedTarget)) hideAccessBarSoon(); }}>
+        <button className="access-reveal-handle" type="button" aria-expanded={accessBarOpen} aria-controls="builder-access-bar" aria-label={accessBarOpen ? 'Hide account and export access' : 'Show account and export access'} onPointerDown={event => { accessHandlePointerTypeRef.current = event.pointerType; }} onPointerCancel={() => { accessHandlePointerTypeRef.current = ''; }} onFocus={() => { if (!accessHandlePointerTypeRef.current) revealAccessBar(); }} onClick={toggleAccessBar}>
+          <span>Account &amp; exports</span><span aria-hidden="true">⌃</span>
         </button>
-        {auth.signedIn && (
-          <button className="access-button ghost" type="button" onClick={signOut}>
-            Sign out
+        <div id="builder-access-bar" className="access-bar-content" inert={accessBarOpen ? undefined : ''}>
+          <div>
+            <p className="access-kicker">Smart Sheet Builder V5.3B</p>
+            <h1>Export access</h1>
+            <p>
+              Guest users get 2 free exports. Free registered accounts get 5 total exports.
+              PNG/TIFF download is counted as usage.
+            </p>
+          </div>
+          <div className="usage-card">
+            <span>{usage.label}</span>
+            <strong>{remainingText}</strong>
+            <small>{auth.signedIn ? usage.email : 'Not signed in'}</small>
+            <small>{busy ? 'Checking...' : modeText}</small>
+          </div>
+          <button className="access-button" type="button" onClick={showAccount}>
+            {auth.signedIn ? 'Account' : 'Sign in'}
           </button>
-        )}
+          {auth.signedIn && (
+            <button className="access-button ghost" type="button" onClick={signOut}>
+              Sign out
+            </button>
+          )}
+        </div>
       </section>
 
       <div className={`workspace-backdrop${libraryOpen ? ' is-open' : ''}`} aria-hidden="true" />

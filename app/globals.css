@@ -28,16 +28,62 @@ body {
 }
 
 .access-bar {
-  display: flex;
-  align-items: center;
-  gap: 14px;
-  padding: 12px 18px;
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: block;
+  transform: translateY(-100%);
+  transition: transform 180ms ease-out;
   border-bottom: 1px solid #d8d3c7;
   background: rgba(255, 255, 255, 0.92);
   color: #111827;
   font-family: Arial, sans-serif;
   box-shadow: 0 1px 8px rgba(15, 23, 42, 0.07);
-  z-index: 5;
+  z-index: 30;
+}
+
+.access-bar.is-open {
+  transform: translateY(0);
+}
+
+.access-bar-content {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 12px 18px;
+}
+
+.access-reveal-handle {
+  position: absolute;
+  left: 50%;
+  bottom: -28px;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 4px 12px 5px;
+  transform: translateX(-50%);
+  border: 1px solid #cbd5e1;
+  border-top: 0;
+  border-radius: 0 0 999px 999px;
+  background: rgba(255, 255, 255, 0.96);
+  color: #385065;
+  box-shadow: 0 3px 7px rgba(15, 23, 42, 0.1);
+  cursor: pointer;
+  font: 700 10px/1 Arial, sans-serif;
+  letter-spacing: 0.02em;
+  pointer-events: auto;
+}
+
+.access-reveal-handle span:last-child {
+  font-size: 14px;
+  line-height: 10px;
+  transition: transform 180ms ease-out;
+}
+
+.access-bar.is-open .access-reveal-handle span:last-child {
+  transform: rotate(180deg);
 }
 
 .access-bar[hidden] {
@@ -109,6 +155,12 @@ body {
 
 .access-button.library-entry {
   background: #0369a1;
+}
+
+.access-reveal-handle:focus-visible,
+.access-button:focus-visible {
+  outline: 3px solid #139ea6;
+  outline-offset: 3px;
 }
 
 .library-modal {
@@ -488,9 +540,11 @@ body {
 }
 
 @media (max-width: 760px) {
-  .access-bar {
+  .access-bar-content {
     align-items: stretch;
     flex-direction: column;
+    gap: 9px;
+    padding: 12px 14px;
   }
 
   .usage-card {
@@ -593,8 +647,8 @@ body {
   .workspace-library .library-toolbar { padding:10px 18px 14px; }
   .workspace-library .library-content { padding:16px 18px; }
   .workspace-library .library-thumb { height:160px; }
-  .access-bar { padding:10px; gap:8px; flex-direction:row; flex-wrap:wrap; }
-  .access-bar>div:first-child { display:none; }
+  .access-bar-content { align-items:center; padding:10px; gap:8px; flex-direction:row; flex-wrap:wrap; }
+  .access-bar-content>div:first-child { display:none; }
   .usage-card { flex:1; min-width:120px; }
 }
-@media(prefers-reduced-motion:reduce) { .builder-workspace.is-open { animation:none; } .workspace-backdrop { transition:none; } }
+@media(prefers-reduced-motion:reduce) { .builder-workspace.is-open { animation:none; } .workspace-backdrop,.access-bar,.access-reveal-handle span:last-child { transition:none; } }
