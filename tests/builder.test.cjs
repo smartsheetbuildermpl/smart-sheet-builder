@@ -29,7 +29,7 @@ for (const [a,b] of [
     assert.notEqual(html,testSource,'test hook inserted');
     await page.route('http://localhost:4178/**',route=> {
       const name = new URL(route.request().url()).pathname;
-      if (name === '/sheet-workspace.js' || name === '/sheet-workspace.css') return route.fulfill({ body: fs.readFileSync('public' + name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css' });
+      if (/^\/(sheet-workspace|background-editor)\.(js|css)$/.test(name)) return route.fulfill({ body: fs.readFileSync('public' + name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css' });
       return route.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4178/builder.html');

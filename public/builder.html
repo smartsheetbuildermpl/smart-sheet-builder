@@ -5,6 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Smart Sheet Builder by Master PrintLab</title>
 <link rel="stylesheet" href="/sheet-workspace.css">
+<link rel="stylesheet" href="/background-editor.css">
 <style>
   * { box-sizing: border-box; }
   body {
@@ -356,6 +357,7 @@
 </div>
 
 <script src="/sheet-workspace.js"></script>
+<script src="/background-editor.js"></script>
 <script>
 (function(){
   var directOnlineAccess = window.top === window.self &&
@@ -1093,6 +1095,16 @@
     design.previewUrl = thumbnailUrl(result.canvas);
   }
 
+  function imageSourceRect(design) {
+    return design.sourceRect || (design.autoTrimApplied ? design.trimRect :
+      { x: 0, y: 0, w: design.originalCanvas.width, h: design.originalCanvas.height });
+  }
+
+  function imageUndoState(design) {
+    return { canvas: design.trimmed.canvas, enhanced: design.enhanced, wasEdited: design.wasEdited,
+      sourceRect: imageSourceRect(design), trimRect: design.trimRect, autoTrimApplied: design.autoTrimApplied };
+  }
+
   function refreshLayoutAfterImageEdit(design) {
     // Image edits preserve all placements and physical print sizes.
     instances.forEach(function(inst) {
@@ -1177,6 +1189,38 @@
     removeBgBtn.className = 'secondary';
     btnRow.appendChild(removeBgBtn);
 
+    var refineBtn = document.createElement('button');
+    refineBtn.textContent = 'Refine Background'; refineBtn.className = 'secondary';
+    refineBtn.title = 'Select, erase, and restore background areas before applying changes';
+    refineBtn.addEventListener('click', function(){
+      try {
+        if (!window.openBackgroundEditor) throw new Error('Background Editor could not load. Refresh the page and try again.');
+        var pixels = design.trimmed.w * design.trimmed.h;
+        var historySteps = Math.min(16, Math.floor(48 * 1024 * 1024 / (pixels * 5)));
+        assertImageBudget(design.trimmed.w, design.trimmed.h, 36 + 5 * (historySteps + 1));
+        window.openBackgroundEditor({
+          canvas: design.trimmed.canvas, original: design.originalCanvas, sourceRect: imageSourceRect(design),
+          name: design.file.name,
+          apply: function(canvas) {
+            // Prepare everything before publishing the new source. Empty artwork is rejected.
+            var result = trimTransparentMargins(canvas, 1), rect = imageSourceRect(design);
+            var crop = result.cropRect, sx = rect.w / canvas.width, sy = rect.h / canvas.height;
+            var nextRect = { x: rect.x + crop.x * sx, y: rect.y + crop.y * sy, w: crop.w * sx, h: crop.h * sy };
+            var preview = thumbnailUrl(result.canvas), previous = imageUndoState(design);
+            design.undoImage = previous;
+            design.trimmed = { canvas: result.canvas, w: result.w, h: result.h };
+            design.aspect = result.w / result.h; design.previewUrl = preview;
+            design.sourceRect = nextRect; design.trimRect = nextRect;
+            design.autoTrimApplied = nextRect.x !== 0 || nextRect.y !== 0 || nextRect.w !== design.originalCanvas.width || nextRect.h !== design.originalCanvas.height;
+            design.wasEdited = true;
+            feedbackEl.textContent = 'Background edits applied. Print size and placements unchanged.';
+            refreshEdit();
+          }
+        });
+      } catch (error) { feedbackEl.textContent = error.message; }
+    });
+    btnRow.appendChild(refineBtn);
+
     var removeBtn = document.createElement('button');
     removeBtn.textContent = t('remove');
     removeBtn.className = 'secondary';
@@ -1241,6 +1285,9 @@
       updateDesignCanvas(design, { canvas: previous.canvas, w: previous.canvas.width, h: previous.canvas.height });
       design.enhanced = previous.enhanced;
       design.wasEdited = previous.wasEdited;
+      design.sourceRect = previous.sourceRect;
+      design.trimRect = previous.trimRect;
+      design.autoTrimApplied = previous.autoTrimApplied;
       design.undoImage = null;
       feedbackEl.textContent = t('editUndone');
       refreshEdit();
@@ -1248,6 +1295,7 @@
     restoreBtn.addEventListener('click', function(){
       updateDesignCanvas(design, { canvas: design.originalCanvas, w: design.originalCanvas.width, h: design.originalCanvas.height });
       design.enhanced = false; design.wasEdited = false; design.undoImage = null; design.autoTrimApplied = false;
+      design.sourceRect = { x: 0, y: 0, w: design.originalCanvas.width, h: design.originalCanvas.height };
       feedbackEl.textContent = t('restoredOriginal');
       refreshEdit();
     });
@@ -1256,20 +1304,20 @@
     bgTools.appendChild(toleranceLabel); bgTools.appendChild(toleranceInput);
     fields.appendChild(bgTools);
     function runEdit(operation, message) {
-      [cleanBtn, enhanceBtn, removeBgBtn, undoBtn, restoreBtn, removeBtn].forEach(function(b){ b.disabled = true; });
+      [cleanBtn, enhanceBtn, removeBgBtn, refineBtn, undoBtn, restoreBtn, removeBtn].forEach(function(b){ b.disabled = true; });
       feedbackEl.textContent = t('processingImage');
       setTimeout(function(){
         try {
           var result = operation();
           if (result.noChange) { feedbackEl.textContent = t('noImageChange'); return; }
-          design.undoImage = { canvas: design.trimmed.canvas, enhanced: design.enhanced, wasEdited: design.wasEdited };
+          design.undoImage = imageUndoState(design);
           updateDesignCanvas(design, result);
           if (result.enhanced) design.enhanced = true;
           design.wasEdited = true;
           feedbackEl.textContent = message;
         } catch (err) { feedbackEl.textContent = err.message; }
         finally {
-          cleanBtn.disabled = removeBgBtn.disabled = removeBtn.disabled = false;
+          cleanBtn.disabled = removeBgBtn.disabled = refineBtn.disabled = removeBtn.disabled = false;
           refreshEdit();
         }
       }, 20);

@@ -1,0 +1,52 @@
+.bg-editor { width:calc(100% - 28px); max-width:1480px; height:calc(100dvh - 28px); max-height:100dvh; margin:auto; padding:0; border:1px solid #b6c9d2; border-radius:20px; background:#f5f7f8; color:#142c3c; box-shadow:0 24px 100px #07132366; }
+.bg-editor::backdrop { background:#071323b3; backdrop-filter:blur(6px); }
+.bg-editor[open] { display:flex; flex-direction:column; animation:bg-editor-in .16s ease-out; }
+.bg-editor * { box-sizing:border-box; }
+.bg-editor header,.bg-editor footer { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:16px 22px; background:white; }
+.bg-editor header { border-bottom:1px solid #d8e2e8; }
+.bg-editor header > div { flex:1; min-width:0; }
+.bg-editor h2 { margin:2px 0; font-size:22px; }
+.bg-editor .bg-brand { font-size:10px; font-weight:800; letter-spacing:.14em; color:#287584; }
+.bg-editor .bg-name { margin:0; font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.bg-editor button { width:auto; min-height:40px; padding:9px 13px; border:1px solid #c7d7df; border-radius:9px; background:white; color:#173e4b; font-size:12px; }
+.bg-editor button:hover { background:#e7f4f3; }
+.bg-editor button[aria-pressed=true],.bg-editor .bg-primary { background:#163e48; color:white; border-color:#163e48; }
+.bg-editor button:disabled { opacity:.45; cursor:default; }
+.bg-editor :focus-visible { outline:3px solid #139ea6; outline-offset:2px; }
+.bg-body { display:grid; grid-template-columns:230px minmax(0,1fr); min-height:0; flex:1; }
+.bg-editor .bg-tools { display:block; margin:0; padding:16px; overflow:auto; border-right:1px solid #d8e2e8; }
+.bg-editor .bg-tools fieldset { min-width:0; border:0; padding:0; margin:0 0 18px; display:flex; flex-wrap:wrap; gap:7px; }
+.bg-editor .bg-tools legend { font-size:11px; font-weight:750; text-transform:uppercase; letter-spacing:.08em; margin-bottom:8px; }
+.bg-editor .bg-tools label { font-size:12px; display:block; margin:7px 0; white-space:normal; }
+.bg-editor .bg-tools input[type=checkbox] { width:auto; margin-right:7px; }
+.bg-editor .bg-tools input[type=range] { display:block; width:100%; margin:8px 0; }
+.bg-editor .bg-tools select { width:100%; padding:8px; font-size:12px; }
+.bg-editor .bg-tools p { font-size:11px; color:#516775; line-height:1.5; }
+.bg-view { min-width:0; min-height:0; display:flex; flex-direction:column; }
+.bg-viewbar { padding:9px 14px; display:flex; flex-wrap:wrap; align-items:center; gap:7px; border-bottom:1px solid #d8e2e8; }
+.bg-viewbar small { margin-left:auto; font-size:11px; }
+.bg-viewport { flex:1; min-height:100px; overflow:auto; position:relative; background:#dce3e7; overscroll-behavior:contain; }
+.bg-stage { position:relative; margin:24px; background-color:white; background-image:conic-gradient(#d0d6dc 25%,white 0 50%,#d0d6dc 0 75%,white 0); background-size:20px 20px; box-shadow:0 2px 16px #173e4b22; touch-action:none; cursor:crosshair; }
+.bg-stage canvas { position:absolute; inset:0; width:100%; height:100%; pointer-events:none; }
+.bg-cursor { position:absolute; pointer-events:none; border:1px dashed #142c3c; outline:1px solid #ffffffaa; border-radius:50%; transform:translate(-50%,-50%); }
+.bg-stage[data-tool=pan] { cursor:grab; }
+.bg-stage[data-tool=pan]:active { cursor:grabbing; }
+.bg-editor footer { border-top:1px solid #d8e2e8; }
+.bg-status { flex:1; min-width:170px; margin:0; font-size:12px; color:#446171; }
+.bg-status.error { color:#a32626; }
+.bg-actions { display:flex; flex-wrap:wrap; gap:8px; }
+@keyframes bg-editor-in { from { opacity:0; transform:translateY(8px); } to { opacity:1; transform:none; } }
+@media(prefers-reduced-motion:reduce) { .bg-editor[open] { animation:none; } }
+@media(max-width:650px) {
+  .bg-editor { width:100%; height:100dvh; border-radius:0; }
+  .bg-editor header,.bg-editor footer { padding:10px 12px; gap:8px; }
+  .bg-editor h2 { font-size:18px; }
+  .bg-body { display:flex; flex-direction:column; }
+  .bg-editor .bg-tools { max-height:29dvh; flex-shrink:0; border-right:0; border-bottom:1px solid #d8e2e8; padding:10px; }
+  .bg-editor .bg-tools fieldset { margin-bottom:10px; }
+  .bg-editor .bg-tools p { margin:5px 0; }
+  .bg-view { flex:1; }
+  .bg-actions { width:100%; }
+  .bg-actions button { flex:1; }
+  .bg-status { font-size:11px; }
+}
