@@ -506,7 +506,7 @@
       bgTolerance: 'BG sensitivity',
 
       enhance: 'Enhance resolution 2×',
-      restoreOriginal: 'Restore original',
+      restoreOriginal: 'Restore original canvas',
       editUndone: 'Last image edit undone',
       processingImage: 'Processing image…',
       noImageChange: 'No image changes',
@@ -515,8 +515,10 @@
       enhancedMessage: 'Smooth upscaling applied; print size unchanged. No new detail is restored.',
       imageMemoryLimit: 'Image operation exceeds the memory limit (16 megapixels, 8192 px per side, 256 MiB working budget). Use a smaller source or remove other designs.',
       invalidDesignSize: 'Enter positive design dimensions and a whole quantity from 1 to 10,000.',
-      imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original resets all edits.',
-      sourceQuality: function(w, h, ppi){ return 'Original: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
+      imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original canvas resets all edits and restores the full upload.',
+      sourceQuality: function(w, h, ppi){ return 'Active source: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
+      marginsTrimmed: function(ow, oh, w, h){ return 'Transparent margins trimmed: ' + ow + ' × ' + oh + ' px → ' + w + ' × ' + h + ' px'; },
+      emptyTransparentImage: 'This PNG is completely transparent. Add a PNG with visible artwork instead.',
       bgRemoved: 'Natanggal ang edge background',
       bgNone: 'Walang uniform edge background na natanggal',
       restoredOriginal: 'Naibalik ang original PNG',
@@ -622,7 +624,7 @@
       bgTolerance: 'BG sensitivity',
 
       enhance: 'Enhance resolution 2×',
-      restoreOriginal: 'Restore original',
+      restoreOriginal: 'Restore original canvas',
       editUndone: 'Last image edit undone',
       processingImage: 'Processing image…',
       noImageChange: 'No image changes',
@@ -631,8 +633,10 @@
       enhancedMessage: 'Smooth upscaling applied; print size unchanged. No new detail is restored.',
       imageMemoryLimit: 'Image operation exceeds the memory limit (16 megapixels, 8192 px per side, 256 MiB working budget). Use a smaller source or remove other designs.',
       invalidDesignSize: 'Enter positive design dimensions and a whole quantity from 1 to 10,000.',
-      imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original resets all edits.',
-      sourceQuality: function(w, h, ppi){ return 'Original: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
+      imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original canvas resets all edits and restores the full upload.',
+      sourceQuality: function(w, h, ppi){ return 'Active source: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
+      marginsTrimmed: function(ow, oh, w, h){ return 'Transparent margins trimmed: ' + ow + ' × ' + oh + ' px → ' + w + ' × ' + h + ' px'; },
+      emptyTransparentImage: 'This PNG is completely transparent. Add a PNG with visible artwork instead.',
       bgRemoved: 'Edge background removed',
       bgNone: 'No uniform edge background was removed',
       restoredOriginal: 'Original PNG restored',
@@ -894,6 +898,35 @@
     c.width = w; c.height = h;
     c.getContext('2d').drawImage(img, 0, 0);
     return { canvas: c, w: w, h: h };
+  }
+
+  // Crop only fully transparent outside pixels. Any alpha above zero is artwork,
+  // including anti-aliased edges and soft shadows, so it is never thresholded away.
+  function trimTransparentMargins(sourceCanvas, padding) {
+    var w = sourceCanvas.width, h = sourceCanvas.height;
+    var image = sourceCanvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h);
+    var data = image.data, left = w, top = h, right = -1, bottom = -1;
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        if (data[(y * w + x) * 4 + 3] === 0) continue;
+        if (x < left) left = x;
+        if (x > right) right = x;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+    }
+    if (right < left || bottom < top) throw new Error(t('emptyTransparentImage'));
+    var safePadding = padding == null ? 1 : Math.max(0, Math.floor(padding));
+    left = Math.max(0, left - safePadding); top = Math.max(0, top - safePadding);
+    right = Math.min(w - 1, right + safePadding); bottom = Math.min(h - 1, bottom + safePadding);
+    var cropW = right - left + 1, cropH = bottom - top + 1;
+    var cropRect = { x: left, y: top, w: cropW, h: cropH };
+    if (cropW === w && cropH === h) return { canvas: sourceCanvas, w: w, h: h, cropRect: cropRect, noChange: true };
+    // Copy raw RGBA pixels one-for-one; this intentionally performs no resampling.
+    assertImageBudget(cropW, cropH, 8);
+    var cropped = document.createElement('canvas'); cropped.width = cropW; cropped.height = cropH;
+    cropped.getContext('2d').putImageData(sourceCanvas.getContext('2d', { willReadFrequently: true }).getImageData(left, top, cropW, cropH), 0, 0);
+    return { canvas: cropped, w: cropW, h: cropH, cropRect: cropRect, noChange: false };
   }
 
   // RGBA sources plus one undo state are bounded; never silently downsample.
@@ -1163,8 +1196,8 @@
     sourceInfo.className = 'source-quality';
     function refreshSourceInfo() {
       var ppi = design.widthIn > 0 && design.heightIn > 0 ?
-        Math.round(Math.min(design.originalCanvas.width / design.widthIn, design.originalCanvas.height / design.heightIn)) : '—';
-      sourceInfo.textContent = t('sourceQuality')(design.originalCanvas.width, design.originalCanvas.height, ppi);
+        Math.round(Math.min(design.trimmed.w / design.widthIn, design.trimmed.h / design.heightIn)) : '—';
+      sourceInfo.textContent = t('sourceQuality')(design.trimmed.w, design.trimmed.h, ppi);
       if (design.enhanced) sourceInfo.textContent += ' · ' + t('upscaledPixels') + ': ' + design.trimmed.w + ' × ' + design.trimmed.h;
     }
     refreshSourceInfo();
@@ -1192,11 +1225,12 @@
     undoBtn.disabled = !design.undoImage;
     var restoreBtn = document.createElement('button');
     restoreBtn.className = 'secondary'; restoreBtn.textContent = t('restoreOriginal');
-    restoreBtn.disabled = !design.wasEdited;
+    restoreBtn.disabled = !design.wasEdited && !design.autoTrimApplied;
+    if (design.autoTrimApplied) feedbackEl.textContent = t('marginsTrimmed')(design.originalCanvas.width, design.originalCanvas.height, design.trimmed.w, design.trimmed.h);
     function refreshEdit() {
       thumbImg.src = design.previewUrl;
       undoBtn.disabled = !design.undoImage;
-      restoreBtn.disabled = !design.wasEdited;
+      restoreBtn.disabled = !design.wasEdited && !design.autoTrimApplied;
       enhanceBtn.disabled = !!design.enhanced;
       refreshSourceInfo();
       refreshLayoutAfterImageEdit(design);
@@ -1213,7 +1247,7 @@
     });
     restoreBtn.addEventListener('click', function(){
       updateDesignCanvas(design, { canvas: design.originalCanvas, w: design.originalCanvas.width, h: design.originalCanvas.height });
-      design.enhanced = false; design.wasEdited = false; design.undoImage = null;
+      design.enhanced = false; design.wasEdited = false; design.undoImage = null; design.autoTrimApplied = false;
       feedbackEl.textContent = t('restoredOriginal');
       refreshEdit();
     });
@@ -1347,12 +1381,14 @@
     var sourceUrl = URL.createObjectURL(file);
     var img;
     try { img = await loadImage(sourceUrl); } finally { URL.revokeObjectURL(sourceUrl); }
-    var trimmed = decodeImageCanvas(img);
+    var original = decodeImageCanvas(img);
+    var trimmed = trimTransparentMargins(original.canvas, 1);
     var dpi = parseFloat(dpiInput.value) || 300;
     return {
       id: designIdCounter++, file: file, trimmed: trimmed, aspect: trimmed.w / trimmed.h,
       widthIn: trimmed.w / dpi, heightIn: trimmed.h / dpi, qty: 1, vibrance: 0,
-      previewUrl: thumbnailUrl(trimmed.canvas), originalCanvas: trimmed.canvas,
+      previewUrl: thumbnailUrl(trimmed.canvas), originalCanvas: original.canvas,
+      trimRect: trimmed.cropRect, autoTrimApplied: !trimmed.noChange,
       bgTolerance: 42, wasEdited: false
     };
   }
@@ -1426,7 +1462,7 @@
     }
     var printWIn = Math.max(0.01, p.inst.baseW / (dpiGlobal || 300));
     var printHIn = Math.max(0.01, p.inst.baseH / (dpiGlobal || 300));
-    var ppi = Math.min(design.originalCanvas.width / printWIn, design.originalCanvas.height / printHIn);
+    var ppi = Math.min(design.trimmed.w / printWIn, design.trimmed.h / printHIn);
     var level = ppi < 150 ? 'low' : (ppi < 240 ? 'caution' : 'ok');
     return { level: level, ppi: ppi };
   }

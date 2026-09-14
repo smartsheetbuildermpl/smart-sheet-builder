@@ -24,7 +24,7 @@ for (const [a,b] of [
     const errors=[]; page.on('pageerror', e=>errors.push(e.message));
     // Expose closure internals only in this ephemeral test page, never in production.
     const testSource = source;
-    const hook=`window.testBuilder={get designs(){return designs},get instances(){return instances},get sheets(){return sheets},packSheet,decodeImageCanvas,removeConnectedEdgeBackground,removeTinySpecks,enhanceDesign,drawSheetCanvas,createInstancesForDesign,appendDesignToCurrentLayout,rotatePlacementOnSheet,qualityForPlacement,renderAllDesigns};`;
+    const hook=`window.testBuilder={get designs(){return designs},get instances(){return instances},get sheets(){return sheets},packSheet,decodeImageCanvas,trimTransparentMargins,removeConnectedEdgeBackground,removeTinySpecks,enhanceDesign,drawSheetCanvas,createInstancesForDesign,appendDesignToCurrentLayout,rotatePlacementOnSheet,qualityForPlacement,renderAllDesigns};`;
     const html=testSource.replace(/\}\)\(\);\s*<\/script>/,hook+'})();</script>');
     assert.notEqual(html,testSource,'test hook inserted');
     await page.route('http://localhost:4178/**',route=> {
@@ -59,21 +59,37 @@ for (const [a,b] of [
       const alpha=x=>d.originalCanvas.getContext('2d').getImageData(x,0,1,1).data[3];
       check([alpha(0),alpha(15),alpha(25),alpha(35),alpha(60)].join() === '0,4,80,160,255','upload preserves transparent, faint, soft and opaque alpha');
       const snapshot=d.originalCanvas.toDataURL();
+      check(d.autoTrimApplied && d.trimRect.x===9 && d.trimRect.y===0 && d.trimRect.w===111 && d.trimRect.h===80,'upload trims only outside transparent margins with one-pixel safety padding');
+      check(d.trimmed.w===111 && d.trimmed.h===80 && d.widthIn===1.11 && d.heightIn===0.8,'active crop sets the default 100-PPI print size');
+      check(d.trimmed.canvas.getContext('2d').getImageData(6,0,1,1).data[3]===4,'trim preserves faint non-zero alpha at the active edge');
+      const tight=document.createElement('canvas');tight.width=tight.height=8;
+      const tightImage=tight.getContext('2d').createImageData(8,8);
+      const padded=document.createElement('canvas');padded.width=padded.height=20;
+      const paddedImage=padded.getContext('2d').createImageData(20,20);
+      for(let y=1;y<7;y++)for(let x=1;x<7;x++){
+        const a=(y*8+x)*4,b=((y+6)*20+x+6)*4;
+        [tightImage.data[a],paddedImage.data[b]]=[31,31];[tightImage.data[a+1],paddedImage.data[b+1]]=[92,92];[tightImage.data[a+2],paddedImage.data[b+2]]=[201,201];[tightImage.data[a+3],paddedImage.data[b+3]]=[x===1||y===1?4:255,x===1||y===1?4:255];
+      }
+      tight.getContext('2d').putImageData(tightImage,0,0);padded.getContext('2d').putImageData(paddedImage,0,0);
+      const tightTrim=t.trimTransparentMargins(tight,1), paddedTrim=t.trimTransparentMargins(padded,1);
+      check(tightTrim.noChange && paddedTrim.w===8 && paddedTrim.h===8 && paddedTrim.canvas.toDataURL()===tight.toDataURL(),'tight and padded artwork resolve to the same active canvas without resampling');
+      let emptyRejected=false;try{const empty=document.createElement('canvas');empty.width=empty.height=4;t.trimTransparentMargins(empty,1)}catch(e){emptyRejected=/completely transparent/.test(e.message)}
+      check(emptyRejected,'completely transparent PNGs are rejected before they enter the builder');
       const inst=t.createInstancesForDesign(d,100)[0];
-      check(inst.canvas===d.originalCanvas,'instances reference full source');
-      inst.baseW=30;inst.baseH=20;inst.baseW=120;inst.baseH=80;
+      check(inst.canvas===d.trimmed.canvas,'instances reference the active trimmed source');
+      inst.baseW=30;inst.baseH=20;inst.baseW=111;inst.baseH=80;
       const canvas=document.createElement('canvas');
-      t.drawSheetCanvas(canvas,{widthPx:120,heightPx:80,placements:[{inst,x:0,y:0,w:120,h:80}]});
-      check(canvas.toDataURL()===snapshot,'shrink then enlarge renders identical source pixels without cumulative resampling');
+      t.drawSheetCanvas(canvas,{widthPx:111,heightPx:80,placements:[{inst,x:0,y:0,w:111,h:80}]});
+      check(canvas.toDataURL()===d.trimmed.canvas.toDataURL(),'active cropped source renders without cumulative resampling');
       const blob=await new Promise(r=>canvas.toBlob(r,'image/png'));
       const decoded=await createImageBitmap(blob);
       const output=document.createElement('canvas');output.width=decoded.width;output.height=decoded.height;
       output.getContext('2d').drawImage(decoded,0,0);
-      check(output.toDataURL()===snapshot,'PNG encode/decode retains resolution and all alpha values');
-      const cleaned=t.removeTinySpecks(d.originalCanvas);
-      check(cleaned.noChange && cleaned.canvas.toDataURL()===snapshot,'optional speck cleanup preserves connected soft edges');
+      check(output.toDataURL()===d.trimmed.canvas.toDataURL(),'PNG encode/decode retains the active cropped resolution and all alpha values');
+      const cleaned=t.removeTinySpecks(d.trimmed.canvas);
+      check(cleaned.noChange && d.originalCanvas.toDataURL()===snapshot,'optional speck cleanup preserves connected soft edges without changing the retained original');
       const enhanced=t.enhanceDesign(d);
-      check(enhanced.w===240 && enhanced.h===160,'enhancement doubles both pixel dimensions');
+      check(enhanced.w===222 && enhanced.h===160,'enhancement doubles both active pixel dimensions');
       check(enhanced.canvas.getContext('2d').getImageData(0,0,1,1).data[3]===0,'enhancement retains transparency');
       check(d.originalCanvas.toDataURL()===snapshot,'enhancement leaves original untouched');
       let rejected=false;try{t.enhanceDesign({...d,trimmed:{w:4097,h:4097}})}catch(e){rejected=true}
@@ -92,14 +108,19 @@ for (const [a,b] of [
       return results;
     });
     const card=page.locator('.design-item');
+    assert.match(await card.locator('[role=status]').innerText(),/Transparent margins trimmed: 120 × 80 px → 111 × 80 px/);
     const dims=await page.evaluate(()=>window.testBuilder.designs.map(d=>[d.widthIn,d.heightIn]));
     await card.getByRole('button',{name:'Enhance resolution 2×',exact:true}).click();
     await page.waitForFunction(()=>window.testBuilder.designs[0].enhanced);
     assert.deepEqual(await page.evaluate(()=>window.testBuilder.designs.map(d=>[d.widthIn,d.heightIn])),dims);
     await card.getByRole('button',{name:'Undo',exact:true}).click();
-    assert.equal(await page.evaluate(()=>window.testBuilder.designs[0].trimmed.w),120);
+    assert.equal(await page.evaluate(()=>window.testBuilder.designs[0].trimmed.w),111);
     await card.getByRole('spinbutton',{name:'Width',exact:true}).fill('2');
-    assert.match(await card.locator('.source-quality').innerText(),/60 PPI/);
+    assert.match(await card.locator('.source-quality').innerText(),/55 PPI/);
+    await card.getByRole('button',{name:'Restore original canvas',exact:true}).click();
+    await page.waitForFunction(()=>window.testBuilder.designs[0].trimmed.w===120 && !window.testBuilder.designs[0].autoTrimApplied);
+    assert.equal(await page.evaluate(()=>window.testBuilder.designs[0].trimmed.canvas===window.testBuilder.designs[0].originalCanvas && window.testBuilder.designs[0].trimRect.w===111),true);
+    assert.match(await card.locator('.source-quality').innerText(),/Active source: 120 × 80 px/);
     // Show full card at both widths, with overflow checks against rendered bounds.
     for(const width of [1440,375,320]) {
       await page.setViewportSize({width,height:1100});
@@ -161,11 +182,11 @@ for (const [a,b] of [
       if (!design) throw Error('library design was not routed through the upload path');
       design.widthIn = 1; design.heightIn = 1; design.qty = 1;
       window.testBuilder.appendDesignToCurrentLayout(design);
-      const hasInstance = window.testBuilder.instances.some((item) => item.designId === design.id && item.canvas === design.originalCanvas);
+      const hasInstance = window.testBuilder.instances.some((item) => item.designId === design.id && item.canvas === design.trimmed.canvas);
       const rendered = window.testBuilder.sheets.some((sheet) => sheet.placements.some((placement) => placement.inst.designId === design.id));
-      return { hasInstance, rendered, width: design.originalCanvas.width, height: design.originalCanvas.height };
+      return { hasInstance, rendered, width: design.trimmed.w, height: design.trimmed.h, originalWidth: design.originalCanvas.width, originalHeight: design.originalCanvas.height, trimmed: design.autoTrimApplied };
     }, png);
-    assert.deepEqual(imported, { hasInstance: true, rendered: true, width: 120, height: 80 });
+    assert.deepEqual(imported, { hasInstance: true, rendered: true, width: 111, height: 80, originalWidth: 120, originalHeight: 80, trimmed: true });
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({protectedBlocks:'unchanged',imageTests,ui:'Enhance/Undo, physical size, live PPI, no overflow at 1440/375/320px',libraryImport:'Library PNG passed through the normal source-preserving upload, layout, and render path',layoutTests,pageErrors:errors},null,2));
   }finally{await browser.close()}

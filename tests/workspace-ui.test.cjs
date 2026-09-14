@@ -18,7 +18,7 @@ const output = fs.mkdtempSync(path.join(os.tmpdir(), 'workspace-tests-'));
       await page.goto(baseUrl);
       const png = await page.evaluate(() => {
         const c = document.createElement('canvas'); c.width = 120; c.height = 80;
-        const ctx = c.getContext('2d'); ctx.fillStyle = '#268477'; ctx.beginPath(); ctx.arc(60,40,35,0,2*Math.PI); ctx.fill();
+        const ctx = c.getContext('2d'); ctx.fillStyle = '#268477'; ctx.fillRect(0,0,120,80);
         ctx.fillStyle = '#f4bd59'; ctx.beginPath(); ctx.arc(60,40,14,0,2*Math.PI); ctx.fill();
         return c.toDataURL().split(',')[1];
       });
