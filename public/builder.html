@@ -156,7 +156,7 @@
   }
   .sheet-block { margin-bottom: 24px; }
   .sheet-heading { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
-  .design-item { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 12px; border: 1px solid #e0ddd3; border-radius: 10px; padding: 12px; margin-top: 12px; }
+  .design-item { position:relative; display:grid; grid-template-columns:80px minmax(0,1fr); gap:12px; border:1px solid #e0ddd3; border-radius:12px; padding:14px; margin-top:12px; background:#fffefa; }
   .design-thumb {
     width: 80px; height: 80px; border-radius: 6px;
     background-image:
@@ -168,8 +168,8 @@
     background-color: #f4f3ee; display: flex; align-items: center; justify-content: center; overflow: hidden;
   }
   .design-thumb img { max-width: 100%; max-height: 100%; }
-  .design-fields { grid-column: 1 / -1; min-width: 0; }
-  .design-name { align-self: center; min-width: 0; font-size: 14px; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+  .design-fields { grid-column:1 / -1; min-width:0; }
+  .design-name { align-self:center; min-width:0; padding-right:34px; font-size:14px; font-weight:650; margin:0; overflow-wrap:anywhere; }
   .design-fields .row3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .design-fields input { min-width: 0; }
   .image-note { font-size: 12px; color: #5f6470; line-height: 1.45; margin: 8px 0 12px; }
@@ -186,8 +186,13 @@
   .lock-row { display: flex; align-items: center; font-size: 12px; color: #555; margin: 4px 0 10px; }
   .vibrance-val { font-weight: 600; }
   .empty-hint { font-size: 13px; color: #888; margin-top: 12px; }
-  .item-btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-  .item-btn-row button { width: auto; padding: 8px 10px; min-height: 36px; font-size: 12px; max-width: 100%; }
+  .item-btn-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:0 0 10px; }
+  .item-btn-row button { width:auto; padding:8px 11px; min-height:36px; font-size:12px; max-width:100%; }
+  .item-btn-row .background-edit-btn { background:#163e48; border-color:#163e48; color:#fff; font-weight:650; }
+  .item-btn-row .reset-image-btn { padding:4px 0; min-height:auto; border:0; background:transparent; color:#4b7180; text-decoration:underline; font-size:11px; }
+  .design-remove-x { position:absolute; top:10px; right:10px; display:grid; place-items:center; width:28px !important; min-width:28px; height:28px; min-height:28px !important; padding:0 !important; border:1px solid #d4dde1 !important; border-radius:50% !important; background:#fff !important; color:#49606a !important; font-size:18px !important; line-height:1; }
+  .design-remove-x:hover { border-color:#b74040 !important; background:#fff2f2 !important; color:#a92626 !important; }
+  .design-remove-x:focus-visible,.reset-image-btn:focus-visible { outline:3px solid #139ea6; outline-offset:2px; }
   .source-quality { font-size: 11px; line-height: 1.35; color: #5f6470; margin: 0 0 8px; }
   .bg-tools { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; flex-wrap: wrap; }
   .bg-tools label { margin: 0; font-size: 11px; white-space: nowrap; }
@@ -508,6 +513,10 @@
       bgTolerance: 'BG sensitivity',
 
       enhance: 'Enhance resolution 2×',
+      enhanceCompact: 'Enhance 2×',
+      editBackground: 'Edit Background',
+      resetImage: 'Reset image',
+      resetImageDone: 'Original uploaded image restored',
       restoreOriginal: 'Restore original canvas',
       editUndone: 'Last image edit undone',
       processingImage: 'Processing image…',
@@ -626,6 +635,10 @@
       bgTolerance: 'BG sensitivity',
 
       enhance: 'Enhance resolution 2×',
+      enhanceCompact: 'Enhance 2×',
+      editBackground: 'Edit Background',
+      resetImage: 'Reset image',
+      resetImageDone: 'Original uploaded image restored',
       restoreOriginal: 'Restore original canvas',
       editUndone: 'Last image edit undone',
       processingImage: 'Processing image…',
@@ -1174,25 +1187,16 @@
 
     var btnRow = document.createElement('div');
     btnRow.className = 'item-btn-row';
-    var cleanBtn = document.createElement('button');
-    cleanBtn.textContent = t('clean');
-    cleanBtn.className = 'secondary';
-    btnRow.appendChild(cleanBtn);
     var enhanceBtn = document.createElement('button');
     enhanceBtn.className = 'secondary';
-    enhanceBtn.textContent = t('enhance');
+    enhanceBtn.textContent = t('enhanceCompact');
     enhanceBtn.disabled = !!design.enhanced;
     btnRow.appendChild(enhanceBtn);
 
-    var removeBgBtn = document.createElement('button');
-    removeBgBtn.textContent = t('removeBg');
-    removeBgBtn.className = 'secondary';
-    btnRow.appendChild(removeBgBtn);
-
-    var refineBtn = document.createElement('button');
-    refineBtn.textContent = 'Refine Background'; refineBtn.className = 'secondary';
-    refineBtn.title = 'Select, erase, and restore background areas before applying changes';
-    refineBtn.addEventListener('click', function(){
+    var editBackgroundBtn = document.createElement('button');
+    editBackgroundBtn.textContent = t('editBackground'); editBackgroundBtn.className = 'background-edit-btn';
+    editBackgroundBtn.title = 'Open Magic Wand, brushes, automatic cleanup, and recovery tools';
+    editBackgroundBtn.addEventListener('click', function(){
       try {
         if (!window.openBackgroundEditor) throw new Error('Background Editor could not load. Refresh the page and try again.');
         var pixels = design.trimmed.w * design.trimmed.h;
@@ -1201,6 +1205,12 @@
         window.openBackgroundEditor({
           canvas: design.trimmed.canvas, original: design.originalCanvas, sourceRect: imageSourceRect(design),
           name: design.file.name,
+          autoRemove: function(canvas, tolerance) { return removeConnectedEdgeBackground(canvas, tolerance); },
+          removeTinySpecks: function(canvas) {
+            assertImageBudget(canvas.width, canvas.height, 24);
+            return removeTinySpecks(canvas);
+          },
+          autoTolerance: design.bgTolerance,
           apply: function(canvas) {
             // Prepare everything before publishing the new source. Empty artwork is rejected.
             var result = trimTransparentMargins(canvas, 1), rect = imageSourceRect(design);
@@ -1219,15 +1229,18 @@
         });
       } catch (error) { feedbackEl.textContent = error.message; }
     });
-    btnRow.appendChild(refineBtn);
+    btnRow.insertBefore(editBackgroundBtn, enhanceBtn);
 
     var removeBtn = document.createElement('button');
-    removeBtn.textContent = t('remove');
-    removeBtn.className = 'secondary';
+    removeBtn.type = 'button'; removeBtn.textContent = '×'; removeBtn.className = 'design-remove-x';
+    removeBtn.setAttribute('aria-label', 'Remove ' + design.file.name);
+    removeBtn.title = 'Remove this design';
     removeBtn.addEventListener('click', function(){
+      if (instances.some(function(inst){ return inst.designId === design.id; }) &&
+          !window.confirm('Remove this design and its placed pieces from the layout?')) return;
       removeDesignAndLayout(design);
     });
-    btnRow.appendChild(removeBtn);
+    wrap.appendChild(removeBtn);
 
     fields.appendChild(btnRow);
 
@@ -1246,90 +1259,35 @@
     }
     refreshSourceInfo();
     fields.appendChild(sourceInfo);
-    var note = document.createElement('p');
-    note.className = 'image-note';
-    note.textContent = t('imageToolsNote');
-    fields.appendChild(note);
-
-    var bgTools = document.createElement('div');
-    bgTools.className = 'bg-tools';
-    var toleranceLabel = document.createElement('label');
-    toleranceLabel.textContent = t('bgTolerance') + ': ' + design.bgTolerance;
-    var toleranceInput = document.createElement('input');
-    toleranceInput.id = 'bg-tolerance-' + design.id;
-    toleranceLabel.htmlFor = toleranceInput.id;
-    toleranceInput.type = 'range'; toleranceInput.min = '16'; toleranceInput.max = '110'; toleranceInput.step = '2';
-    toleranceInput.value = design.bgTolerance;
-    toleranceInput.addEventListener('input', function(){
-      design.bgTolerance = parseInt(toleranceInput.value, 10);
-      toleranceLabel.textContent = t('bgTolerance') + ': ' + design.bgTolerance;
-    });
-    var undoBtn = document.createElement('button');
-    undoBtn.className = 'secondary'; undoBtn.textContent = t('undo');
-    undoBtn.disabled = !design.undoImage;
-    var restoreBtn = document.createElement('button');
-    restoreBtn.className = 'secondary'; restoreBtn.textContent = t('restoreOriginal');
-    restoreBtn.disabled = !design.wasEdited && !design.autoTrimApplied;
+    var resetImageBtn = document.createElement('button');
+    resetImageBtn.type = 'button'; resetImageBtn.className = 'reset-image-btn'; resetImageBtn.textContent = t('resetImage');
+    resetImageBtn.title = 'Discard all applied background, cleanup, and enhancement edits';
+    resetImageBtn.style.display = design.wasEdited ? '' : 'none';
     if (design.autoTrimApplied) feedbackEl.textContent = t('marginsTrimmed')(design.originalCanvas.width, design.originalCanvas.height, design.trimmed.w, design.trimmed.h);
     function refreshEdit() {
       thumbImg.src = design.previewUrl;
-      undoBtn.disabled = !design.undoImage;
-      restoreBtn.disabled = !design.wasEdited && !design.autoTrimApplied;
+      resetImageBtn.style.display = design.wasEdited ? '' : 'none';
       enhanceBtn.disabled = !!design.enhanced;
       refreshSourceInfo();
       refreshLayoutAfterImageEdit(design);
     }
-    undoBtn.addEventListener('click', function(){
-      if (!design.undoImage) return;
-      var previous = design.undoImage;
-      updateDesignCanvas(design, { canvas: previous.canvas, w: previous.canvas.width, h: previous.canvas.height });
-      design.enhanced = previous.enhanced;
-      design.wasEdited = previous.wasEdited;
-      design.sourceRect = previous.sourceRect;
-      design.trimRect = previous.trimRect;
-      design.autoTrimApplied = previous.autoTrimApplied;
-      design.undoImage = null;
-      feedbackEl.textContent = t('editUndone');
-      refreshEdit();
-    });
-    restoreBtn.addEventListener('click', function(){
+    resetImageBtn.addEventListener('click', function(){
+      if (!window.confirm('Reset this image? This discards all applied background, cleanup, and enhancement edits.')) return;
       updateDesignCanvas(design, { canvas: design.originalCanvas, w: design.originalCanvas.width, h: design.originalCanvas.height });
       design.enhanced = false; design.wasEdited = false; design.undoImage = null; design.autoTrimApplied = false;
       design.sourceRect = { x: 0, y: 0, w: design.originalCanvas.width, h: design.originalCanvas.height };
-      feedbackEl.textContent = t('restoredOriginal');
+      feedbackEl.textContent = t('resetImageDone');
       refreshEdit();
     });
-    btnRow.appendChild(undoBtn);
-    btnRow.appendChild(restoreBtn);
-    bgTools.appendChild(toleranceLabel); bgTools.appendChild(toleranceInput);
-    fields.appendChild(bgTools);
-    function runEdit(operation, message) {
-      [cleanBtn, enhanceBtn, removeBgBtn, refineBtn, undoBtn, restoreBtn, removeBtn].forEach(function(b){ b.disabled = true; });
-      feedbackEl.textContent = t('processingImage');
-      setTimeout(function(){
-        try {
-          var result = operation();
-          if (result.noChange) { feedbackEl.textContent = t('noImageChange'); return; }
-          design.undoImage = imageUndoState(design);
-          updateDesignCanvas(design, result);
-          if (result.enhanced) design.enhanced = true;
-          design.wasEdited = true;
-          feedbackEl.textContent = message;
-        } catch (err) { feedbackEl.textContent = err.message; }
-        finally {
-          cleanBtn.disabled = removeBgBtn.disabled = refineBtn.disabled = removeBtn.disabled = false;
-          refreshEdit();
-        }
-      }, 20);
-    }
-    cleanBtn.addEventListener('click', function(){ runEdit(function(){
-      assertImageBudget(design.trimmed.w, design.trimmed.h, 24);
-      return removeTinySpecks(design.trimmed.canvas);
-    }, t('cleanedMsg')); });
-    removeBgBtn.addEventListener('click', function(){ runEdit(function(){
-      return removeConnectedEdgeBackground(design.trimmed.canvas, design.bgTolerance);
-    }, t('bgRemoved')); });
-    enhanceBtn.addEventListener('click', function(){ runEdit(function(){ return enhanceDesign(design); }, t('enhancedMessage')); });
+    btnRow.appendChild(resetImageBtn);
+    enhanceBtn.addEventListener('click', function(){
+      try {
+        var result = enhanceDesign(design);
+        design.undoImage = imageUndoState(design);
+        updateDesignCanvas(design, result); design.enhanced = true; design.wasEdited = true;
+        feedbackEl.textContent = t('enhancedMessage'); refreshEdit();
+      } catch (error) { feedbackEl.textContent = error.message; }
+    });
 
     var row = document.createElement('div');
     row.className = 'row3';

@@ -10,6 +10,7 @@
       '<div class="bg-body"><aside class="bg-tools"><fieldset><legend>Tools</legend><button type="button" data-tool="wand" aria-pressed="true">Magic Wand</button><button type="button" data-tool="erase" aria-pressed="false">Erase Brush</button><button type="button" data-tool="restore" aria-pressed="false">Restore Brush</button><button type="button" data-tool="pan" aria-pressed="false">Pan</button></fieldset>' +
       '<fieldset><legend>Magic Wand selection</legend><label>Tolerance <output id="bg-tolerance-value">32</output><input id="bg-tolerance" type="range" min="0" max="255" value="32"></label><label><input id="bg-contiguous" type="checkbox" checked>Contiguous</label><label><input id="bg-antialias" type="checkbox" checked>Anti-alias</label><label>Selection mode<select id="bg-mode"><option value="add">Add to selection</option><option value="subtract">Subtract from selection</option></select></label><button type="button" data-action="erase-selection">Erase selection</button><button type="button" data-action="clear">Clear selection</button></fieldset>' +
       '<fieldset><legend>Brush</legend><label>Brush size (source pixels) <output id="bg-size-value">40</output><input id="bg-size" type="range" min="1" max="500" value="40"></label></fieldset>' +
+      '<fieldset class="bg-advanced"><legend>Advanced cleanup</legend><label>Edge cleanup sensitivity <output id="bg-auto-tolerance-value">42</output><input id="bg-auto-tolerance" type="range" min="16" max="110" step="2" value="42"></label><button type="button" data-action="auto-edge">Auto-remove edge background</button><button type="button" data-action="tiny-specks">Remove tiny specks</button></fieldset>' +
       '<p>Cyan marks selected pixels; it is not part of the image. Click additional colors to select uneven or gradient backgrounds. Erase selection to inspect removal, then use Restore Brush to recover original pixels.</p><p id="bg-history-note"></p></aside>' +
       '<section class="bg-view" aria-label="Image editor"><div class="bg-viewbar"><button type="button" data-action="undo">Undo</button><button type="button" data-action="redo">Redo</button><button type="button" data-action="reset">Reset editor changes</button><button type="button" data-action="out" aria-label="Zoom out">−</button><output id="bg-zoom">100%</output><button type="button" data-action="in" aria-label="Zoom in">+</button><button type="button" data-action="fit">Fit</button><small id="bg-resolution"></small></div><div class="bg-viewport"><div class="bg-stage" tabindex="0" role="application" aria-label="Image editing canvas. Arrow keys move the cursor; Enter uses the selected tool. Use Pan and arrow keys to scroll."><canvas class="bg-image"></canvas><canvas class="bg-overlay"></canvas></div></div></section></div>' +
       '<footer><p class="bg-status" role="status" aria-live="polite">Select a background area to preview a selection. Changes stay here until Apply.</p><div class="bg-actions"><button type="button" data-action="cancel">Cancel</button><button type="button" data-action="apply" class="bg-primary">Apply background removal</button></div></footer>';
@@ -19,6 +20,8 @@
     $('#bg-contiguous').title = 'Select only connected colors; switch off to match similar colors throughout the canvas.';
     $('#bg-antialias').title = 'Feather the selection across near-matching colors instead of using a hard color cutoff.';
     $('#bg-size').title = 'Brush diameter measured in full-resolution image pixels, independent of view zoom.';
+    $('#bg-auto-tolerance').value = String(options.autoTolerance == null ? 42 : options.autoTolerance);
+    $('#bg-auto-tolerance-value').textContent = $('#bg-auto-tolerance').value;
     var stage = $('.bg-stage'), viewport = $('.bg-viewport'), display = $('.bg-image'), overlay = $('.bg-overlay');
     var cursorEl = document.createElement('span'); cursorEl.className = 'bg-cursor'; cursorEl.setAttribute('aria-hidden','true');stage.appendChild(cursorEl);
     var statusEl = $('.bg-status'), closed = false, busy = false, generation = 0, tool = 'wand', zoom = 1;
@@ -147,6 +150,18 @@
       for(var p=0;p<count;p++) pixels.data[p*4+3]=Math.round(pixels.data[p*4+3]*(1-selection[p]/255));
       selection.fill(0);lastWand=null;
     }
+    function cleanup(action, label) {
+      if (busy || !action) return;
+      try {
+        remember();
+        var input = document.createElement('canvas'); input.width = w; input.height = h;
+        input.getContext('2d').putImageData(pixels, 0, 0);
+        var result = action(input);
+        if (!result || result.noChange) { history.pop(); status('No image changes from ' + label + '.'); render(); return; }
+        pixels = result.canvas.getContext('2d', {willReadFrequently:true}).getImageData(0, 0, w, h);
+        selection.fill(0); lastWand = null; status(label + ' applied in the editor. Undo or Reset is available before Apply.'); render();
+      } catch(error) { status(error.message, true); }
+    }
     function dab(at, from) {
       var radius=Number($('#bg-size').value)/2, feather=Math.min(1,radius/2), data=pixels.data;
       for(var y=Math.max(0,Math.floor(at.y-radius));y<=Math.min(h-1,Math.ceil(at.y+radius));y++) {
@@ -205,6 +220,7 @@
     dialog.addEventListener('cancel',function(e){e.preventDefault();close();});
     dialog.querySelectorAll('button[data-tool]').forEach(function(b){b.onclick=function(){tool=b.dataset.tool;stage.dataset.tool=tool;dialog.querySelectorAll('button[data-tool]').forEach(function(t){t.setAttribute('aria-pressed',String(t===b));});render();};});
     $('#bg-size').oninput=function(){$('#bg-size-value').textContent=this.value;drawCursor();};
+    $('#bg-auto-tolerance').oninput=function(){$('#bg-auto-tolerance-value').textContent=this.value;};
     $('#bg-tolerance').oninput=function(){$('#bg-tolerance-value').textContent=this.value;};
     ['#bg-tolerance','#bg-contiguous','#bg-antialias','#bg-mode'].forEach(function(id){$(id).onchange=function(){if(lastWand)wand(lastWand.at,lastWand.base);};});
     button('close').onclick=button('cancel').onclick=close;
@@ -214,6 +230,8 @@
     button('reset').onclick=function(){remember();pixels=options.canvas.getContext('2d').getImageData(0,0,w,h);selection.fill(0);render();status('Returned to the image at editor opening.');};
     button('clear').onclick=function(){remember();selection.fill(0);render();status('Selection cleared.');};
     button('erase-selection').onclick=function(){remember();eraseSelection();render();status('Selected pixels erased in the editor. Restore Brush can recover them.');};
+    button('auto-edge').onclick=function(){cleanup(function(canvas){ return options.autoRemove && options.autoRemove(canvas, Number($('#bg-auto-tolerance').value)); }, 'Automatic edge background cleanup');};
+    button('tiny-specks').onclick=function(){cleanup(function(canvas){ return options.removeTinySpecks && options.removeTinySpecks(canvas); }, 'Tiny speck cleanup');};
     button('apply').onclick=function(){
       try {
         // Apply pending selection to a separate result so a rejected Apply can be corrected.

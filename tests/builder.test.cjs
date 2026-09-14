@@ -110,15 +110,22 @@ for (const [a,b] of [
     const card=page.locator('.design-item');
     assert.match(await card.locator('[role=status]').innerText(),/Transparent margins trimmed: 120 × 80 px → 111 × 80 px/);
     const dims=await page.evaluate(()=>window.testBuilder.designs.map(d=>[d.widthIn,d.heightIn]));
-    await card.getByRole('button',{name:'Enhance resolution 2×',exact:true}).click();
+    assert.equal(await card.getByRole('button',{name:'Edit Background',exact:true}).count(),1);
+    assert.equal(await card.getByRole('button',{name:'Enhance 2×',exact:true}).count(),1);
+    assert.equal(await card.getByRole('button',{name:'Remove BG',exact:true}).count(),0);
+    assert.equal(await card.getByRole('button',{name:'Remove tiny specks',exact:true}).count(),0);
+    assert.equal(await card.getByRole('button',{name:'Undo',exact:true}).count(),0);
+    assert.equal(await card.getByRole('button',{name:'Restore original canvas',exact:true}).count(),0);
+    await card.getByRole('button',{name:'Enhance 2×',exact:true}).click();
     await page.waitForFunction(()=>window.testBuilder.designs[0].enhanced);
     assert.deepEqual(await page.evaluate(()=>window.testBuilder.designs.map(d=>[d.widthIn,d.heightIn])),dims);
-    await card.getByRole('button',{name:'Undo',exact:true}).click();
-    assert.equal(await page.evaluate(()=>window.testBuilder.designs[0].trimmed.w),111);
+    assert.equal(await card.getByRole('button',{name:'Reset image',exact:true}).count(),1);
+    page.once('dialog', dialog=>dialog.accept());
+    await card.getByRole('button',{name:'Reset image',exact:true}).click();
+    await page.waitForFunction(()=>window.testBuilder.designs[0].trimmed.w===120 && !window.testBuilder.designs[0].wasEdited);
+    assert.equal(await card.getByRole('button',{name:'Reset image',exact:true}).count(),0);
     await card.getByRole('spinbutton',{name:'Width',exact:true}).fill('2');
-    assert.match(await card.locator('.source-quality').innerText(),/55 PPI/);
-    await card.getByRole('button',{name:'Restore original canvas',exact:true}).click();
-    await page.waitForFunction(()=>window.testBuilder.designs[0].trimmed.w===120 && !window.testBuilder.designs[0].autoTrimApplied);
+    assert.match(await card.locator('.source-quality').innerText(),/60 PPI/);
     assert.equal(await page.evaluate(()=>window.testBuilder.designs[0].trimmed.canvas===window.testBuilder.designs[0].originalCanvas && window.testBuilder.designs[0].trimRect.w===111),true);
     assert.match(await card.locator('.source-quality').innerText(),/Active source: 120 × 80 px/);
     // Show full card at both widths, with overflow checks against rendered bounds.
@@ -127,10 +134,21 @@ for (const [a,b] of [
       await card.scrollIntoViewIfNeeded();
       const geometry=await card.evaluate(el=>{
         const r=el.getBoundingClientRect();
-        return {overflow:el.scrollWidth>el.clientWidth+1,bad:[...el.querySelectorAll('button,input,p')].filter(c=>{const b=c.getBoundingClientRect();return b.left<r.left-1||b.right>r.right+1}).map(c=>c.textContent),pageOverflow:document.documentElement.scrollWidth>innerWidth};
+        return {overflow:el.scrollWidth>el.clientWidth+1,bad:[...el.querySelectorAll('button,input,p')].filter(c=>{if(!c.getClientRects().length)return false;const b=c.getBoundingClientRect();return b.left<r.left-1||b.right>r.right+1}).map(c=>c.textContent),pageOverflow:document.documentElement.scrollWidth>innerWidth};
       });
       assert.equal(geometry.overflow,false,JSON.stringify(geometry));assert.deepEqual(geometry.bad,[]);assert.equal(geometry.pageOverflow,false);
       await card.screenshot({path:path.join(outputDir, 'card-'+width+'.png')});
+    }
+    await card.getByRole('button',{name:'Enhance 2×',exact:true}).click();
+    await page.waitForFunction(()=>window.testBuilder.designs[0].enhanced);
+    for(const width of [1440,375,320]) {
+      await page.setViewportSize({width,height:1100}); await card.scrollIntoViewIfNeeded();
+      const geometry=await card.evaluate(el=>{
+        const r=el.getBoundingClientRect(), reset=el.querySelector('.reset-image-btn'), close=el.querySelector('.design-remove-x');
+        return {overflow:el.scrollWidth>el.clientWidth+1,resetVisible:!!reset&&reset.getClientRects().length>0,closeLabel:close&&close.getAttribute('aria-label'),bad:[...el.querySelectorAll('button,input,p')].filter(c=>{if(!c.getClientRects().length)return false;const b=c.getBoundingClientRect();return b.left<r.left-1||b.right>r.right+1}).map(c=>c.textContent)};
+      });
+      assert.equal(geometry.overflow,false,JSON.stringify(geometry));assert.equal(geometry.resetVisible,true);assert.match(geometry.closeLabel,/^Remove /);assert.deepEqual(geometry.bad,[]);
+      await card.screenshot({path:path.join(outputDir, 'card-edited-'+width+'.png')});
     }
     const layoutTests=await page.evaluate(()=>{
       const t=window.testBuilder, results=[];

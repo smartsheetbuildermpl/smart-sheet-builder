@@ -33,7 +33,7 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
     const original=await page.evaluate(()=>({active:bgTest.designs[0].trimmed.canvas.toDataURL(),original:bgTest.designs[0].originalCanvas.toDataURL(),size:[bgTest.designs[0].widthIn,bgTest.designs[0].heightIn]}));
     await page.evaluate(()=>{document.getElementById('sheetWidth').value=2;document.getElementById('sheetLength').value=2;bgTest.appendDesignToCurrentLayout(bgTest.designs[0]);});
     const initialLayout=await page.evaluate(()=>smartSheetWorkspace.snapshot());
-    const open=async()=>{await page.getByRole('button',{name:'Refine Background',exact:true}).click();await page.locator('.bg-editor[open]').waitFor();};
+    const open=async()=>{await page.getByRole('button',{name:'Edit Background',exact:true}).click();await page.locator('.bg-editor[open]').waitFor();};
     const editor=page.locator('.bg-editor');
     const act=name=>editor.getByRole('button',{name,exact:true});
     const idle=()=>page.waitForFunction(()=>document.querySelector('.bg-editor').getAttribute('aria-busy')==='false');
@@ -73,6 +73,12 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
     await act('Cancel').click();assert.equal(await editor.count(),0);
     assert.equal(await page.evaluate(()=>bgTest.designs[0].trimmed.canvas.toDataURL()),original.active);
     assert.deepEqual(await page.evaluate(()=>smartSheetWorkspace.snapshot()),initialLayout);
+    await open();
+    assert.equal(await act('Auto-remove edge background').count(),1);
+    assert.equal(await act('Remove tiny specks').count(),1);
+    await act('Auto-remove edge background').click();
+    assert.match(await page.locator('.bg-status').innerText(),/Automatic edge background cleanup/);
+    await act('Cancel').click();
     await open();await act('Magic Wand').click();await slider('#bg-tolerance',0);await clickPixel(10,10);
     await act('Erase selection').click();assert.equal((await rgba(10,10))[3],0);assert.equal(await selected(),0);
     await act('Restore Brush').click();await slider('#bg-size',6);await clickPixel(10,10);assert.equal((await rgba(10,10))[3],255,'restoration after wand deletion');
@@ -111,23 +117,22 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
     // Keyboard focus and Escape; no edits are applied by closing.
     await act('Apply background removal').focus();await page.keyboard.press('Tab');assert(await editor.getByRole('button',{name:'Close Background Editor'}).evaluate(e=>e===document.activeElement));
     await page.keyboard.press('Escape');assert.equal(await editor.count(),0);
-    assert(await page.getByRole('button',{name:'Refine Background',exact:true}).evaluate(e=>e===document.activeElement));
-    await page.getByRole('button',{name:'Undo',exact:true}).click();assert.equal(await page.evaluate(()=>bgTest.designs[0].trimmed.canvas.toDataURL()),original.active,'card Undo restores the pre-editor crop and source');
+    assert(await page.getByRole('button',{name:'Edit Background',exact:true}).evaluate(e=>e===document.activeElement));
     // Actual PNG encoding of the active source preserves alpha.
     assert(await page.evaluate(async()=>{
       const d=bgTest.designs[0],blob=await new Promise(r=>d.trimmed.canvas.toBlob(r,'image/png')),image=await createImageBitmap(blob),c=document.createElement('canvas');c.width=image.width;c.height=image.height;c.getContext('2d').drawImage(image,0,0);return c.toDataURL()===d.trimmed.canvas.toDataURL();
     }));
-    await page.getByRole('button',{name:'Restore original canvas',exact:true}).click();assert.equal(await page.evaluate(()=>bgTest.designs[0].trimmed.canvas.toDataURL()),original.original);
-    await page.getByRole('button',{name:'Enhance resolution 2×',exact:true}).click();await page.waitForFunction(()=>bgTest.designs[0].enhanced);
+    page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'Reset image',exact:true}).click();assert.equal(await page.evaluate(()=>bgTest.designs[0].trimmed.canvas.toDataURL()),original.original,'Reset image restores the untouched upload');
+    await page.getByRole('button',{name:'Enhance 2×',exact:true}).click();await page.waitForFunction(()=>bgTest.designs[0].enhanced);
     await open();await act('Erase Brush').click();await slider('#bg-size',12);const enhancedBefore=await rgba(160,140);await clickPixel(160,140);await act('Restore Brush').click();await clickPixel(160,140);assert.deepEqual(await rgba(160,140),enhancedBefore,'restore mapping also works after 2× enhancement');await act('Cancel').click();
-    await page.getByRole('button',{name:'Restore original canvas',exact:true}).click();
+    page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'Reset image',exact:true}).click();
     // An all-transparent result is rejected in the modal; Cancel still recovers the page.
     await open();await act('Magic Wand').click();await page.locator('#bg-contiguous').uncheck();await slider('#bg-tolerance',255);await clickPixel(30,30);
     await act('Apply background removal').click();assert.equal(await editor.count(),1);assert.match(await page.locator('.bg-status').innerText(),/completely transparent/);await act('Cancel').click();
     assert.equal(await page.evaluate(()=>bgTest.designs[0].trimmed.canvas.toDataURL()),original.original);
     // Large-image failures leave the page and original intact.
     await page.evaluate(()=>{bgTest.designs[0].trimmed.w=8192;bgTest.designs[0].trimmed.h=8192;});
-    await page.getByRole('button',{name:'Refine Background',exact:true}).click();assert.equal(await editor.count(),0);assert.match(await page.locator('.design-item [role=status]').innerText(),/memory limit/);
+    await page.getByRole('button',{name:'Edit Background',exact:true}).click();assert.equal(await editor.count(),0);assert.match(await page.locator('.design-item [role=status]').innerText(),/memory limit/);
     await page.evaluate(()=>{const d=bgTest.designs[0];d.trimmed.w=d.trimmed.canvas.width;d.trimmed.h=d.trimmed.canvas.height;});
     for(const width of [375,320]){
       await page.setViewportSize({width,height:812});await open();
@@ -137,6 +142,10 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
       await page.screenshot({path:path.join(artifacts,'mobile-'+width+'.png')});
       await act('Cancel').click();
     }
+    const remove=page.getByRole('button',{name:/Remove Gradient-background-with-soft-artwork\.png/});
+    page.once('dialog',dialog=>dialog.dismiss());await remove.click();assert.equal(await page.evaluate(()=>bgTest.designs.length),1,'dismissed removal keeps a placed design');
+    page.once('dialog',dialog=>dialog.accept());await remove.click();await page.waitForFunction(()=>bgTest.designs.length===0);
+    assert.equal(await page.evaluate(()=>bgTest.instances.length),0,'accepted removal clears the design and its layout pieces');
     assert.deepEqual(errors,[]);
     console.log('Background editor passed: wand overlay, tolerance, contiguous/global, anti-alias, add/subtract, brush erase/restore, Undo/Redo/reset, Cancel/Apply, crop mapping, original restoration, same export render source with soft transparency, memory rejection, keyboard focus/Escape, and mobile 375/320px. Screenshots: '+artifacts);
   } finally {await browser.close();}
