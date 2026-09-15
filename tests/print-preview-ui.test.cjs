@@ -2,10 +2,9 @@ const assert=require('node:assert/strict');
 const fs=require('node:fs');
 const os=require('node:os');
 const path=require('node:path');
-const crypto=require('node:crypto');
 const {chromium}=require('playwright');
-const script=fs.readFileSync('public/print-optimizer.js','utf8');
-assert.equal(crypto.createHash('sha256').update(script.slice(script.indexOf('  function analyze('),script.indexOf('  // Opt-in only.'))).digest('hex'),'33f94efe500c18794da24ef3e5a372b05b61139675f4c780a2e3a9d74bcae32d','analysis and Lanczos algorithms unchanged by edge-strength work');
+// Exact output parity against the pre-memory-fix implementation is checked in
+// optimizer-memory.test.cjs; scheduling changes intentionally alter code hashes.
 const artifacts=fs.mkdtempSync(path.join(os.tmpdir(),'print-preview-ui-'));
 (async()=>{
   const browser=await chromium.launch({channel:'chrome',headless:true});
@@ -110,6 +109,6 @@ const artifacts=fs.mkdtempSync(path.join(os.tmpdir(),'print-preview-ui-'));
     await start('low');await page.locator('.print-upscale input').check();await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);await page.locator('.print-upscale input').uncheck();await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);
     assert.equal(await page.locator('[data-apply]').innerText(),'Close — no changes');await page.getByRole('button',{name:'Cancel',exact:true}).click();assert.equal(await page.evaluate(()=>previewCase.calls),0);
     assert.deepEqual(errors,[]);
-    console.log(JSON.stringify({checks:'Unchanged processing hash; honest no-op; original/candidate pixels differ; linked lenses; zoom and drag pan; keyboard/draggable swipe; mobile stacking; pre-Apply upscale preview; source immutability; applied candidate equality; Cancel',artifacts},null,2));
+    console.log(JSON.stringify({checks:'Honest no-op; original/candidate pixels differ; linked lenses; zoom and drag pan; keyboard/draggable swipe; mobile stacking; pre-Apply upscale preview; source immutability; applied candidate equality; Cancel',artifacts},null,2));
   }finally{await browser.close();}
 })().catch(error=>{console.error(error);process.exitCode=1;});
