@@ -165,8 +165,28 @@
       finally {if(!closed){busy=false;render();}}
       function visit(p){if(!visited[p]){visited[p]=1;queue[end++]=p;}}
     }
+    function applySelection(target) {
+      var feather=$('#bg-antialias').checked;
+      for(var p=0;p<count;p++) {
+        var amount=selection[p];if(!amount)continue;
+        var boundary=false;
+        // Mask membership, not color similarity, determines removal. Fractional
+        // wand coverage inside the selected background must not leave residue.
+        // Feather only the immediate (one-pixel) unselected foreground border.
+        if(feather&&amount<255){
+          var x=p%w,y=Math.floor(p/w);
+          for(var dy=-1;dy<=1&&!boundary;dy++)for(var dx=-1;dx<=1&&!boundary;dx++){
+            var nx=x+dx,ny=y+dy;
+            if(nx<0||nx>=w||ny<0||ny>=h)continue;
+            var next=ny*w+nx;
+            if(!selection[next]&&pixels.data[next*4+3]>0)boundary=true;
+          }
+        }
+        target[p*4+3]=boundary?Math.round(target[p*4+3]*(1-amount/255)):0;
+      }
+    }
     function eraseSelection() {
-      for(var p=0;p<count;p++) pixels.data[p*4+3]=Math.round(pixels.data[p*4+3]*(1-selection[p]/255));
+      applySelection(pixels.data);
       selection.fill(0);lastWand=null;
     }
     function cleanup(action, label) {
@@ -265,7 +285,7 @@
         // Apply pending selection to a separate result so a rejected Apply can be corrected.
         var result=document.createElement('canvas');result.width=w;result.height=h;
         var output=new ImageData(pixels.data.slice(),w,h);
-        for(var p=0;p<count;p++) output.data[p*4+3]=Math.round(output.data[p*4+3]*(1-selection[p]/255));
+        applySelection(output.data);
         var baseline=options.canvas.getContext('2d').getImageData(0,0,w,h).data;
         if(output.data.every(function(value,index){return value===baseline[index];})){close();return;}
         result.getContext('2d').putImageData(output,0,0);
