@@ -12,6 +12,33 @@
   function canvasFrom(image) {
     var c=document.createElement('canvas');c.width=image.width;c.height=image.height;c.getContext('2d').putImageData(image,0,0);return c;
   }
+  var MEMORY_LIMIT=256*1024*1024,MAX_PIXELS=16*1024*1024;
+  function estimateMemory(w,h,strength,factor,forced) {
+    factor=factor||1;var n=w*h,ow=Math.round(w*factor),oh=Math.round(h*factor),m=ow*oh;
+    // Per-card peak, including the borrowed active canvas. Other cards and
+    // export sheets are not working buffers for this operation.
+    // Dot classification: source + RGBA + visited byte + uint32 queue (13N).
+    // Fringe classification: active + dot candidate + immutable RGBA (12N),
+    // shared flags + distance + queue (6N). Queue/distance are released before
+    // creating the striped output canvas, so they are not counted together.
+    var cleanup=n*(strength==='safe'?13:18);
+    // Resampling: active + cleanup + source RGBA (12N), output RGBA + canvas
+    // (8M), four Float32 horizontal rows and one output/refinement stripe.
+    var resampling=factor>1?12*n+8*m+ow*(4*4*4+128*4)+2*1024*1024:0;
+    // 8 MiB bounded comparison rasters, stripe readback and 16 MiB headroom.
+    return {bytes:Math.max(cleanup,resampling)+24*1024*1024,w:w,h:h,ow:ow,oh:oh,
+      mode:forced?'Force smooth enhance':factor>1?'Optional smooth upscale':({safe:'Safe',balanced:'Balanced',strong:'Strong'}[strength]||'Balanced')+' edge cleanup'};
+  }
+  function checkMemory(w,h,strength,factor,forced) {
+    var estimate=estimateMemory(w,h,strength,factor,forced);
+    if(w>8192||h>8192||estimate.ow>8192||estimate.oh>8192||w*h>MAX_PIXELS||estimate.ow*estimate.oh>MAX_PIXELS||estimate.bytes>MEMORY_LIMIT){
+      throw new Error(estimate.mode+' cannot process '+w+' × '+h+' px'+(factor>1?' at '+factor+'× ('+estimate.ow+' × '+estimate.oh+' px)':'')+
+        ': estimated peak '+Math.ceil(estimate.bytes/1048576)+' MiB; limit 256 MiB, 16,777,216 pixels and 8192 px per side. '+
+        (factor>1?'Turn off optional enhancement to retry cleanup at the original resolution.':'Use a smaller original file, or cancel to keep this image unchanged.'));
+    }
+    return estimate;
+  }
+  function releaseCanvas(canvas,original){if(canvas&&canvas!==original){canvas.width=0;canvas.height=0;}}
   // Eight-connected components preserve diagonals, thin lines, and every soft
   // pixel connected to artwork. Only isolated dots (up to four pixels) well
   // outside the union of larger components are candidates. No alpha threshold.
@@ -46,7 +73,9 @@
         dot.forEach(function(p){data.fill(0,p*4,p*4+4);removed++;});
       }
     });
-    return {canvas:removed?canvasFrom(image):source,removed:removed,bounds:bounds(data,w,h)};
+    var activeBounds=bounds(data,w,h);
+    seen=null;queue=null;dots=null;
+    return {canvas:removed?canvasFrom(image):source,removed:removed,bounds:activeBounds};
   }
   // Source-pixel exterior rings, not a global alpha cutoff. Balanced widens
   // matte detection; Strong also attenuates broad low-alpha blur tails.
@@ -61,7 +90,7 @@
       var count=0;for(var p=0;p<n;p++)if(data[p*4+3])count++;
       return {canvas:source,cleaned:0,removed:0,reduced:0,before:count,after:count,strength:strength};
     }
-    var seen=new Uint8Array(n),distance=new Uint8Array(n),queue=new Uint32Array(n),changes=new Uint8Array(n);
+    var seen=new Uint8Array(n),distance=new Uint8Array(n),queue=new Uint32Array(n);
     var end=0,cleaned=0,removed=0,reduced=0,before=0;
     async function pause(){await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.');}
     function visit(p){if(!seen[p]&&data[p*4+3]===0){seen[p]=1;queue[end++]=p;}}
@@ -145,7 +174,6 @@
         return mix>=cfg.mix&&mix<=1.1&&color.every(function(c,i){return Math.abs(c-(ref[i]+Math.min(1,mix)*v[i]))<=cfg.residual;});
       });
     }
-    var output=null;
     for(var seed=0;seed<n;seed++){
       if(seed%65536===0)await pause();
       var alpha=data[seed*4+3];if(seen[seed]||!alpha||alpha>cfg.maxAlpha)continue;
@@ -163,36 +191,55 @@
         if(distance[p]<=cfg.radius&&!fineFeature(p)){
           var ref=reference(p);
           var tail=strong&&distance[p]>=4&&data[p*4+3]<=64&&ref&&ref.every(function(c,k){return Math.abs(data[p*4+k]-c)<=32;});
-          if(ref&&(matteMatch(p,ref)||tail)){changes[p]=1;matches++;}
+          if(ref&&(matteMatch(p,ref)||tail)){seen[p]|=4;matches++;}
         }
         if(i%16384===0)await pause();
       }
       // Isolated low-alpha highlights are too ambiguous for automatic removal.
       if(matches<3)continue;
-      if(!output)output=new ImageData(new Uint8ClampedArray(data),w,h);
       for(var i=0;i<end;i++){
-        var p=queue[i];if(!changes[p])continue;var at=p*4,ref=reference(p);
-        if(data[at+3]<=cfg.removeAlpha||(strong&&distance[p]>=4)){output.data.fill(0,at,at+4);removed++;}
-        else {
-          // Reduce fringe coverage, then unmatte toward the coherent support
-          // color. This also prevents repeated Optimize from eroding it again.
-          output.data[at+3]=Math.round(data[at+3]*cfg.retain);
-          for(var c=0;c<3;c++)output.data[at+c]=Math.round(ref[c]);
-          reduced++;
-        }
+        var p=queue[i];if(!(seen[p]&4))continue;
+        seen[p]|=8;
+        if(data[p*4+3]<=cfg.removeAlpha||(strong&&distance[p]>=4)){seen[p]|=16;removed++;}else reduced++;
         cleaned++;if(i%16384===0)await pause();
       }
     }
-    return {canvas:cleaned?canvasFrom(output):source,cleaned:cleaned,removed:removed,reduced:reduced,before:before,after:before-removed,strength:strength};
+    // Classification is complete before writing any pixels. Stream output in
+    // stripes from the same immutable source, preserving cross-stripe support.
+    var output=null;
+    try {
+      queue=null;distance=null;
+      if(cleaned){
+        output=document.createElement('canvas');output.width=w;output.height=h;
+        var ctx=output.getContext('2d');
+        for(var y=0;y<h;y+=128){
+          var rows=Math.min(128,h-y),stripe=new ImageData(new Uint8ClampedArray(data.subarray(y*w*4,(y+rows)*w*4)),w,rows);
+          for(var p=y*w;p<(y+rows)*w;p++)if(seen[p]&8){
+            var at=(p-y*w)*4,ref=reference(p);
+            // The removal decision was retained in the shared flag byte.
+            if(seen[p]&16)stripe.data.fill(0,at,at+4);
+            else {stripe.data[at+3]=Math.round(data[p*4+3]*cfg.retain);for(var c=0;c<3;c++)stripe.data[at+c]=Math.round(ref[c]);}
+          }
+          ctx.putImageData(stripe,0,y);stripe=null;await pause();
+        }
+      }
+      return {canvas:output||source,cleaned:cleaned,removed:removed,reduced:reduced,before:before,after:before-removed,strength:strength};
+    }catch(error){releaseCanvas(output,source);throw error;}
   }
   async function prepare(source,cancelled,strength){
-    var dots=await clean(source,cancelled),edge=await cleanFringe(dots.canvas,cancelled,strength);
-    return {canvas:edge.canvas,removed:dots.removed,skipped:dots.skipped,fringe:edge};
+    var dots=await clean(source,cancelled),edge;
+    try {edge=await cleanFringe(dots.canvas,cancelled,strength);return {canvas:edge.canvas,removed:dots.removed,skipped:dots.skipped,fringe:edge};}
+    finally {if(!edge||edge.canvas!==dots.canvas)releaseCanvas(dots.canvas,source);}
   }
   function analyze(source,widthIn,heightIn,nativeScale) {
     if(!Number.isFinite(widthIn)||!Number.isFinite(heightIn)||widthIn<=0||heightIn<=0)throw new Error('Enter a valid print width and height before optimizing.');
-    var image=source.getContext('2d',{willReadFrequently:true}).getImageData(0,0,source.width,source.height);
-    var b=bounds(image.data,source.width,source.height);
+    var b={x:source.width,y:source.height,right:-1,bottom:-1};
+    for(var y=0;y<source.height;y+=128){
+      var rows=Math.min(128,source.height-y),data=source.getContext('2d',{willReadFrequently:true}).getImageData(0,y,source.width,rows).data;
+      for(var p=0;p<source.width*rows;p++)if(data[p*4+3]){var x=p%source.width,py=y+Math.floor(p/source.width);b.x=Math.min(b.x,x);b.y=Math.min(b.y,py);b.right=Math.max(b.right,x);b.bottom=Math.max(b.bottom,py);}
+    }
+    if(b.right<0)throw new Error('The image is completely transparent.');
+    b.w=b.right-b.x+1;b.h=b.bottom-b.y+1;
     // Artwork occupies this fraction of the selected canvas print size. Empty
     // margins do not invent extra available detail or silently change sizing.
     var physical={w:widthIn*b.w/source.width,h:heightIn*b.h/source.height};
@@ -208,37 +255,48 @@
   }
   async function upscale(source,factor,progress,cancelled) {
     var w=source.width,h=source.height,ow=Math.round(w*factor),oh=Math.round(h*factor);
-    if(factor<=1||factor>2||ow>8192||oh>8192||ow*oh>16000000)throw new Error('Smooth upscale exceeds the 2× / 16-megapixel limit. Use a smaller print size or a higher-resolution original.');
+    if(factor<=1||factor>2)throw new Error('Smooth upscale supports factors above 1 and at most 2×.');
+    checkMemory(w,h,'balanced',factor,false);
     var data=source.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h).data;
-    var horizontal=new Float32Array(ow*h*4),wx=weights(w,ow),wy=weights(h,oh);
+    var horizontal=new Map(),wx=weights(w,ow),wy=weights(h,oh);
     // Premultiplied alpha prevents hidden black/white RGB from bleeding into
     // colored edges. Filter color and alpha together, then unpremultiply once.
-    for(var y=0;y<h;y++) {
+    function horizontalRow(y) {
+      if(horizontal.has(y))return horizontal.get(y);
+      var row=new Float32Array(ow*4);
       for(var x=0;x<ow;x++) {
-        var at=(y*ow+x)*4;
-        wx[x].forEach(function(v){var i=(y*w+v[0])*4,a=data[i+3]/255;horizontal[at]+=data[i]*a*v[1];horizontal[at+1]+=data[i+1]*a*v[1];horizontal[at+2]+=data[i+2]*a*v[1];horizontal[at+3]+=data[i+3]*v[1];});
+        var at=x*4;
+        wx[x].forEach(function(v){var i=(y*w+v[0])*4,a=data[i+3]/255;row[at]+=data[i]*a*v[1];row[at+1]+=data[i+1]*a*v[1];row[at+2]+=data[i+2]*a*v[1];row[at+3]+=data[i+3]*v[1];});
       }
-      if(y%32===0){if(progress)progress('Smooth upscale: '+Math.round(y/h*50)+'%');await new Promise(function(r){setTimeout(r,0);});}
-      if(cancelled&&cancelled())throw new Error('Cancelled.');
+      horizontal.set(y,row);return row;
     }
     var output=new ImageData(ow,oh);
     for(var y=0;y<oh;y++) {
+      // Retain only the four source rows supporting this output row. The
+      // weights, Float32 rounding and summation order are unchanged.
+      var needed=new Set(wy[y].map(function(v){return v[0];}));
+      horizontal.forEach(function(_,key){if(!needed.has(key))horizontal.delete(key);});
+      var support=wy[y].map(function(v){return [horizontalRow(v[0]),v[1]];});
       for(var x=0;x<ow;x++) {
         var values=[0,0,0,0],at=(y*ow+x)*4;
-        wy[y].forEach(function(v){var i=(v[0]*ow+x)*4;for(var c=0;c<4;c++)values[c]+=horizontal[i+c]*v[1];});
+        support.forEach(function(v){var i=x*4;for(var c=0;c<4;c++)values[c]+=v[0][i+c]*v[1];});
         var alpha=Math.max(0,Math.min(255,values[3]));output.data[at+3]=alpha;
         if(output.data[at+3]) for(var c=0;c<3;c++)output.data[at+c]=Math.max(0,Math.min(255,values[c]*255/Math.max(.0001,values[3])));
       }
-      if(y%32===0){if(progress)progress('Smooth upscale: '+Math.round(50+y/oh*50)+'%');await new Promise(function(r){setTimeout(r,0);});}
+      if(y%32===0){if(progress)progress('Smooth upscale: '+Math.round(y/oh*100)+'%');await new Promise(function(r){setTimeout(r,0);});}
       if(cancelled&&cancelled())throw new Error('Cancelled.');
     }
-    return canvasFrom(output);
+    horizontal.clear();data=null;return canvasFrom(output);
   }
   // Opt-in only. Keep Auto's existing resampler and cleanup unchanged.
   async function forceEnhance(source,progress,cancelled) {
+    checkMemory(source.width,source.height,'balanced',2,true);
     var result=await upscale(source,2,progress,cancelled),w=source.width,h=source.height,ow=result.width,oh=result.height;
+    var finalCanvas=null,complete=false;
+    try {
     var input=source.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h).data;
     var image=result.getContext('2d',{willReadFrequently:true}).getImageData(0,0,ow,oh),data=image.data;
+    releaseCanvas(result,source);result=null;
     // Constrain Lanczos lobes to the local source envelope. Transparent RGB is
     // never a color reference; alpha cannot ring beyond the adjacent coverage.
     for(var y=0;y<oh;y++){
@@ -254,10 +312,15 @@
       }
       if(y%64===0){if(progress)progress('Constraining edge overshoot: '+Math.round(y/oh*100)+'%');await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.');}
     }
-    var snapshot=new Uint8ClampedArray(data);
+    input=null;
+    var snapshot=data;
+    finalCanvas=document.createElement('canvas');finalCanvas.width=ow;finalCanvas.height=oh;
+    var finalContext=finalCanvas.getContext('2d',{willReadFrequently:true});
     // Bounded unsharp refinement, only in low-contrast fully opaque interiors.
     // Never sharpen alpha or transparent/colored high-contrast boundaries.
-    for(var y=1;y<oh-1;y++){
+    for(var top=0;top<oh;top+=128){
+      var rows=Math.min(128,oh-top),stripe=new ImageData(new Uint8ClampedArray(snapshot.subarray(top*ow*4,(top+rows)*ow*4)),ow,rows);
+    for(var y=Math.max(1,top);y<Math.min(oh-1,top+rows);y++){
       for(var x=1;x<ow-1;x++){
         var at=(y*ow+x)*4,lo=[255,255,255],hi=[0,0,0],sum=[0,0,0],safe=true;
         for(var dy=-1;dy<=1;dy++)for(var dx=-1;dx<=1;dx++){
@@ -266,14 +329,16 @@
         }
         if(safe&&hi.every(function(v,c){return v-lo[c]<=24;}))for(var c=0;c<3;c++){
           var delta=Math.max(-2,Math.min(2,.12*(snapshot[at+c]-sum[c]/9)));
-          data[at+c]=Math.max(lo[c],Math.min(hi[c],snapshot[at+c]+delta));
+          stripe.data[at-top*ow*4+c]=Math.max(lo[c],Math.min(hi[c],snapshot[at+c]+delta));
         }
       }
       if(y%64===0){if(progress)progress('Mild edge refinement: '+Math.round(y/oh*100)+'%');await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.');}
     }
+      finalContext.putImageData(stripe,0,top);stripe=null;
+    }
     // Keep the candidate readback stable across comparison and Apply.
-    var finalCanvas=document.createElement('canvas');finalCanvas.width=ow;finalCanvas.height=oh;
-    finalCanvas.getContext('2d',{willReadFrequently:true}).putImageData(image,0,0);return finalCanvas;
+    complete=true;return finalCanvas;
+    } finally {releaseCanvas(result,source);if(!complete)releaseCanvas(finalCanvas,source);}
   }
   async function open(options) {
     if(document.querySelector('.print-optimizer'))return;
@@ -291,11 +356,17 @@
       '<p class="print-detail">Scroll or drag to pan both views. Hover or tap to inspect matching pixels; press Enter in a pane to inspect its center. Zoom uses optimized pixels, aligned to the same print area. Smooth upscale does not restore lost detail.</p>',
       '<div class="print-toolbar"><div role="group" aria-label="Comparison mode"><button type="button" data-mode="side" aria-pressed="true">Side by side</button><button type="button" data-mode="swipe" aria-pressed="false">Swipe compare</button></div><div role="group" aria-label="Preview zoom"><button type="button" data-fit aria-pressed="true">Fit</button><button type="button" data-inspect="1" aria-pressed="false">100%</button><button type="button" data-inspect="2" aria-pressed="false">200%</button><button type="button" data-inspect="4" aria-pressed="false">400%</button></div></div>',
       '<div class="print-comparison"></div>',
-      '<footer><button type="button" data-undo>Undo last optimization</button><button type="button" data-cancel>Cancel</button><button type="button" data-apply disabled>Apply optimization</button></footer>'
+      '<footer><button type="button" data-undo>Undo last optimization</button><button type="button" data-retry hidden>Retry optimization</button><button type="button" data-cancel>Cancel</button><button type="button" data-apply disabled>Apply optimization</button></footer>'
     ].join('');
     var $=function(s){return dialog.querySelector(s);},status=$('.print-result'),checkbox=$('.print-upscale input'),apply=$('[data-apply]'),strength=$('[data-edge-strength]'),enhancement=$('[data-enhancement]');
     var comparison=createComparison($('.print-comparison'));
-    function close(){closed=true;comparison.destroy();dialog.close();dialog.remove();if(prior&&prior.isConnected)prior.focus({preventScroll:true});}
+    var adopted=false;
+    function discard(){
+      var owned=new Set([candidate,cleanup&&cleanup.canvas,cleanup&&cleanup.fringe.canvas]);
+      owned.forEach(function(c){if(!(adopted&&c===candidate))releaseCanvas(c,original);});
+      candidate=null;cleanup=null;
+    }
+    function close(){closed=true;comparison.destroy();if(!busy)discard();dialog.close();dialog.remove();if(prior&&prior.isConnected)prior.focus({preventScroll:true});}
     function cancelled(){return closed;}
     function message(text){if(!closed)status.textContent=text;}
     function sourceSummary(){return (info.ppi<300?'Low source quality: ':'Print-ready: effective source ')+Math.round(info.ppi)+' PPI.'+(info.ppi>=300?' No upscale needed.':' A higher-resolution original gives better detail.');}
@@ -312,38 +383,34 @@
       return result;
     }
     function ready(){busy=false;strength.disabled=false;enhancement.disabled=false;checkbox.disabled=enhancement.value==='force'||info.ppi>=300||options.enhanced;apply.disabled=false;apply.textContent=changed?'Apply optimization':'Close — no changes';message(summary());}
-    async function preparePreview(){
-      busy=true;apply.disabled=true;apply.textContent='Apply optimization';checkbox.disabled=true;strength.disabled=true;enhancement.disabled=true;
+    async function regenerateCleanup(){
+      busy=true;changed=false;apply.disabled=true;apply.textContent='Apply optimization';checkbox.disabled=true;strength.disabled=true;enhancement.disabled=true;
+      $('[data-retry]').hidden=true;comparison.clear();discard();
       try {
-        factor=enhancement.value==='force'?2:(checkbox.checked&&info.ppi<300&&!options.enhanced?Math.min(2,300/info.rasterPpi):1);
+        if(!Number.isFinite(options.widthIn)||!Number.isFinite(options.heightIn)||options.widthIn<=0||options.heightIn<=0)throw new Error('Enter a valid print width and height before optimizing.');
+        var rasterPpi=Math.min(original.width/options.widthIn,original.height/options.heightIn),ppi=rasterPpi/(options.nativeScale||1);
+        factor=enhancement.value==='force'?2:(checkbox.checked&&ppi<300&&!options.enhanced?Math.max(1,Math.min(2,300/rasterPpi)):1);
+        var estimate=checkMemory(original.width,original.height,strength.value,factor,enhancement.value==='force');
+        dialog.dataset.estimatedPeakBytes=estimate.bytes;
+        message('Preparing '+strength.options[strength.selectedIndex].text+' edge cleanup at '+original.width+' × '+original.height+' px…');
+        // Every mode starts from the session original, never from a previously
+        // cleaned preview. Switching strengths cannot accumulate erasure.
+        cleanup=await prepare(original,cancelled,strength.value);if(closed)return;
+        info=analyze(cleanup.canvas,options.widthIn,options.heightIn,options.nativeScale);
         candidate=cleanup.canvas;
         if(factor>1){
-          options.budget(Math.round(original.width*factor),Math.round(original.height*factor),enhancement.value==='force'?40:32);
-          message('Preparing smooth-upscaled preview…');
           candidate=enhancement.value==='force'?await forceEnhance(cleanup.canvas,message,cancelled):await upscale(cleanup.canvas,factor,message,cancelled);
+          releaseCanvas(cleanup.canvas,original);cleanup.canvas=candidate;cleanup.fringe.canvas=candidate;
         }
         if(closed)return;
         changed=!(await samePreviewPixels(original,candidate,cancelled));if(closed)return;
         comparison.setImages(original,candidate);ready();
       }catch(error){
-        if(closed)return;
-        // A failed preview is never applied. Revert to the already prepared
-        // cleanup candidate, keeping Cancel and the opt-in control usable.
-        checkbox.checked=false;enhancement.value='auto';factor=1;candidate=cleanup.canvas;
-        changed=!(await samePreviewPixels(original,candidate,cancelled));if(closed)return;
-        comparison.setImages(original,candidate);ready();message(error.message+' '+summary());
-      }
-    }
-    async function regenerateCleanup(){
-      busy=true;apply.disabled=true;checkbox.disabled=true;strength.disabled=true;enhancement.disabled=true;
-      message('Preparing '+strength.options[strength.selectedIndex].text+' edge cleanup…');
-      try {
-        // Every mode starts from the session original, never from a previously
-        // cleaned preview. Switching strengths cannot accumulate erasure.
-        cleanup=await prepare(original,cancelled,strength.value);if(closed)return;
-        info=analyze(cleanup.canvas,options.widthIn,options.heightIn,options.nativeScale);
-        await preparePreview();
-      }catch(error){if(!closed){strength.disabled=false;enhancement.disabled=false;message(error.message);}}
+        discard();comparison.clear();
+        if(!closed){busy=false;strength.disabled=false;enhancement.disabled=false;checkbox.disabled=enhancement.value==='force'||options.enhanced;
+          apply.disabled=true;$('[data-retry]').hidden=false;
+          message('Optimization failed: '+error.message+' Nothing was applied. Retry, change the selected option, or Cancel.');}
+      }finally{if(closed){busy=false;discard();}}
     }
     $('[data-close]').onclick=$('[data-cancel]').onclick=close;
     dialog.oncancel=function(e){e.preventDefault();close();};
@@ -352,16 +419,13 @@
     dialog.querySelectorAll('[data-mode]').forEach(function(button){button.onclick=function(){comparison.setMode(button.dataset.mode);dialog.querySelectorAll('[data-mode]').forEach(function(b){b.setAttribute('aria-pressed',String(b===button));});};});
     $('[data-undo]').disabled=!options.canUndo;
     $('[data-undo]').onclick=function(){options.undo();close();};
-    checkbox.onchange=preparePreview;
-    enhancement.onchange=preparePreview;
+    checkbox.onchange=regenerateCleanup;
+    enhancement.onchange=regenerateCleanup;
     strength.onchange=regenerateCleanup;
-    apply.onclick=function(){if(busy)return;if(changed)options.apply(candidate,factor,cleanup.removed,summary());close();};
+    $('[data-retry]').onclick=regenerateCleanup;
+    apply.onclick=function(){if(busy||apply.disabled)return;if(changed){options.apply(candidate,factor,cleanup.removed,summary());adopted=true;}close();};
     document.body.appendChild(dialog);dialog.showModal();$('[data-close]').focus();
-    try {
-      options.budget(original.width,original.height,36);
-      comparison.setImages(original,original);
-      await regenerateCleanup();
-    }catch(error){if(!closed)message(error.message);}
+    await regenerateCleanup();
   }
   // UI only: both rasters keep their own pixels. Geometry is normalized to the
   // candidate's pixel grid so images with different resolutions align in print.
@@ -370,17 +434,15 @@
       '<section class="print-after"><h3>Optimized preview <small data-candidate-size></small></h3><div class="print-viewport" tabindex="0" role="region" aria-label="Optimized preview; pan linked to original"><div class="print-surface"><canvas class="print-image"></canvas></div></div></section>',
       '<div class="print-divider" role="slider" tabindex="0" aria-label="Swipe comparison divider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span>↔</span></div>'].join('');
     var panes=Array.from(root.querySelectorAll('.print-viewport')),surfaces=Array.from(root.querySelectorAll('.print-surface')),canvases=Array.from(root.querySelectorAll('.print-image'));
-    var divider=root.querySelector('.print-divider'),images=null,zoom=0,scale=1,split=50,mode='side',point=null,drag=null,closed=false,scrollLock=false;
+    var divider=root.querySelector('.print-divider'),images=null,zoom=0,scale=1,split=50,mode='side',point=null,drag=null,closed=false,scrollLock=false,layout=[];
     var lenses=panes.map(function(p){var lens=document.createElement('div');lens.className='print-lens';lens.hidden=true;lens.innerHTML='<canvas width="128" height="128"></canvas><output></output>';p.parentNode.appendChild(lens);return lens;});
     function activePanes(){return mode==='swipe'?[panes[0]]:panes;}
     function clip(){
-      if(mode!=='swipe')return;
-      var p=panes[0],left=p.scrollLeft+p.clientWidth*split/100-parseFloat(canvases[1].style.left||0);
-      var width=parseFloat(canvases[1].style.width),cut=Math.max(0,Math.min(width,left));
+      if(mode!=='swipe'||!images)return;
+      var p=panes[0];
       // Complementary clips are essential: a transparent optimized pixel must
       // reveal the checkerboard, never the original pixel underneath it.
-      canvases[0].style.clipPath='inset(0 '+(width-cut)+'px 0 0)';
-      canvases[1].style.clipPath='inset(0 0 0 '+cut+'px)';
+      canvases.forEach(function(c,i){var width=parseFloat(c.style.width),left=p.scrollLeft+p.clientWidth*split/100-parseFloat(c.style.left||0),cut=Math.max(0,Math.min(width,left));c.style.clipPath=i?'inset(0 0 0 '+cut+'px)':'inset(0 '+(width-cut)+'px 0 0)';});
       divider.style.left=(p.offsetLeft+p.clientWidth*split/100)+'px';divider.style.top=p.offsetTop+'px';divider.style.height=p.clientHeight+'px';
       divider.setAttribute('aria-valuenow',String(Math.round(split)));
     }
@@ -390,8 +452,8 @@
       point={u:u,v:v};
       lenses.forEach(function(l,i){
         var viewport=mode==='swipe'?panes[0]:panes[i],c=canvases[i],display=canvases[0];
-        var px=parseFloat(display.style.left)+u*parseFloat(display.style.width)-viewport.scrollLeft;
-        var py=parseFloat(display.style.top)+v*parseFloat(display.style.height)-viewport.scrollTop;
+        var px=layout[i].left+u*layout[i].width-viewport.scrollLeft;
+        var py=layout[i].top+v*layout[i].height-viewport.scrollTop;
         // In swipe mode the two lenses sit together inside the visible pane.
         if(mode==='swipe'&&l.parentNode!==panes[0].parentNode)panes[0].parentNode.appendChild(l);
         if(mode==='side'&&l.parentNode!==panes[i].parentNode)panes[i].parentNode.appendChild(l);
@@ -408,7 +470,24 @@
         l.dataset.u=u;l.dataset.v=v;l.hidden=false;
       });
     }
-    function atPointer(e,i){var r=canvases[mode==='swipe'?0:i].getBoundingClientRect();inspect((e.clientX-r.left)/r.width,(e.clientY-r.top)/r.height);}
+    function atPointer(e,i){if(!images)return;var index=mode==='swipe'?0:i,r=surfaces[index].getBoundingClientRect(),l=layout[index];inspect((e.clientX-r.left-l.left)/l.width,(e.clientY-r.top-l.top)/l.height);}
+    function renderVisible(){
+      if(!images||closed)return;
+      images.forEach(function(im,i){
+        if(im.width<=1024&&im.height<=1024)return;
+        var c=canvases[i],p=mode==='swipe'?panes[0]:panes[i],l=layout[i];
+        var x=Math.max(0,p.scrollLeft-l.left),y=Math.max(0,p.scrollTop-l.top);
+        var width=Math.max(1,Math.min(l.width-x,p.clientWidth)),height=Math.max(1,Math.min(l.height-y,p.clientHeight));
+        // A bounded viewport tile, never a full-size comparison clone. At
+        // inspection zoom draw directly from the full-resolution source.
+        var density=Math.min(1,1024/width,1024/height);
+        c.width=Math.max(1,Math.ceil(width*density));c.height=Math.max(1,Math.ceil(height*density));
+        c.style.width=width+'px';c.style.height=height+'px';c.style.left=(l.left+x)+'px';c.style.top=(l.top+y)+'px';
+        var ctx=c.getContext('2d');ctx.imageSmoothingEnabled=!zoom;ctx.imageSmoothingQuality='high';
+        ctx.drawImage(im,x/l.width*im.width,y/l.height*im.height,width/l.width*im.width,height/l.height*im.height,0,0,c.width,c.height);
+        c.dataset.sourceX=x/l.width*im.width;c.dataset.sourceY=y/l.height*im.height;
+      });
+    }
     function geometry(){
       if(!images||closed)return;
       var active=activePanes(),w=images[1].width,h=images[1].height;
@@ -416,11 +495,11 @@
       if(next<=0)return;
       var x=panes[0].scrollLeft/scale,y=panes[0].scrollTop/scale;scale=next;
       surfaces.forEach(function(s,i){var p=mode==='swipe'?panes[0]:panes[i];s.style.width=Math.max(w*scale,p.clientWidth)+'px';s.style.height=Math.max(h*scale,p.clientHeight)+'px';});
-      canvases.forEach(function(c,i){var p=mode==='swipe'?panes[0]:panes[i];c.style.width=w*scale+'px';c.style.height=h*scale+'px';c.style.left=Math.max(0,(p.clientWidth-w*scale)/2)+'px';c.style.top=Math.max(0,(p.clientHeight-h*scale)/2)+'px';c.classList.toggle('actual-pixels',!!zoom);});
-      panes.forEach(function(p){p.scrollLeft=x*scale;p.scrollTop=y*scale;});clip();hideLens();
+      canvases.forEach(function(c,i){var p=mode==='swipe'?panes[0]:panes[i];layout[i]={width:w*scale,height:h*scale,left:Math.max(0,(p.clientWidth-w*scale)/2),top:Math.max(0,(p.clientHeight-h*scale)/2)};c.style.width=w*scale+'px';c.style.height=h*scale+'px';c.style.left=layout[i].left+'px';c.style.top=layout[i].top+'px';c.classList.toggle('actual-pixels',!!zoom);});
+      panes.forEach(function(p){p.scrollLeft=x*scale;p.scrollTop=y*scale;});renderVisible();clip();hideLens();
     }
     panes.forEach(function(p,i){
-      p.onscroll=function(){if(!scrollLock&&mode==='side'){scrollLock=true;panes[1-i].scrollLeft=p.scrollLeft;panes[1-i].scrollTop=p.scrollTop;scrollLock=false;}clip();hideLens();};
+      p.onscroll=function(){if(!scrollLock&&mode==='side'){scrollLock=true;panes[1-i].scrollLeft=p.scrollLeft;panes[1-i].scrollTop=p.scrollTop;scrollLock=false;}renderVisible();clip();hideLens();};
       p.onpointerdown=function(e){if(e.button!==0)return;drag={id:e.pointerId,x:e.clientX,y:e.clientY,left:p.scrollLeft,top:p.scrollTop};p.setPointerCapture(e.pointerId);atPointer(e,i);};
       p.onpointermove=function(e){if(drag&&drag.id===e.pointerId){p.scrollLeft=drag.left+drag.x-e.clientX;p.scrollTop=drag.top+drag.y-e.clientY;}atPointer(e,i);};
       p.onpointerup=p.onpointercancel=function(){drag=null;};p.onpointerleave=function(e){if(!drag&&e.pointerType!=='touch')hideLens();};
@@ -431,16 +510,18 @@
     divider.onpointermove=function(e){if(divider.hasPointerCapture(e.pointerId))moveDivider(e);};
     divider.onkeydown=function(e){if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();split=e.key==='Home'?0:e.key==='End'?100:Math.max(0,Math.min(100,split+(e.key==='ArrowLeft'?-1:1)*(e.shiftKey?10:1)));clip();};
     var observer=new ResizeObserver(geometry);panes.forEach(function(p){observer.observe(p);});
+    function clear(){images=null;layout=[];canvases.forEach(function(c){c.width=0;c.height=0;});hideLens();}
     return {
-      setImages:function(original,candidate){images=[original,candidate];images.forEach(function(im,i){var c=canvases[i];c.width=im.width;c.height=im.height;c.getContext('2d').drawImage(im,0,0);});root.querySelector('[data-original-size]').textContent=original.width+' × '+original.height+' px';root.querySelector('[data-candidate-size]').textContent=candidate.width+' × '+candidate.height+' px';root.querySelector('[data-swipe-size]').textContent=candidate.width+' × '+candidate.height+' px';geometry();},
+      setImages:function(original,candidate){images=[original,candidate];images.forEach(function(im,i){var c=canvases[i];if(im.width<=1024&&im.height<=1024){c.width=im.width;c.height=im.height;c.getContext('2d').drawImage(im,0,0);}else{c.width=0;c.height=0;}});root.querySelector('[data-original-size]').textContent=original.width+' × '+original.height+' px';root.querySelector('[data-candidate-size]').textContent=candidate.width+' × '+candidate.height+' px';root.querySelector('[data-swipe-size]').textContent=candidate.width+' × '+candidate.height+' px';geometry();},
       setZoom:function(value){zoom=value;geometry();},
       setMode:function(value){mode=value;root.classList.toggle('is-swipe',mode==='swipe');if(mode==='swipe')surfaces[0].appendChild(canvases[1]);else{surfaces[1].appendChild(canvases[1]);canvases.forEach(function(c){c.style.clipPath='';});}geometry();},
-      destroy:function(){closed=true;observer.disconnect();hideLens();}
+      clear:clear,
+      destroy:function(){closed=true;observer.disconnect();clear();lenses.forEach(function(l){l.querySelector('canvas').width=0;});}
     };
   }
   async function samePreviewPixels(a,b,cancelled){
     if(a===b)return true;if(a.width!==b.width||a.height!==b.height)return false;
     for(var y=0;y<a.height;y+=64){var rows=Math.min(64,a.height-y),left=a.getContext('2d').getImageData(0,y,a.width,rows).data,right=b.getContext('2d').getImageData(0,y,b.width,rows).data;for(var i=0;i<left.length;i++)if(left[i]!==right[i])return false;await new Promise(function(r){setTimeout(r,0);});if(cancelled())throw new Error('Cancelled.');}return true;
   }
-  window.PrintOptimizer={clean:clean,cleanFringe:cleanFringe,prepare:prepare,analyze:analyze,upscale:upscale,forceEnhance:forceEnhance,open:open};
+  window.PrintOptimizer={clean:clean,cleanFringe:cleanFringe,prepare:prepare,analyze:analyze,upscale:upscale,forceEnhance:forceEnhance,estimateMemory:estimateMemory,open:open};
 })();
