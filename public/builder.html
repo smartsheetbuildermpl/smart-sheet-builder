@@ -495,6 +495,8 @@
       packBtnBusy: 'Ina-arrange...',
       arrangeThisDesign: 'Idagdag sa layout',
       arrangeThisDesignBusy: 'Ina-arrange...',
+      addToLayoutHelp: 'Punuin ang mga bakanteng espasyo nang hindi ginagalaw ang mga existing na design.',
+      arrangeSheetHelp: 'Ayusin ulit ang lahat ng design para sa bagong layout.',
       rotateSelected: 'I-rotate selected',
       overlapWarning: 'Warning: may nag-o-overlap na design. I-usog muna bago i-print/export.',
       qualityWarning: 'Low-res warning: may design na masyado nang malaki para sa original PNG. Paliitin o gumamit ng higher-res file.',
@@ -618,6 +620,8 @@
       packBtnBusy: 'Arranging...',
       arrangeThisDesign: 'Add to layout',
       arrangeThisDesignBusy: 'Arranging...',
+      addToLayoutHelp: 'Fill available spaces without moving existing pieces.',
+      arrangeSheetHelp: 'Rearrange all pieces for a new layout.',
       rotateSelected: 'Rotate selected',
       overlapWarning: 'Warning: some designs are overlapping. Move them before print/export.',
       qualityWarning: 'Low-res warning: a design is too enlarged for the original PNG. Shrink it or use a higher-resolution file.',
@@ -907,6 +911,8 @@
     updateUnitLabels();
     document.getElementById('langToggleTL').classList.toggle('active', lang === 'tl');
     document.getElementById('langToggleEN').classList.toggle('active', lang === 'en');
+    packBtn.title = t('arrangeSheetHelp');
+    packBtn.setAttribute('aria-description', t('arrangeSheetHelp'));
     if (!packBtn.disabled) { packBtn.textContent = t('packBtn'); }
     manualModeNote.textContent = t('manualModeNote');
     qualityWarning.textContent = t('qualityWarning');
@@ -1173,6 +1179,7 @@
   function renderDesignItem(design) {
     var wrap = document.createElement('div');
     wrap.className = 'design-item';
+    wrap.dataset.designId = design.id;
 
     var thumb = document.createElement('div');
     thumb.className = 'design-thumb';
@@ -1269,7 +1276,8 @@
     resetImageBtn.type = 'button'; resetImageBtn.className = 'reset-image-btn'; resetImageBtn.textContent = t('resetImage');
     resetImageBtn.title = 'Discard all applied background, cleanup, and enhancement edits';
     resetImageBtn.style.display = design.wasEdited ? '' : 'none';
-    if (design.autoTrimApplied) feedbackEl.textContent = t('marginsTrimmed')(design.originalCanvas.width, design.originalCanvas.height, design.trimmed.w, design.trimmed.h);
+    if (design.layoutFeedback) feedbackEl.textContent = design.layoutFeedback;
+    else if (design.autoTrimApplied) feedbackEl.textContent = t('marginsTrimmed')(design.originalCanvas.width, design.originalCanvas.height, design.trimmed.w, design.trimmed.h);
     function refreshEdit() {
       thumbImg.src = design.previewUrl;
       resetImageBtn.style.display = design.wasEdited ? '' : 'none';
@@ -1400,6 +1408,8 @@
 
     var arrangeBtn = document.createElement('button');
     arrangeBtn.textContent = t('arrangeThisDesign');
+    arrangeBtn.title = t('addToLayoutHelp');
+    arrangeBtn.setAttribute('aria-description', t('addToLayoutHelp'));
     arrangeBtn.style.marginTop = '12px';
     arrangeBtn.addEventListener('click', function(){
       arrangeSingleDesign(design, arrangeBtn);
@@ -1636,26 +1646,48 @@
       return areaDifference || (Math.max(b.baseW, b.baseH) - Math.max(a.baseW, a.baseH));
     });
     sorted.forEach(function(inst){
-      var orientations = [
-        { w: inst.baseW + gapPx, h: inst.baseH + gapPx, rot: 0 }
-      ];
-      if (allowRotation && inst.baseW !== inst.baseH) orientations.push({ w: inst.baseH + gapPx, h: inst.baseW + gapPx, rot: 90 });
-      var best = null;
-      for (var fi = 0; fi < freeRects.length; fi++) {
-        var fr = freeRects[fi];
-        orientations.forEach(function(o){
-          if (o.w <= fr.w && o.h <= fr.h) {
-            var shortSide = Math.min(fr.w - o.w, fr.h - o.h);
-            var longSide = Math.max(fr.w - o.w, fr.h - o.h);
-            var areaWaste = fr.w * fr.h - o.w * o.h;
-            if (!best || shortSide < best.shortSide ||
-              (shortSide === best.shortSide && longSide < best.longSide) ||
-              (shortSide === best.shortSide && longSide === best.longSide && areaWaste < best.areaWaste) ||
-              (shortSide === best.shortSide && longSide === best.longSide && areaWaste === best.areaWaste && (fr.y < best.y || (fr.y === best.y && fr.x < best.x)))) {
-              best = { w: o.w, h: o.h, rot: o.rot, shortSide: shortSide, longSide: longSide, areaWaste: areaWaste, x: fr.x, y: fr.y };
-            }
-          }
-        });
+      function isBetter(next, candidate, rowFirst) {
+        if (!candidate) return true;
+        if (rowFirst) {
+          return next.y < candidate.y || (next.y === candidate.y &&
+            (next.x < candidate.x || (next.x === candidate.x &&
+              (next.shortSide < candidate.shortSide ||
+                (next.shortSide === candidate.shortSide && next.longSide < candidate.longSide)))));
+        }
+        return next.shortSide < candidate.shortSide ||
+          (next.shortSide === candidate.shortSide &&
+            (next.longSide < candidate.longSide ||
+              (next.longSide === candidate.longSide &&
+                (next.areaWaste < candidate.areaWaste ||
+                  (next.areaWaste === candidate.areaWaste &&
+                    (next.y < candidate.y || (next.y === candidate.y && next.x < candidate.x)))))));
+      }
+      function findBest(orientations, rowFirst) {
+        var candidate = null;
+        for (var fi = 0; fi < freeRects.length; fi++) {
+          var fr = freeRects[fi];
+          orientations.forEach(function(o){
+            if (o.w > fr.w || o.h > fr.h) return;
+            var next = {
+              w: o.w, h: o.h, rot: o.rot,
+              shortSide: Math.min(fr.w - o.w, fr.h - o.h),
+              longSide: Math.max(fr.w - o.w, fr.h - o.h),
+              areaWaste: fr.w * fr.h - o.w * o.h, x: fr.x, y: fr.y
+            };
+            // The original orientation is packed in reading order: left to
+            // right on the highest available row, then the next row. This
+            // minimizes used film length for wide artwork before considering
+            // any rotation-based gap recovery.
+            if (isBetter(next, candidate, rowFirst)) candidate = next;
+          });
+        }
+        return candidate;
+      }
+      // Rotation is deliberately a fallback. A design that fits unrotated is
+      // never turned vertical merely because a BSSF score is slightly lower.
+      var best = findBest([{ w: inst.baseW + gapPx, h: inst.baseH + gapPx, rot: 0 }], true);
+      if (!best && allowRotation && inst.baseW !== inst.baseH) {
+        best = findBest([{ w: inst.baseH + gapPx, h: inst.baseW + gapPx, rot: 90 }], false);
       }
       if (!best) { unplaced.push(inst); return; }
       inst.rotation = best.rot;
@@ -2808,12 +2840,270 @@
     statsOut.textContent = text;
   }
 
+  function copySheetsForIncrementalLayout() {
+    return sheets.map(function(sheet){ return Object.assign({}, sheet, { placements: sheet.placements.slice() }); });
+  }
+
+  function incrementalAutoArea(sheet, settings) {
+    var edge = settings.autoEdgeAllowancePx;
+    var top = Math.max(sheet.headerHeightPx || settings.headerHeightPx, edge);
+    return {
+      left: edge,
+      top: top,
+      width: Math.max(0, sheet.widthPx - edge * 2),
+      height: Math.max(0, sheet.heightPx - top - edge)
+    };
+  }
+
+  // Builds a MaxRects free-space map from the pieces already on a sheet. The
+  // occupied rectangle grows on every side by the configured inter-piece gap,
+  // which also handles pieces that were deliberately dragged against an edge.
+  function incrementalFreeRects(sheet, area, gapPx) {
+    var freeRects = [{ x: 0, y: 0, w: area.width, h: area.height }];
+    sheet.placements.forEach(function(p){
+      freeRects = subtractOccupiedRect(freeRects, {
+        x: p.x - area.left - gapPx,
+        y: p.y - area.top - gapPx,
+        w: p.w + gapPx * 2,
+        h: p.h + gapPx * 2
+      });
+    });
+    return freeRects;
+  }
+
+  function compareIncrementalFit(a, b) {
+    if (!b) return -1;
+    return a.shortSide - b.shortSide || a.longSide - b.longSide ||
+      a.areaWaste - b.areaWaste || a.y - b.y || a.x - b.x || a.rotation - b.rotation;
+  }
+
+  function findIncrementalBatchFit(state, inst, count, settings, strategy, allowRotation) {
+    var best = null;
+    state.freeRects.forEach(function(fr){
+      var orientations = [{ w: inst.baseW, h: inst.baseH, rotation: 0 }];
+      if (allowRotation && inst.baseW !== inst.baseH) {
+        orientations.push({ w: inst.baseH, h: inst.baseW, rotation: 90 });
+      }
+      orientations.forEach(function(o){
+        var gap = settings.gapPx;
+        var maxCols = Math.floor((fr.w + gap) / (o.w + gap));
+        var maxRows = Math.floor((fr.h + gap) / (o.h + gap));
+        if (!maxCols || !maxRows) return;
+        // Evaluate row/column arrangements for the whole remaining group, not
+        // just its first copy. Grid coordinates come from actual free rectangles.
+        var n = strategy === 'single' ? 1 : Math.min(count, maxCols * maxRows);
+        for (var cols = Math.ceil(n / maxRows); cols <= Math.min(n, maxCols); cols++) {
+          var rows = Math.ceil(n / cols);
+          var w = cols * (o.w + gap) - gap, h = rows * (o.h + gap) - gap;
+          var rw = Math.max(0, fr.w - w - gap), rh = Math.max(0, fr.h - h - gap);
+          var minSide = Math.min(inst.baseW, inst.baseH);
+          var candidate = {
+            x: fr.x, y: fr.y, w: o.w, h: o.h, rotation: o.rotation,
+            count: n, cols: cols, blockW: w, blockH: h,
+            shortSide: Math.min(fr.w - w, fr.h - h),
+            longSide: Math.max(fr.w - w, fr.h - h),
+            areaWaste: fr.w * fr.h - w * h,
+            // Penalize strips too narrow for another piece of this group.
+            slivers: (rw > 0 && rw < minSide ? rw * fr.h : 0) + (rh > 0 && rh < minSide ? rh * fr.w : 0),
+            rectangularGap: Math.max(rw * fr.h, rh * fr.w),
+            unusedCells: cols * rows - n,
+            footprint: w * h,
+            // The lowest bottom edge uses the least film length. This is
+            // intentionally evaluated before compact-area scoring so a wide
+            // horizontal run becomes rows, rather than tall narrow columns.
+            usedBottom: fr.y + h
+          };
+          if (compareIncrementalBatchFit(candidate, best, strategy) < 0) best = candidate;
+        }
+      });
+    });
+    return best;
+  }
+
+  function compareIncrementalBatchFit(a, b, strategy) {
+    if (!b) return -1;
+    if (strategy === 'single') return compareIncrementalFit(a, b);
+    return b.count - a.count || a.usedBottom - b.usedBottom || a.y - b.y ||
+      // With the same number of rows, use the widest valid row first. This
+      // keeps a horizontal batch together instead of leaving an avoidable
+      // column at the far edge simply to reduce unused grid cells.
+      b.cols - a.cols || a.unusedCells - b.unusedCells ||
+      a.slivers - b.slivers ||
+      (strategy === 'compact' ? a.footprint - b.footprint : b.rectangularGap - a.rectangularGap) ||
+      compareIncrementalFit(a, b);
+  }
+
+  function createIncrementalSheet(settings) {
+    return {
+      placements: [],
+      widthPx: settings.sheetWidthPx,
+      heightPx: settings.sheetLengthPx,
+      headerHeightPx: settings.headerHeightPx,
+      gapPx: settings.gapPx,
+      autoEdgeAllowancePx: settings.autoEdgeAllowancePx
+    };
+  }
+
+  function planIncrementalBatch(pending, settings, strategy, allowRotation) {
+    var planned = copySheetsForIncrementalLayout(), originalSheetCount = planned.length;
+    function makeState(sheet) {
+      var area = incrementalAutoArea(sheet, settings);
+      return { area: area, freeRects: incrementalFreeRects(sheet, area, settings.gapPx), added: [],
+        hadLockedPlacements: sheet.placements.length > 0 };
+    }
+    var states = planned.map(makeState), groups = [];
+    pending.slice().sort(function(a, b){
+      return b.baseW * b.baseH - a.baseW * a.baseH ||
+        Math.max(b.baseW, b.baseH) - Math.max(a.baseW, a.baseH) || a.id - b.id;
+    }).forEach(function(inst){
+      var group = groups.find(function(g){ return g[0].baseW === inst.baseW && g[0].baseH === inst.baseH && g[0].designId === inst.designId; });
+      if (group) group.push(inst); else groups.push([inst]);
+    });
+    var added = [], existingAdded = 0, createdSheets = [], addedBySheet = Object.create(null);
+    while (groups.length) {
+      var best = null, groupIndex = -1;
+      // Large groups first, but try smaller pending groups on existing sheets
+      // before opening another sheet for a larger piece that cannot fit.
+      for (var gi = 0; gi < groups.length && !best; gi++) {
+        states.forEach(function(state, si){
+          var fit = findIncrementalBatchFit(state, groups[gi][0], groups[gi].length, settings, strategy, allowRotation);
+          if (fit && compareIncrementalBatchFit(fit, best, strategy) < 0) { best = fit; best.sheetIndex = si; }
+        });
+        if (best) groupIndex = gi;
+      }
+      if (!best) {
+        if (planned.length && !settings.autoExtend) break;
+        var fresh = createIncrementalSheet(settings), freshState = makeState(fresh);
+        for (var fi = 0; fi < groups.length; fi++) {
+          best = findIncrementalBatchFit(freshState, groups[fi][0], groups[fi].length, settings, strategy, allowRotation);
+          if (best) { groupIndex = fi; break; }
+        }
+        if (!best) break; // Oversized artwork: do not create empty sheets.
+        best.sheetIndex = planned.length;
+        createdSheets.push(planned.length); planned.push(fresh); states.push(freshState);
+      }
+      var state = states[best.sheetIndex], group = groups[groupIndex];
+      for (var n = 0; n < best.count; n++) {
+        var x = best.x + (n % best.cols) * (best.w + settings.gapPx);
+        var y = best.y + Math.floor(n / best.cols) * (best.h + settings.gapPx);
+        // Simulations only clone incoming instances. Locked pieces and their
+        // canvas references remain untouched in every competing plan.
+        var inst = Object.assign({}, group[n], { rotation: best.rotation,
+          manualX: state.area.left + x, manualY: state.area.top + y, manualSheet: best.sheetIndex });
+        var p = { inst: inst, x: inst.manualX, y: inst.manualY, w: best.w, h: best.h };
+        planned[best.sheetIndex].placements.push(p); state.added.push(p); added.push(inst);
+        state.freeRects = subtractOccupiedRect(state.freeRects, {
+          x: x - settings.gapPx, y: y - settings.gapPx,
+          w: best.w + 2 * settings.gapPx, h: best.h + 2 * settings.gapPx
+        });
+      }
+      if (best.sheetIndex < originalSheetCount) existingAdded += best.count;
+      addedBySheet[best.sheetIndex] = (addedBySheet[best.sheetIndex] || 0) + best.count;
+      group.splice(0, best.count);
+      if (!group.length) groups.splice(groupIndex, 1);
+    }
+    var footprint = 0, largestArea = 0, usedLength = 0, rotations = 0;
+    var largestGaps = states.map(function(state){
+      var largest = state.freeRects.reduce(function(best, r){ return r.w * r.h > best.w * best.h ? r : best; }, { x: 0, y: 0, w: 0, h: 0 });
+      largestArea += largest.w * largest.h;
+      if (state.added.length) {
+        var left = Infinity, top = Infinity, right = 0, bottom = 0;
+        state.added.forEach(function(p){ left = Math.min(left, p.x); top = Math.min(top, p.y); right = Math.max(right, p.x+p.w); bottom = Math.max(bottom, p.y+p.h); });
+        footprint += (right-left) * (bottom-top);
+        // A blank/new sheet should use the least film length. On a sheet with
+        // locked content, that sheet length is already determined by the
+        // existing work; favor a cohesive free-rectangle fill instead of
+        // scattering the new batch through incidental earlier holes.
+        if (!state.hadLockedPlacements) usedLength += bottom - state.area.top;
+        rotations += state.added.reduce(function(total, p){ return total + (p.inst.rotation === 90 ? 1 : 0); }, 0);
+      }
+      return { x: state.area.left + largest.x, y: state.area.top + largest.y, w: largest.w, h: largest.h };
+    });
+    return { sheets: planned, addedInstances: added, added: added.length, requested: pending.length,
+      skipped: pending.length - added.length, addedBySheet: addedBySheet, createdSheets: createdSheets,
+      largestGaps: largestGaps, existingAdded: existingAdded, footprint: footprint, largestArea: largestArea,
+      usedLength: usedLength, rotations: rotations };
+  }
+
+  function compareIncrementalPlans(a, b) {
+    return b.added - a.added || b.existingAdded - a.existingAdded ||
+      a.createdSheets.length - b.createdSheets.length ||
+      Object.keys(a.addedBySheet).length - Object.keys(b.addedBySheet).length ||
+      a.usedLength - b.usedLength || a.rotations - b.rotations ||
+      a.footprint - b.footprint || b.largestArea - a.largestArea;
+  }
+
+  function packIncrementalBatch(pending, settings) {
+    var bestOriginal = null;
+    // Compare complete deterministic plans. Grouped rows/columns improve batch
+    // cohesion; the single-copy BSSF plan remains a fallback for irregular holes.
+    ['compact', 'rectangle', 'single'].forEach(function(strategy){
+      var plan = planIncrementalBatch(pending, settings, strategy, false);
+      if (!bestOriginal || compareIncrementalPlans(plan, bestOriginal) < 0) bestOriginal = plan;
+    });
+    // Preserve the native orientation whenever it already uses the same
+    // sheets. Rotation is evaluated only as a fallback that recovers more
+    // copies or avoids opening another sheet for a usable existing gap.
+    if (!settings.allowRotation) return bestOriginal;
+    var bestRotated = null;
+    ['compact', 'rectangle', 'single'].forEach(function(strategy){
+      var plan = planIncrementalBatch(pending, settings, strategy, true);
+      if (!bestRotated || compareIncrementalPlans(plan, bestRotated) < 0) bestRotated = plan;
+    });
+    if (!bestRotated) return bestOriginal;
+    if (bestRotated.added > bestOriginal.added ||
+      (bestRotated.added === bestOriginal.added && bestRotated.createdSheets.length < bestOriginal.createdSheets.length)) return bestRotated;
+    return bestOriginal;
+  }
+
+  function incrementalLayoutMessage(result, design, settings) {
+    var name = design.file.name.replace(/\.png$/i, '');
+    var text = 'Added ' + result.added + ' of ' + result.requested + ' pending ' + name + ' pieces. ';
+    text += result.skipped ? result.skipped + ' not placed: no allowed automatic space fits the remaining copies. ' :
+      (result.requested ? 'All requested copies placed. ' : 'Requested quantity is already on the layout. ');
+    text += result.largestGaps.map(function(gap, index){
+      function measure(px) {
+        // Never round a gap up to a dimension that would not actually fit.
+        var scale = currentMeasureUnit === 'ft' ? 1000 : 100;
+        return String(Math.floor(fromInches(px/settings.dpi, currentMeasureUnit) * scale + 1e-8) / scale);
+      }
+      return 'Sheet ' + (index+1) + ': ' + (result.addedBySheet[index] || 0) + ' added. Largest remaining usable gap: ' +
+        measure(gap.w) + ' × ' + measure(gap.h) + ' ' + unitSuffix() + '.';
+    }).join(' ');
+    if (result.createdSheets.length) {
+      var createdCount = result.createdSheets.reduce(function(total, index){ return total + result.addedBySheet[index]; }, 0);
+      text += ' Created ' + result.createdSheets.map(function(index){ return 'Sheet ' + (index + 1); }).join(', ') +
+        ' for ' + createdCount + ' remaining piece' + (createdCount === 1 ? '' : 's') + '.';
+    }
+    return text;
+  }
+
   function appendDesignToCurrentLayout(design) {
-    // Rebuild all requested quantities with current dimensions and DPI.
-    buildInstances();
-    manualMode = false;
-    manualModeNote.style.display = 'none';
-    repack();
+    var settings = getSheetPixelSettings();
+    var placedIds = new Set();
+    sheets.forEach(function(sheet){ sheet.placements.forEach(function(p){ placedIds.add(p.inst.id); }); });
+    var designInstances = instances.filter(function(inst){ return inst.designId === design.id; });
+    var pending = designInstances.filter(function(inst){ return !placedIds.has(inst.id); });
+    var missing = Math.max(0, design.qty - designInstances.length);
+    var created = missing ? createInstancesForDesign(Object.assign({}, design, { qty: missing }), settings.dpi) : [];
+    pending = pending.concat(created);
+
+    var result = packIncrementalBatch(pending, settings);
+
+    if (created.length) instances = instances.concat(created);
+    var addedById = new Map(result.addedInstances.map(function(inst){ return [inst.id, inst]; }));
+    instances = instances.map(function(inst){ return addedById.get(inst.id) || inst; });
+    sheets = result.sheets;
+    lastSkipped = result.skipped;
+    design.layoutFeedback = incrementalLayoutMessage(result, design, settings);
+    setOverlapState(computeAllOverlaps());
+    setQualityState(computeAllLowRes());
+    resultArea.style.display = 'block';
+    placeholderCard.style.display = 'none';
+    renderAllDesigns();
+    if (sheets.length) renderAllSheets(); else renderStartupSheetPreview();
+    computeStats();
+    return result;
   }
 
   function arrangeSingleDesign(design, button) {

@@ -115,8 +115,10 @@ assert.notEqual(html, source);
     assert.deepEqual(await page.evaluate(() => exportsRequested), ['png','tiff']);
     // A 23 × 39 in automatic run uses the full physical sheet dimensions but
     // keeps every auto-packed bounding box at least 0.30 in from each edge.
+    await doc.evaluate(() => smartSheetWorkspace.setOpen(false));
     await frame.locator('#sheetWidth').fill('23'); await frame.locator('#sheetLength').fill('39');
     await frame.locator('#edgeAllowanceNumber').fill('0.3');
+    await doc.evaluate(() => smartSheetWorkspace.setOpen(true));
     await frame.locator('#sw-arrange').click();
     const edged = await doc.evaluate(() => ({ settings:zeroTest.settings(), sheets:smartSheetWorkspace.snapshot().sheets }));
     assert.equal(edged.settings.sheetWidthPx, 2300); assert.equal(edged.settings.sheetLengthPx, 3900);
