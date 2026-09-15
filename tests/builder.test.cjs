@@ -118,7 +118,7 @@ for (const [a,b] of [
     assert.equal(await card.getByRole('button',{name:'Undo',exact:true}).count(),0);
     assert.equal(await card.getByRole('button',{name:'Restore original canvas',exact:true}).count(),0);
     await card.getByRole('button',{name:'Optimize for Print',exact:true}).click();
-    await page.locator('.print-upscale input').check();
+    await page.locator('[data-enhancement]').selectOption('force');
     await page.getByRole('button',{name:'Apply optimization',exact:true}).click();
     await page.waitForFunction(()=>window.testBuilder.designs[0].enhanced);
     assert.deepEqual(await page.evaluate(()=>window.testBuilder.designs.map(d=>[d.widthIn,d.heightIn])),dims);
@@ -143,7 +143,7 @@ for (const [a,b] of [
       await card.screenshot({path:path.join(outputDir, 'card-'+width+'.png')});
     }
     await card.getByRole('button',{name:'Optimize for Print',exact:true}).click();
-    await page.locator('.print-upscale input').check();
+    await page.locator('[data-enhancement]').selectOption('force');
     await page.getByRole('button',{name:'Apply optimization',exact:true}).click();
     await page.waitForFunction(()=>window.testBuilder.designs[0].enhanced);
     for(const width of [1440,375,320]) {
@@ -181,14 +181,15 @@ for (const [a,b] of [
       const d=t.designs[0];d.qty=4;d.widthIn=2;d.heightIn=2;
       t.appendDesignToCurrentLayout(d);
       check(t.instances.length===4 && t.sheets.length>1,'Add packs exact quantity onto additional sheets');
+      const beforeIncremental=t.sheets.map(sheet=>sheet.placements.map(p=>({id:p.inst.id,x:p.x,y:p.y,w:p.w,h:p.h,rotation:p.inst.rotation})));
       d.qty=3;d.widthIn=1;d.heightIn=1;
       t.designs.push({...d,id:999,qty:2});
       t.appendDesignToCurrentLayout(t.designs[1]);
-      check(t.instances.length===5 && t.instances.filter(i=>i.designId===d.id).length===3,'adding a batch rebuilds all current requested quantities');
-      check(t.instances.every(i=>i.baseW===100&&i.baseH===100),'adding a batch refreshes previous dimensions');
-      check(t.sheets.length===1,'batches packed together on one sheet');
+      check(t.instances.length===6 && t.instances.filter(i=>i.designId===d.id).length===4,'incremental Add keeps existing requested pieces and adds only the new design');
+      check(t.sheets.map(sheet=>sheet.placements.filter(p=>p.inst.designId===d.id).map(p=>({id:p.inst.id,x:p.x,y:p.y,w:p.w,h:p.h,rotation:p.inst.rotation}))).every((list,index)=>JSON.stringify(list)===JSON.stringify(beforeIncremental[index])),'incremental Add preserves every prior placement exactly');
+      check(t.instances.filter(i=>i.designId===999).every(i=>i.baseW===100&&i.baseH===100),'new incremental pieces use the current requested dimensions');
       t.appendDesignToCurrentLayout(d);
-      check(t.instances.length===5,'repeated Add does not duplicate quantities');
+      check(t.instances.length===6,'repeated Add does not duplicate quantities');
       for(const sheet of t.sheets)validate(sheet.placements,sheet.widthPx,sheet.heightPx,sheet.gapPx);
       t.renderAllDesigns();
       return results;

@@ -68,7 +68,7 @@ function tiff(bytes) {
     await open();await page.locator('[data-apply]').waitFor();
     await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);
     assert.match(await page.locator('.print-result').innerText(),/300 PPI. No upscale needed/);
-    assert(await page.locator('.print-upscale input').isDisabled());
+    assert.equal(await page.locator('[data-enhancement]').inputValue(),'auto');
     await page.locator('[data-close]').focus();await page.keyboard.press('Shift+Tab');
     assert(await page.locator('[data-apply]').evaluate(el=>el===document.activeElement),'focus wraps backward inside optimizer');
     await page.keyboard.press('Tab');
@@ -85,15 +85,15 @@ function tiff(bytes) {
     await card.getByRole('spinbutton',{name:'Width',exact:true}).fill('4');
     await open();await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);
     assert.match(await page.locator('.print-result').innerText(),/Low source quality: 150 PPI/);
-    assert(!(await page.locator('.print-upscale input').isChecked()));
+    assert.equal(await page.locator('[data-enhancement]').inputValue(),'auto');
     await page.locator('[data-apply]').click();
     assert.equal(await page.evaluate(()=>printTest.designs[0].trimmed.w),600,'low PPI does not trigger automatic upscale');
-    await open();await page.locator('.print-upscale input').check();await page.locator('[data-apply]').click();
+    await open();await page.locator('[data-enhancement]').selectOption('force');await page.locator('[data-apply]').click();
     await page.waitForFunction(()=>!document.querySelector('.print-optimizer'));
     assert.deepEqual(await page.evaluate(()=>{const d=printTest.designs[0];return [d.trimmed.w,d.trimmed.h,d.widthIn,d.heightIn,d.nativeScale];}),[1200,1200,4,4,2]);
     assert.match(await card.locator('.source-quality').innerText(),/150 PPI/);
     await open();await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);
-    assert(await page.locator('.print-upscale input').isDisabled(),'repeat upscale disabled');
+    assert.equal(await page.locator('[data-enhancement]').inputValue(),'auto','reopening retains native resolution by default');
     await page.getByRole('button',{name:'Undo last optimization',exact:true}).click();
     assert.equal(await page.evaluate(()=>printTest.designs[0].trimmed.w),600);
     await upload('outer-ghosts.png',await page.evaluate(()=>ghostPng));

@@ -98,15 +98,15 @@ const artifacts=fs.mkdtempSync(path.join(os.tmpdir(),'print-preview-ui-'));
 
     await start('low');
     assert.match(await page.locator('.print-result').innerText(),/No visual change required/);
-    await page.locator('.print-upscale input').check();
+    await page.locator('[data-enhancement]').selectOption('force');
     await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);
     assert.deepEqual(await page.locator('.print-image').evaluateAll(cs=>cs.map(c=>[c.width,c.height])),[[80,60],[160,120]],'upscaled candidate exists before Apply');
-    assert.match(await page.locator('.print-result').innerText(),/smooth upscale 2×/);
+    assert.match(await page.locator('.print-result').innerText(),/Forced smooth enhancement applied/);
     assert.equal(await page.evaluate(()=>previewCase.applied),null);
     assert(await page.evaluate(()=>previewCase.source.toDataURL()===previewCase.snapshot));
     const upscaled=await page.locator('.print-after .print-image').evaluate(c=>c.toDataURL());
     await page.locator('[data-apply]').click();assert.equal(await page.evaluate(()=>previewCase.applied.png),upscaled,'Apply does not recompute or substitute the upscaled preview');
-    await start('low');await page.locator('.print-upscale input').check();await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);await page.locator('.print-upscale input').uncheck();await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);
+    await start('low');await page.locator('[data-enhancement]').selectOption('force');await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);await page.locator('[data-enhancement]').selectOption('auto');await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);
     assert.equal(await page.locator('[data-apply]').innerText(),'Close — no changes');await page.getByRole('button',{name:'Cancel',exact:true}).click();assert.equal(await page.evaluate(()=>previewCase.calls),0);
     assert.deepEqual(errors,[]);
     console.log(JSON.stringify({checks:'Honest no-op; original/candidate pixels differ; linked lenses; zoom and drag pan; keyboard/draggable swipe; mobile stacking; pre-Apply upscale preview; source immutability; applied candidate equality; Cancel',artifacts},null,2));
