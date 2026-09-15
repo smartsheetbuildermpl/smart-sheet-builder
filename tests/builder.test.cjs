@@ -24,12 +24,12 @@ for (const [a,b] of [
     const errors=[]; page.on('pageerror', e=>errors.push(e.message));
     // Expose closure internals only in this ephemeral test page, never in production.
     const testSource = source;
-    const hook=`window.testBuilder={get designs(){return designs},get instances(){return instances},get sheets(){return sheets},packSheet,decodeImageCanvas,trimTransparentMargins,removeConnectedEdgeBackground,removeTinySpecks,enhanceDesign,drawSheetCanvas,createInstancesForDesign,appendDesignToCurrentLayout,rotatePlacementOnSheet,qualityForPlacement,renderAllDesigns};`;
+    const hook=`window.testBuilder={get designs(){return designs},get instances(){return instances},get sheets(){return sheets},packSheet,decodeImageCanvas,trimTransparentMargins,removeConnectedEdgeBackground,removeTinySpecks,drawSheetCanvas,createInstancesForDesign,appendDesignToCurrentLayout,rotatePlacementOnSheet,qualityForPlacement,renderAllDesigns};`;
     const html=testSource.replace(/\}\)\(\);\s*<\/script>/,hook+'})();</script>');
     assert.notEqual(html,testSource,'test hook inserted');
     await page.route('http://localhost:4178/**',route=> {
       const name = new URL(route.request().url()).pathname;
-      if (/^\/(sheet-workspace|background-editor)\.(js|css)$/.test(name)) return route.fulfill({ body: fs.readFileSync('public' + name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css' });
+      if (/^\/(sheet-workspace|background-editor|print-optimizer)\.(js|css)$/.test(name)) return route.fulfill({ body: fs.readFileSync('public' + name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css' });
       return route.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4178/builder.html');
@@ -88,11 +88,12 @@ for (const [a,b] of [
       check(output.toDataURL()===d.trimmed.canvas.toDataURL(),'PNG encode/decode retains the active cropped resolution and all alpha values');
       const cleaned=t.removeTinySpecks(d.trimmed.canvas);
       check(cleaned.noChange && d.originalCanvas.toDataURL()===snapshot,'optional speck cleanup preserves connected soft edges without changing the retained original');
-      const enhanced=t.enhanceDesign(d);
+      const enlarged=await PrintOptimizer.upscale(d.trimmed.canvas,2);
+      const enhanced={canvas:enlarged,w:enlarged.width,h:enlarged.height};
       check(enhanced.w===222 && enhanced.h===160,'enhancement doubles both active pixel dimensions');
       check(enhanced.canvas.getContext('2d').getImageData(0,0,1,1).data[3]===0,'enhancement retains transparency');
       check(d.originalCanvas.toDataURL()===snapshot,'enhancement leaves original untouched');
-      let rejected=false;try{t.enhanceDesign({...d,trimmed:{w:4097,h:4097}})}catch(e){rejected=true}
+      let rejected=false;try{await PrintOptimizer.upscale({width:4097,height:4097},2)}catch(e){rejected=true}
       check(rejected,'oversized enhancement rejected before allocation');
       const bg=document.createElement('canvas');bg.width=30;bg.height=30;
       const ctx=bg.getContext('2d');ctx.fillStyle='white';ctx.fillRect(0,0,30,30);
@@ -111,12 +112,14 @@ for (const [a,b] of [
     assert.match(await card.locator('[role=status]').innerText(),/Transparent margins trimmed: 120 × 80 px → 111 × 80 px/);
     const dims=await page.evaluate(()=>window.testBuilder.designs.map(d=>[d.widthIn,d.heightIn]));
     assert.equal(await card.getByRole('button',{name:'Edit Background',exact:true}).count(),1);
-    assert.equal(await card.getByRole('button',{name:'Enhance 2×',exact:true}).count(),1);
+    assert.equal(await card.getByRole('button',{name:'Optimize for Print',exact:true}).count(),1);
     assert.equal(await card.getByRole('button',{name:'Remove BG',exact:true}).count(),0);
     assert.equal(await card.getByRole('button',{name:'Remove tiny specks',exact:true}).count(),0);
     assert.equal(await card.getByRole('button',{name:'Undo',exact:true}).count(),0);
     assert.equal(await card.getByRole('button',{name:'Restore original canvas',exact:true}).count(),0);
-    await card.getByRole('button',{name:'Enhance 2×',exact:true}).click();
+    await card.getByRole('button',{name:'Optimize for Print',exact:true}).click();
+    await page.locator('.print-upscale input').check();
+    await page.getByRole('button',{name:'Apply optimization',exact:true}).click();
     await page.waitForFunction(()=>window.testBuilder.designs[0].enhanced);
     assert.deepEqual(await page.evaluate(()=>window.testBuilder.designs.map(d=>[d.widthIn,d.heightIn])),dims);
     assert.equal(await card.getByRole('button',{name:'Reset image',exact:true}).count(),1);
@@ -139,7 +142,9 @@ for (const [a,b] of [
       assert.equal(geometry.overflow,false,JSON.stringify(geometry));assert.deepEqual(geometry.bad,[]);assert.equal(geometry.pageOverflow,false);
       await card.screenshot({path:path.join(outputDir, 'card-'+width+'.png')});
     }
-    await card.getByRole('button',{name:'Enhance 2×',exact:true}).click();
+    await card.getByRole('button',{name:'Optimize for Print',exact:true}).click();
+    await page.locator('.print-upscale input').check();
+    await page.getByRole('button',{name:'Apply optimization',exact:true}).click();
     await page.waitForFunction(()=>window.testBuilder.designs[0].enhanced);
     for(const width of [1440,375,320]) {
       await page.setViewportSize({width,height:1100}); await card.scrollIntoViewIfNeeded();

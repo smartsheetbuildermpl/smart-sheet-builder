@@ -16,7 +16,7 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
     page.on('pageerror',e=>errors.push(e.message));
     await page.route('http://localhost:4184/**',route=>{
       const name=new URL(route.request().url()).pathname;
-      if(/^\/(background-editor|sheet-workspace)\.(js|css)$/.test(name)) return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
+      if(/^\/(background-editor|sheet-workspace|print-optimizer)\.(js|css)$/.test(name)) return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
       return route.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4184/builder.html');
@@ -132,7 +132,11 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
       const d=bgTest.designs[0],blob=await new Promise(r=>d.trimmed.canvas.toBlob(r,'image/png')),image=await createImageBitmap(blob),c=document.createElement('canvas');c.width=image.width;c.height=image.height;c.getContext('2d').drawImage(image,0,0);return c.toDataURL()===d.trimmed.canvas.toDataURL();
     }));
     page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'Reset image',exact:true}).click();assert.equal(await page.evaluate(()=>bgTest.designs[0].trimmed.canvas.toDataURL()),original.original,'Reset image restores the untouched upload');
-    await page.getByRole('button',{name:'Enhance 2×',exact:true}).click();await page.waitForFunction(()=>bgTest.designs[0].enhanced);
+    await page.getByRole('spinbutton',{name:'Width',exact:true}).fill('2');
+    await page.getByRole('button',{name:'Optimize for Print',exact:true}).click();
+    await page.locator('.print-upscale input').check();
+    await page.getByRole('button',{name:'Apply optimization',exact:true}).click();
+    await page.waitForFunction(()=>bgTest.designs[0].enhanced);
     await open();await act('Erase Brush').click();await slider('#bg-size',12);const enhancedBefore=await rgba(160,140);await clickPixel(160,140);await act('Restore Brush').click();await clickPixel(160,140);assert.deepEqual(await rgba(160,140),enhancedBefore,'restore mapping also works after 2× enhancement');await act('Cancel').click();
     page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'Reset image',exact:true}).click();
     // An all-transparent result is rejected in the modal; Cancel still recovers the page.

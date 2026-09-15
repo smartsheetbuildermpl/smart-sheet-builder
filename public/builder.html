@@ -6,6 +6,7 @@
 <title>Smart Sheet Builder by Master PrintLab</title>
 <link rel="stylesheet" href="/sheet-workspace.css">
 <link rel="stylesheet" href="/background-editor.css">
+<link rel="stylesheet" href="/print-optimizer.css">
 <style>
   * { box-sizing: border-box; }
   body {
@@ -363,6 +364,7 @@
 
 <script src="/sheet-workspace.js"></script>
 <script src="/background-editor.js"></script>
+<script src="/print-optimizer.js"></script>
 <script>
 (function(){
   var directOnlineAccess = window.top === window.self &&
@@ -513,7 +515,7 @@
       bgTolerance: 'BG sensitivity',
 
       enhance: 'Enhance resolution 2×',
-      enhanceCompact: 'Enhance 2×',
+      enhanceCompact: 'Optimize for Print',
       editBackground: 'Edit Background',
       resetImage: 'Reset image',
       resetImageDone: 'Original uploaded image restored',
@@ -635,7 +637,7 @@
       bgTolerance: 'BG sensitivity',
 
       enhance: 'Enhance resolution 2×',
-      enhanceCompact: 'Enhance 2×',
+      enhanceCompact: 'Optimize for Print',
       editBackground: 'Edit Background',
       resetImage: 'Reset image',
       resetImageDone: 'Original uploaded image restored',
@@ -950,6 +952,7 @@
     designs.forEach(function(d) {
       canvases.add(d.originalCanvas); canvases.add(d.trimmed.canvas);
       if (d.undoImage) canvases.add(d.undoImage.canvas);
+      if (d.printUndo) { canvases.add(d.printUndo.canvas); canvases.add(d.printUndo.appliedCanvas); }
     });
     var total = 0;
     canvases.forEach(function(c) { if (c) total += c.width * c.height; });
@@ -961,19 +964,6 @@
         retainedImagePixels() * 4 + w * h * (workspaceBytesPerPixel || 4) > 256 * 1024 * 1024) {
       throw new Error(t('imageMemoryLimit'));
     }
-  }
-
-  function enhanceDesign(design) {
-    if (design.enhanced) throw new Error(t('enhanceOnce'));
-    var w = design.trimmed.w * 2, h = design.trimmed.h * 2;
-    assertImageBudget(w, h, 8);
-    var c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    var ctx = c.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(design.trimmed.canvas, 0, 0, w, h);
-    return { canvas: c, w: w, h: h, enhanced: true };
   }
 
   function thumbnailUrl(canvas) {
@@ -1115,6 +1105,7 @@
 
   function imageUndoState(design) {
     return { canvas: design.trimmed.canvas, enhanced: design.enhanced, wasEdited: design.wasEdited,
+      nativeScale: design.nativeScale || 1,
       sourceRect: imageSourceRect(design), trimRect: design.trimRect, autoTrimApplied: design.autoTrimApplied };
   }
 
@@ -1190,7 +1181,7 @@
     var enhanceBtn = document.createElement('button');
     enhanceBtn.className = 'secondary';
     enhanceBtn.textContent = t('enhanceCompact');
-    enhanceBtn.disabled = !!design.enhanced;
+    enhanceBtn.title = 'Analyze source PPI, inspect pixels, and optionally smooth upscale for print';
     btnRow.appendChild(enhanceBtn);
 
     var editBackgroundBtn = document.createElement('button');
@@ -1253,7 +1244,7 @@
     sourceInfo.className = 'source-quality';
     function refreshSourceInfo() {
       var ppi = design.widthIn > 0 && design.heightIn > 0 ?
-        Math.round(Math.min(design.trimmed.w / design.widthIn, design.trimmed.h / design.heightIn)) : '—';
+        Math.round(Math.min(design.trimmed.w / design.widthIn, design.trimmed.h / design.heightIn) / (design.nativeScale || 1)) : '—';
       sourceInfo.textContent = t('sourceQuality')(design.trimmed.w, design.trimmed.h, ppi);
       if (design.enhanced) sourceInfo.textContent += ' · ' + t('upscaledPixels') + ': ' + design.trimmed.w + ' × ' + design.trimmed.h;
     }
@@ -1267,7 +1258,6 @@
     function refreshEdit() {
       thumbImg.src = design.previewUrl;
       resetImageBtn.style.display = design.wasEdited ? '' : 'none';
-      enhanceBtn.disabled = !!design.enhanced;
       refreshSourceInfo();
       refreshLayoutAfterImageEdit(design);
     }
@@ -1275,6 +1265,7 @@
       if (!window.confirm('Reset this image? This discards all applied background, cleanup, and enhancement edits.')) return;
       updateDesignCanvas(design, { canvas: design.originalCanvas, w: design.originalCanvas.width, h: design.originalCanvas.height });
       design.enhanced = false; design.wasEdited = false; design.undoImage = null; design.autoTrimApplied = false;
+      design.nativeScale = 1; design.printUndo = null;
       design.sourceRect = { x: 0, y: 0, w: design.originalCanvas.width, h: design.originalCanvas.height };
       feedbackEl.textContent = t('resetImageDone');
       refreshEdit();
@@ -1282,10 +1273,31 @@
     btnRow.appendChild(resetImageBtn);
     enhanceBtn.addEventListener('click', function(){
       try {
-        var result = enhanceDesign(design);
-        design.undoImage = imageUndoState(design);
-        updateDesignCanvas(design, result); design.enhanced = true; design.wasEdited = true;
-        feedbackEl.textContent = t('enhancedMessage'); refreshEdit();
+        if (!window.PrintOptimizer) throw new Error('Print optimizer could not load. Refresh the page and try again.');
+        window.PrintOptimizer.open({
+          canvas: design.trimmed.canvas, widthIn: design.widthIn, heightIn: design.heightIn,
+          nativeScale: design.nativeScale || 1, enhanced: design.enhanced, budget: assertImageBudget,
+          canUndo: !!design.printUndo && design.printUndo.appliedCanvas === design.trimmed.canvas,
+          undo: function() {
+            var previous = design.printUndo;
+            if (!previous || previous.appliedCanvas !== design.trimmed.canvas) return;
+            updateDesignCanvas(design, { canvas: previous.canvas, w: previous.canvas.width, h: previous.canvas.height });
+            ['enhanced','wasEdited','nativeScale','sourceRect','trimRect','autoTrimApplied'].forEach(function(key){ design[key] = previous[key]; });
+            design.printUndo = null; design.undoImage = null;
+            feedbackEl.textContent = 'Last print optimization undone. Print size and placements unchanged.'; refreshEdit();
+          },
+          apply: function(canvas, factor, removed, summary) {
+            if (canvas !== design.trimmed.canvas) {
+              var previous = imageUndoState(design);
+              updateDesignCanvas(design, { canvas: canvas, w: canvas.width, h: canvas.height });
+              design.printUndo = previous; previous.appliedCanvas = canvas;
+              design.undoImage = previous; design.nativeScale = (previous.nativeScale || 1) * factor;
+              design.enhanced = design.enhanced || factor > 1; design.wasEdited = true;
+              refreshEdit();
+            }
+            feedbackEl.textContent = summary;
+          }
+        });
       } catch (error) { feedbackEl.textContent = error.message; }
     });
 
@@ -1468,7 +1480,7 @@
     }
     var printWIn = Math.max(0.01, p.inst.baseW / (dpiGlobal || 300));
     var printHIn = Math.max(0.01, p.inst.baseH / (dpiGlobal || 300));
-    var ppi = Math.min(design.trimmed.w / printWIn, design.trimmed.h / printHIn);
+    var ppi = Math.min(design.trimmed.w / printWIn, design.trimmed.h / printHIn) / (design.nativeScale || 1);
     var level = ppi < 150 ? 'low' : (ppi < 240 ? 'caution' : 'ok');
     return { level: level, ppi: ppi };
   }

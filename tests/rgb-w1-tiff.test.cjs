@@ -44,7 +44,7 @@ function rational(tags, tag) {
     page.on('pageerror', error => errors.push(error.message));
     await page.route('http://localhost:4180/**', route => {
       const pathname = new URL(route.request().url()).pathname;
-      if (/^\/(sheet-workspace|background-editor)\.(js|css)$/.test(pathname)) {
+      if (/^\/(sheet-workspace|background-editor|print-optimizer)\.(js|css)$/.test(pathname)) {
         return route.fulfill({ body: fs.readFileSync('public' + pathname), contentType: pathname.endsWith('.js') ? 'text/javascript' : 'text/css' });
       }
       return route.fulfill({ body: html, contentType: 'text/html' });
