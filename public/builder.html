@@ -5,6 +5,8 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Smart Sheet Builder by Master PrintLab</title>
 <link rel="stylesheet" href="/sheet-workspace.css">
+<link rel="stylesheet" href="/background-editor.css">
+<link rel="stylesheet" href="/print-optimizer.css">
 <style>
   * { box-sizing: border-box; }
   body {
@@ -155,7 +157,7 @@
   }
   .sheet-block { margin-bottom: 24px; }
   .sheet-heading { font-size: 13px; font-weight: 600; margin: 0 0 8px; }
-  .design-item { display: grid; grid-template-columns: 80px minmax(0, 1fr); gap: 12px; border: 1px solid #e0ddd3; border-radius: 10px; padding: 12px; margin-top: 12px; }
+  .design-item { position:relative; display:grid; grid-template-columns:80px minmax(0,1fr); gap:12px; border:1px solid #e0ddd3; border-radius:12px; padding:14px; margin-top:12px; background:#fffefa; }
   .design-thumb {
     width: 80px; height: 80px; border-radius: 6px;
     background-image:
@@ -167,8 +169,8 @@
     background-color: #f4f3ee; display: flex; align-items: center; justify-content: center; overflow: hidden;
   }
   .design-thumb img { max-width: 100%; max-height: 100%; }
-  .design-fields { grid-column: 1 / -1; min-width: 0; }
-  .design-name { align-self: center; min-width: 0; font-size: 14px; font-weight: 600; margin: 0; overflow-wrap: anywhere; }
+  .design-fields { grid-column:1 / -1; min-width:0; }
+  .design-name { align-self:center; min-width:0; padding-right:34px; font-size:14px; font-weight:650; margin:0; overflow-wrap:anywhere; }
   .design-fields .row3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
   .design-fields input { min-width: 0; }
   .image-note { font-size: 12px; color: #5f6470; line-height: 1.45; margin: 8px 0 12px; }
@@ -185,8 +187,13 @@
   .lock-row { display: flex; align-items: center; font-size: 12px; color: #555; margin: 4px 0 10px; }
   .vibrance-val { font-weight: 600; }
   .empty-hint { font-size: 13px; color: #888; margin-top: 12px; }
-  .item-btn-row { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
-  .item-btn-row button { width: auto; padding: 8px 10px; min-height: 36px; font-size: 12px; max-width: 100%; }
+  .item-btn-row { display:flex; gap:8px; flex-wrap:wrap; align-items:center; margin:0 0 10px; }
+  .item-btn-row button { width:auto; padding:8px 11px; min-height:36px; font-size:12px; max-width:100%; }
+  .item-btn-row .background-edit-btn { background:#163e48; border-color:#163e48; color:#fff; font-weight:650; }
+  .item-btn-row .reset-image-btn { padding:4px 0; min-height:auto; border:0; background:transparent; color:#4b7180; text-decoration:underline; font-size:11px; }
+  .design-remove-x { position:absolute; top:10px; right:10px; display:grid; place-items:center; width:28px !important; min-width:28px; height:28px; min-height:28px !important; padding:0 !important; border:1px solid #d4dde1 !important; border-radius:50% !important; background:#fff !important; color:#49606a !important; font-size:18px !important; line-height:1; }
+  .design-remove-x:hover { border-color:#b74040 !important; background:#fff2f2 !important; color:#a92626 !important; }
+  .design-remove-x:focus-visible,.reset-image-btn:focus-visible { outline:3px solid #139ea6; outline-offset:2px; }
   .source-quality { font-size: 11px; line-height: 1.35; color: #5f6470; margin: 0 0 8px; }
   .bg-tools { display: flex; align-items: center; gap: 8px; margin: 8px 0 0; flex-wrap: wrap; }
   .bg-tools label { margin: 0; font-size: 11px; white-space: nowrap; }
@@ -356,6 +363,8 @@
 </div>
 
 <script src="/sheet-workspace.js"></script>
+<script src="/background-editor.js"></script>
+<script src="/print-optimizer.js"></script>
 <script>
 (function(){
   var directOnlineAccess = window.top === window.self &&
@@ -506,7 +515,11 @@
       bgTolerance: 'BG sensitivity',
 
       enhance: 'Enhance resolution 2×',
-      restoreOriginal: 'Restore original',
+      enhanceCompact: 'Optimize for Print',
+      editBackground: 'Edit Background',
+      resetImage: 'Reset image',
+      resetImageDone: 'Original uploaded image restored',
+      restoreOriginal: 'Restore original canvas',
       editUndone: 'Last image edit undone',
       processingImage: 'Processing image…',
       noImageChange: 'No image changes',
@@ -515,8 +528,10 @@
       enhancedMessage: 'Smooth upscaling applied; print size unchanged. No new detail is restored.',
       imageMemoryLimit: 'Image operation exceeds the memory limit (16 megapixels, 8192 px per side, 256 MiB working budget). Use a smaller source or remove other designs.',
       invalidDesignSize: 'Enter positive design dimensions and a whole quantity from 1 to 10,000.',
-      imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original resets all edits.',
-      sourceQuality: function(w, h, ppi){ return 'Original: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
+      imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original canvas resets all edits and restores the full upload.',
+      sourceQuality: function(w, h, ppi){ return 'Active source: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
+      marginsTrimmed: function(ow, oh, w, h){ return 'Transparent margins trimmed: ' + ow + ' × ' + oh + ' px → ' + w + ' × ' + h + ' px'; },
+      emptyTransparentImage: 'This PNG is completely transparent. Add a PNG with visible artwork instead.',
       bgRemoved: 'Natanggal ang edge background',
       bgNone: 'Walang uniform edge background na natanggal',
       restoredOriginal: 'Naibalik ang original PNG',
@@ -622,7 +637,11 @@
       bgTolerance: 'BG sensitivity',
 
       enhance: 'Enhance resolution 2×',
-      restoreOriginal: 'Restore original',
+      enhanceCompact: 'Optimize for Print',
+      editBackground: 'Edit Background',
+      resetImage: 'Reset image',
+      resetImageDone: 'Original uploaded image restored',
+      restoreOriginal: 'Restore original canvas',
       editUndone: 'Last image edit undone',
       processingImage: 'Processing image…',
       noImageChange: 'No image changes',
@@ -631,8 +650,10 @@
       enhancedMessage: 'Smooth upscaling applied; print size unchanged. No new detail is restored.',
       imageMemoryLimit: 'Image operation exceeds the memory limit (16 megapixels, 8192 px per side, 256 MiB working budget). Use a smaller source or remove other designs.',
       invalidDesignSize: 'Enter positive design dimensions and a whole quantity from 1 to 10,000.',
-      imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original resets all edits.',
-      sourceQuality: function(w, h, ppi){ return 'Original: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
+      imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original canvas resets all edits and restores the full upload.',
+      sourceQuality: function(w, h, ppi){ return 'Active source: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
+      marginsTrimmed: function(ow, oh, w, h){ return 'Transparent margins trimmed: ' + ow + ' × ' + oh + ' px → ' + w + ' × ' + h + ' px'; },
+      emptyTransparentImage: 'This PNG is completely transparent. Add a PNG with visible artwork instead.',
       bgRemoved: 'Edge background removed',
       bgNone: 'No uniform edge background was removed',
       restoredOriginal: 'Original PNG restored',
@@ -896,12 +917,42 @@
     return { canvas: c, w: w, h: h };
   }
 
+  // Crop only fully transparent outside pixels. Any alpha above zero is artwork,
+  // including anti-aliased edges and soft shadows, so it is never thresholded away.
+  function trimTransparentMargins(sourceCanvas, padding) {
+    var w = sourceCanvas.width, h = sourceCanvas.height;
+    var image = sourceCanvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h);
+    var data = image.data, left = w, top = h, right = -1, bottom = -1;
+    for (var y = 0; y < h; y++) {
+      for (var x = 0; x < w; x++) {
+        if (data[(y * w + x) * 4 + 3] === 0) continue;
+        if (x < left) left = x;
+        if (x > right) right = x;
+        if (y < top) top = y;
+        if (y > bottom) bottom = y;
+      }
+    }
+    if (right < left || bottom < top) throw new Error(t('emptyTransparentImage'));
+    var safePadding = padding == null ? 1 : Math.max(0, Math.floor(padding));
+    left = Math.max(0, left - safePadding); top = Math.max(0, top - safePadding);
+    right = Math.min(w - 1, right + safePadding); bottom = Math.min(h - 1, bottom + safePadding);
+    var cropW = right - left + 1, cropH = bottom - top + 1;
+    var cropRect = { x: left, y: top, w: cropW, h: cropH };
+    if (cropW === w && cropH === h) return { canvas: sourceCanvas, w: w, h: h, cropRect: cropRect, noChange: true };
+    // Copy raw RGBA pixels one-for-one; this intentionally performs no resampling.
+    assertImageBudget(cropW, cropH, 8);
+    var cropped = document.createElement('canvas'); cropped.width = cropW; cropped.height = cropH;
+    cropped.getContext('2d').putImageData(sourceCanvas.getContext('2d', { willReadFrequently: true }).getImageData(left, top, cropW, cropH), 0, 0);
+    return { canvas: cropped, w: cropW, h: cropH, cropRect: cropRect, noChange: false };
+  }
+
   // RGBA sources plus one undo state are bounded; never silently downsample.
   function retainedImagePixels() {
     var canvases = new Set();
     designs.forEach(function(d) {
       canvases.add(d.originalCanvas); canvases.add(d.trimmed.canvas);
       if (d.undoImage) canvases.add(d.undoImage.canvas);
+      if (d.printUndo) { canvases.add(d.printUndo.canvas); canvases.add(d.printUndo.appliedCanvas); }
     });
     var total = 0;
     canvases.forEach(function(c) { if (c) total += c.width * c.height; });
@@ -913,19 +964,6 @@
         retainedImagePixels() * 4 + w * h * (workspaceBytesPerPixel || 4) > 256 * 1024 * 1024) {
       throw new Error(t('imageMemoryLimit'));
     }
-  }
-
-  function enhanceDesign(design) {
-    if (design.enhanced) throw new Error(t('enhanceOnce'));
-    var w = design.trimmed.w * 2, h = design.trimmed.h * 2;
-    assertImageBudget(w, h, 8);
-    var c = document.createElement('canvas');
-    c.width = w; c.height = h;
-    var ctx = c.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(design.trimmed.canvas, 0, 0, w, h);
-    return { canvas: c, w: w, h: h, enhanced: true };
   }
 
   function thumbnailUrl(canvas) {
@@ -1060,6 +1098,17 @@
     design.previewUrl = thumbnailUrl(result.canvas);
   }
 
+  function imageSourceRect(design) {
+    return design.sourceRect || (design.autoTrimApplied ? design.trimRect :
+      { x: 0, y: 0, w: design.originalCanvas.width, h: design.originalCanvas.height });
+  }
+
+  function imageUndoState(design) {
+    return { canvas: design.trimmed.canvas, enhanced: design.enhanced, wasEdited: design.wasEdited,
+      nativeScale: design.nativeScale || 1,
+      sourceRect: imageSourceRect(design), trimRect: design.trimRect, autoTrimApplied: design.autoTrimApplied };
+  }
+
   function refreshLayoutAfterImageEdit(design) {
     // Image edits preserve all placements and physical print sizes.
     instances.forEach(function(inst) {
@@ -1129,28 +1178,60 @@
 
     var btnRow = document.createElement('div');
     btnRow.className = 'item-btn-row';
-    var cleanBtn = document.createElement('button');
-    cleanBtn.textContent = t('clean');
-    cleanBtn.className = 'secondary';
-    btnRow.appendChild(cleanBtn);
     var enhanceBtn = document.createElement('button');
     enhanceBtn.className = 'secondary';
-    enhanceBtn.textContent = t('enhance');
-    enhanceBtn.disabled = !!design.enhanced;
+    enhanceBtn.textContent = t('enhanceCompact');
+    enhanceBtn.title = 'Analyze source PPI, inspect pixels, and optionally smooth upscale for print';
     btnRow.appendChild(enhanceBtn);
 
-    var removeBgBtn = document.createElement('button');
-    removeBgBtn.textContent = t('removeBg');
-    removeBgBtn.className = 'secondary';
-    btnRow.appendChild(removeBgBtn);
+    var editBackgroundBtn = document.createElement('button');
+    editBackgroundBtn.textContent = t('editBackground'); editBackgroundBtn.className = 'background-edit-btn';
+    editBackgroundBtn.title = 'Open Magic Wand, brushes, automatic cleanup, and recovery tools';
+    editBackgroundBtn.addEventListener('click', function(){
+      try {
+        if (!window.openBackgroundEditor) throw new Error('Background Editor could not load. Refresh the page and try again.');
+        var pixels = design.trimmed.w * design.trimmed.h;
+        var historySteps = Math.min(16, Math.floor(48 * 1024 * 1024 / (pixels * 5)));
+        assertImageBudget(design.trimmed.w, design.trimmed.h, 36 + 5 * (historySteps + 1));
+        window.openBackgroundEditor({
+          canvas: design.trimmed.canvas, original: design.originalCanvas, sourceRect: imageSourceRect(design),
+          name: design.file.name,
+          autoRemove: function(canvas, tolerance) { return removeConnectedEdgeBackground(canvas, tolerance); },
+          removeTinySpecks: function(canvas) {
+            assertImageBudget(canvas.width, canvas.height, 24);
+            return removeTinySpecks(canvas);
+          },
+          autoTolerance: design.bgTolerance,
+          apply: function(canvas) {
+            // Prepare everything before publishing the new source. Empty artwork is rejected.
+            var result = trimTransparentMargins(canvas, 1), rect = imageSourceRect(design);
+            var crop = result.cropRect, sx = rect.w / canvas.width, sy = rect.h / canvas.height;
+            var nextRect = { x: rect.x + crop.x * sx, y: rect.y + crop.y * sy, w: crop.w * sx, h: crop.h * sy };
+            var preview = thumbnailUrl(result.canvas), previous = imageUndoState(design);
+            design.undoImage = previous;
+            design.trimmed = { canvas: result.canvas, w: result.w, h: result.h };
+            design.aspect = result.w / result.h; design.previewUrl = preview;
+            design.sourceRect = nextRect; design.trimRect = nextRect;
+            design.autoTrimApplied = nextRect.x !== 0 || nextRect.y !== 0 || nextRect.w !== design.originalCanvas.width || nextRect.h !== design.originalCanvas.height;
+            design.wasEdited = true;
+            feedbackEl.textContent = 'Background edits applied. Print size and placements unchanged.';
+            refreshEdit();
+          }
+        });
+      } catch (error) { feedbackEl.textContent = error.message; }
+    });
+    btnRow.insertBefore(editBackgroundBtn, enhanceBtn);
 
     var removeBtn = document.createElement('button');
-    removeBtn.textContent = t('remove');
-    removeBtn.className = 'secondary';
+    removeBtn.type = 'button'; removeBtn.textContent = '×'; removeBtn.className = 'design-remove-x';
+    removeBtn.setAttribute('aria-label', 'Remove ' + design.file.name);
+    removeBtn.title = 'Remove this design';
     removeBtn.addEventListener('click', function(){
+      if (instances.some(function(inst){ return inst.designId === design.id; }) &&
+          !window.confirm('Remove this design and its placed pieces from the layout?')) return;
       removeDesignAndLayout(design);
     });
-    btnRow.appendChild(removeBtn);
+    wrap.appendChild(removeBtn);
 
     fields.appendChild(btnRow);
 
@@ -1163,91 +1244,62 @@
     sourceInfo.className = 'source-quality';
     function refreshSourceInfo() {
       var ppi = design.widthIn > 0 && design.heightIn > 0 ?
-        Math.round(Math.min(design.originalCanvas.width / design.widthIn, design.originalCanvas.height / design.heightIn)) : '—';
-      sourceInfo.textContent = t('sourceQuality')(design.originalCanvas.width, design.originalCanvas.height, ppi);
+        Math.round(Math.min(design.trimmed.w / design.widthIn, design.trimmed.h / design.heightIn) / (design.nativeScale || 1)) : '—';
+      sourceInfo.textContent = t('sourceQuality')(design.trimmed.w, design.trimmed.h, ppi);
       if (design.enhanced) sourceInfo.textContent += ' · ' + t('upscaledPixels') + ': ' + design.trimmed.w + ' × ' + design.trimmed.h;
     }
     refreshSourceInfo();
     fields.appendChild(sourceInfo);
-    var note = document.createElement('p');
-    note.className = 'image-note';
-    note.textContent = t('imageToolsNote');
-    fields.appendChild(note);
-
-    var bgTools = document.createElement('div');
-    bgTools.className = 'bg-tools';
-    var toleranceLabel = document.createElement('label');
-    toleranceLabel.textContent = t('bgTolerance') + ': ' + design.bgTolerance;
-    var toleranceInput = document.createElement('input');
-    toleranceInput.id = 'bg-tolerance-' + design.id;
-    toleranceLabel.htmlFor = toleranceInput.id;
-    toleranceInput.type = 'range'; toleranceInput.min = '16'; toleranceInput.max = '110'; toleranceInput.step = '2';
-    toleranceInput.value = design.bgTolerance;
-    toleranceInput.addEventListener('input', function(){
-      design.bgTolerance = parseInt(toleranceInput.value, 10);
-      toleranceLabel.textContent = t('bgTolerance') + ': ' + design.bgTolerance;
-    });
-    var undoBtn = document.createElement('button');
-    undoBtn.className = 'secondary'; undoBtn.textContent = t('undo');
-    undoBtn.disabled = !design.undoImage;
-    var restoreBtn = document.createElement('button');
-    restoreBtn.className = 'secondary'; restoreBtn.textContent = t('restoreOriginal');
-    restoreBtn.disabled = !design.wasEdited;
+    var resetImageBtn = document.createElement('button');
+    resetImageBtn.type = 'button'; resetImageBtn.className = 'reset-image-btn'; resetImageBtn.textContent = t('resetImage');
+    resetImageBtn.title = 'Discard all applied background, cleanup, and enhancement edits';
+    resetImageBtn.style.display = design.wasEdited ? '' : 'none';
+    if (design.autoTrimApplied) feedbackEl.textContent = t('marginsTrimmed')(design.originalCanvas.width, design.originalCanvas.height, design.trimmed.w, design.trimmed.h);
     function refreshEdit() {
       thumbImg.src = design.previewUrl;
-      undoBtn.disabled = !design.undoImage;
-      restoreBtn.disabled = !design.wasEdited;
-      enhanceBtn.disabled = !!design.enhanced;
+      resetImageBtn.style.display = design.wasEdited ? '' : 'none';
       refreshSourceInfo();
       refreshLayoutAfterImageEdit(design);
     }
-    undoBtn.addEventListener('click', function(){
-      if (!design.undoImage) return;
-      var previous = design.undoImage;
-      updateDesignCanvas(design, { canvas: previous.canvas, w: previous.canvas.width, h: previous.canvas.height });
-      design.enhanced = previous.enhanced;
-      design.wasEdited = previous.wasEdited;
-      design.undoImage = null;
-      feedbackEl.textContent = t('editUndone');
-      refreshEdit();
-    });
-    restoreBtn.addEventListener('click', function(){
+    resetImageBtn.addEventListener('click', function(){
+      if (!window.confirm('Reset this image? This discards all applied background, cleanup, and enhancement edits.')) return;
       updateDesignCanvas(design, { canvas: design.originalCanvas, w: design.originalCanvas.width, h: design.originalCanvas.height });
-      design.enhanced = false; design.wasEdited = false; design.undoImage = null;
-      feedbackEl.textContent = t('restoredOriginal');
+      design.enhanced = false; design.wasEdited = false; design.undoImage = null; design.autoTrimApplied = false;
+      design.nativeScale = 1; design.printUndo = null;
+      design.sourceRect = { x: 0, y: 0, w: design.originalCanvas.width, h: design.originalCanvas.height };
+      feedbackEl.textContent = t('resetImageDone');
       refreshEdit();
     });
-    btnRow.appendChild(undoBtn);
-    btnRow.appendChild(restoreBtn);
-    bgTools.appendChild(toleranceLabel); bgTools.appendChild(toleranceInput);
-    fields.appendChild(bgTools);
-    function runEdit(operation, message) {
-      [cleanBtn, enhanceBtn, removeBgBtn, undoBtn, restoreBtn, removeBtn].forEach(function(b){ b.disabled = true; });
-      feedbackEl.textContent = t('processingImage');
-      setTimeout(function(){
-        try {
-          var result = operation();
-          if (result.noChange) { feedbackEl.textContent = t('noImageChange'); return; }
-          design.undoImage = { canvas: design.trimmed.canvas, enhanced: design.enhanced, wasEdited: design.wasEdited };
-          updateDesignCanvas(design, result);
-          if (result.enhanced) design.enhanced = true;
-          design.wasEdited = true;
-          feedbackEl.textContent = message;
-        } catch (err) { feedbackEl.textContent = err.message; }
-        finally {
-          cleanBtn.disabled = removeBgBtn.disabled = removeBtn.disabled = false;
-          refreshEdit();
-        }
-      }, 20);
-    }
-    cleanBtn.addEventListener('click', function(){ runEdit(function(){
-      assertImageBudget(design.trimmed.w, design.trimmed.h, 24);
-      return removeTinySpecks(design.trimmed.canvas);
-    }, t('cleanedMsg')); });
-    removeBgBtn.addEventListener('click', function(){ runEdit(function(){
-      return removeConnectedEdgeBackground(design.trimmed.canvas, design.bgTolerance);
-    }, t('bgRemoved')); });
-    enhanceBtn.addEventListener('click', function(){ runEdit(function(){ return enhanceDesign(design); }, t('enhancedMessage')); });
+    btnRow.appendChild(resetImageBtn);
+    enhanceBtn.addEventListener('click', function(){
+      try {
+        if (!window.PrintOptimizer) throw new Error('Print optimizer could not load. Refresh the page and try again.');
+        window.PrintOptimizer.open({
+          canvas: design.trimmed.canvas, widthIn: design.widthIn, heightIn: design.heightIn,
+          nativeScale: design.nativeScale || 1, enhanced: design.enhanced, budget: assertImageBudget,
+          canUndo: !!design.printUndo && design.printUndo.appliedCanvas === design.trimmed.canvas,
+          undo: function() {
+            var previous = design.printUndo;
+            if (!previous || previous.appliedCanvas !== design.trimmed.canvas) return;
+            updateDesignCanvas(design, { canvas: previous.canvas, w: previous.canvas.width, h: previous.canvas.height });
+            ['enhanced','wasEdited','nativeScale','sourceRect','trimRect','autoTrimApplied'].forEach(function(key){ design[key] = previous[key]; });
+            design.printUndo = null; design.undoImage = null;
+            feedbackEl.textContent = 'Last print optimization undone. Print size and placements unchanged.'; refreshEdit();
+          },
+          apply: function(canvas, factor, removed, summary) {
+            if (canvas !== design.trimmed.canvas) {
+              var previous = imageUndoState(design);
+              updateDesignCanvas(design, { canvas: canvas, w: canvas.width, h: canvas.height });
+              design.printUndo = previous; previous.appliedCanvas = canvas;
+              design.undoImage = previous; design.nativeScale = (previous.nativeScale || 1) * factor;
+              design.enhanced = design.enhanced || factor > 1; design.wasEdited = true;
+              refreshEdit();
+            }
+            feedbackEl.textContent = summary;
+          }
+        });
+      } catch (error) { feedbackEl.textContent = error.message; }
+    });
 
     var row = document.createElement('div');
     row.className = 'row3';
@@ -1347,12 +1399,14 @@
     var sourceUrl = URL.createObjectURL(file);
     var img;
     try { img = await loadImage(sourceUrl); } finally { URL.revokeObjectURL(sourceUrl); }
-    var trimmed = decodeImageCanvas(img);
+    var original = decodeImageCanvas(img);
+    var trimmed = trimTransparentMargins(original.canvas, 1);
     var dpi = parseFloat(dpiInput.value) || 300;
     return {
       id: designIdCounter++, file: file, trimmed: trimmed, aspect: trimmed.w / trimmed.h,
       widthIn: trimmed.w / dpi, heightIn: trimmed.h / dpi, qty: 1, vibrance: 0,
-      previewUrl: thumbnailUrl(trimmed.canvas), originalCanvas: trimmed.canvas,
+      previewUrl: thumbnailUrl(trimmed.canvas), originalCanvas: original.canvas,
+      trimRect: trimmed.cropRect, autoTrimApplied: !trimmed.noChange,
       bgTolerance: 42, wasEdited: false
     };
   }
@@ -1426,7 +1480,7 @@
     }
     var printWIn = Math.max(0.01, p.inst.baseW / (dpiGlobal || 300));
     var printHIn = Math.max(0.01, p.inst.baseH / (dpiGlobal || 300));
-    var ppi = Math.min(design.originalCanvas.width / printWIn, design.originalCanvas.height / printHIn);
+    var ppi = Math.min(design.trimmed.w / printWIn, design.trimmed.h / printHIn) / (design.nativeScale || 1);
     var level = ppi < 150 ? 'low' : (ppi < 240 ? 'caution' : 'ok');
     return { level: level, ppi: ppi };
   }
@@ -2349,6 +2403,9 @@
     var sampleCount = baseSamples + (profile.normalAlpha ? 1 : 0) + profile.spotNames.length;
     var extraSamples = [];
     if (profile.normalAlpha) extraSamples.push(2);
+    // DTF RGB+W1 has one extra TIFF sample. It is W1, not a TIFF alpha channel:
+    // the Photoshop layer block retains alpha while resource 1006 names this
+    // sample W1. Code 0 (unspecified) is therefore the correct declaration.
     profile.spotNames.forEach(function(){ extraSamples.push(0); });
     var xmpMetadata = buildXmpMetadata(width, height, dpi, profile);
     var softwareName = 'Smart Sheet Builder V5.2.4 TIFF Export';
@@ -2551,9 +2608,13 @@
           channels[3][x] = alpha ? 255 - lut[lutIndex + 2] : 255;
           channels[4][x] = alpha ? 255 - lut[lutIndex + 3] : 255;
         } else {
-          channels[1][x] = rgba[source];
-          channels[2][x] = rgba[source + 1];
-          channels[3][x] = rgba[source + 2];
+          // Keep the hidden base color white for DTF RGB+W1. Photoshop still
+          // uses channel -1 for transparency, while RIPs that ignore that
+          // metadata no longer interpret blank RGB pixels as black.
+          var blankRgbW1 = profile.mode === 'dtf_rgb_w1' && alpha === 0;
+          channels[1][x] = blankRgbW1 ? 255 : rgba[source];
+          channels[2][x] = blankRgbW1 ? 255 : rgba[source + 1];
+          channels[3][x] = blankRgbW1 ? 255 : rgba[source + 2];
         }
       }
       for (var c = 0; c < channels.length; c++) {
@@ -2648,9 +2709,14 @@
               out[outPos++] = rgba[source + 2];
               out[outPos++] = alpha;
             } else {
-              out[outPos++] = Math.floor((rgba[source] * alpha + 127) / 255);
-              out[outPos++] = Math.floor((rgba[source + 1] * alpha + 127) / 255);
-              out[outPos++] = Math.floor((rgba[source + 2] * alpha + 127) / 255);
+              // MainTop can ignore RGB Photoshop-layer transparency and W1
+              // metadata. For the RGB+W1 production layout, give alpha-zero
+              // background pixels a white RGB fallback without altering alpha,
+              // W1, opaque art, partially transparent antialiasing, CMYK, or UV.
+              var blankRgbW1 = profile.mode === 'dtf_rgb_w1' && alpha === 0;
+              out[outPos++] = blankRgbW1 ? 255 : Math.floor((rgba[source] * alpha + 127) / 255);
+              out[outPos++] = blankRgbW1 ? 255 : Math.floor((rgba[source + 1] * alpha + 127) / 255);
+              out[outPos++] = blankRgbW1 ? 255 : Math.floor((rgba[source + 2] * alpha + 127) / 255);
             }
             if (alpha) {
               if (x < bounds.minX) bounds.minX = x;

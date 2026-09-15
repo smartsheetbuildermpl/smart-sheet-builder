@@ -47,7 +47,7 @@ window.installSheetWorkspace = function(b) {
     el('height').value = b.format(s.p.inst.baseH / b.dpi);
     el('quantity').value = b.instances.filter(function(i){ return i.designId === s.design.id; }).length;
     document.querySelectorAll('.sw-unit').forEach(function(e){ e.textContent = '(' + b.unit() + ')'; });
-    el('ppi').textContent = 'Original ' + s.design.originalCanvas.width + ' × ' + s.design.originalCanvas.height + ' px · ' + Math.round(b.quality(s.p).ppi) + ' source PPI · sizes before rotation';
+    el('ppi').textContent = 'Active source ' + s.design.trimmed.w + ' × ' + s.design.trimmed.h + ' px · ' + Math.round(b.quality(s.p).ppi) + ' source PPI · sizes before rotation';
   }
   function refreshView() {
     activeSheet = Math.max(0, Math.min(activeSheet, Math.max(0, b.sheets.length - 1)));

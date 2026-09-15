@@ -37,10 +37,57 @@ For manual testing: run `npm run dev -- --port 3000`, open localhost:3000, sign 
 
 Uploads preserve the complete decoded source, including transparent padding and low-alpha pixels. Only card thumbnails are reduced. Each instance references its full-resolution source; the shared full-size sheet raster used by PNG and TIFF is rendered directly from that source, so changing print dimensions does not repeatedly resize an intermediate image. Existing TIFF encoding and color processing remain unchanged.
 
-Enhancement performs one optional 2× smooth interpolation, preserves physical size and transparency, and supports Undo. It does not restore detail. The source PPI readout continues to use original pixels after enhancement. Limits are 16 million output pixels, 8192 pixels per side, and an estimated 256 MiB retained-image/operation budget; this is not a bound on total browser or sheet/export memory. Undo stores one prior image state; Restore original clears all image edits.
+**Optimize for Print** analyzes the active artwork and offers an explicit opt-in, premultiplied-alpha Lanczos-2 smooth upscale toward 300 raster PPI (at most 2×). At 300 source PPI or higher it leaves resolution alone. Physical size stays unchanged. Source-detail PPI remains honest after interpolation; added pixels are not restored detail. The isolated-dot pass removes only detached 1–4-pixel dots with at most a 2×2 bounding box, beyond a safety band around the larger connected components. That dot pass preserves connected shadows, lines and soft alpha. The separate connected-fringe pass is described below. Dense detached textures are left alone. Small isolated intentional marks can still resemble dust; inspect and Cancel or Undo if needed. Canvas bounds and physical placement remain unchanged by optimization. Existing upload trimming remains separate.
+
+The **Original / Optimized preview** panes show distinct incoming-source and candidate rasters. Fit, 100%, 200%, and 400% use linked zoom and pan; integer inspection zoom uses nearest-pixel rendering. Zoom is measured against the candidate pixel grid and both images cover the same print area, so an upscaled candidate stays spatially aligned with its original. Hover/tap lenses sample the same normalized location in each actual raster. Mobile panes stack vertically. Swipe compare uses complementary clips: optimized transparent pixels reveal checkerboard, never the original underneath. **Undo last optimization** restores the source entering the last applied optimization. Card **Reset image** restores the complete original upload and removes all image edits. Limits are 16 million output pixels, 8192 pixels per side, and an estimated 256 MiB retained-image/operation budget (the budget can reject images below those dimension limits). These are not a bound on total browser or sheet/export memory. Hidden zero-alpha RGB cannot bleed into the resampler. Manual edge correction remains available in Edit Background.
+
+### Connected edge fringe rule
+
+The isolated-dot pass protects connected artwork, so it cannot remove connected blurry corners. Optimize for Print now offers **Safe**, **Balanced (default)**, and **Strong**. Safe runs only isolated-dot cleanup. Balanced and Strong additionally process the full-resolution exterior fringe before preview/upscaling. Every strength change starts from the immutable session original; changes never accumulate between previews, and only the selected candidate is applied.
+
+1. Flood-fill alpha-zero pixels reachable from the perimeter. Only low-alpha components touching that exterior or the image perimeter qualify. Enclosed holes are excluded.
+2. Balanced considers alpha 1–160 within eight source pixels of alpha ≥240. It preserves a component when more than 15% lies beyond that band, protecting broad shadows. Strong considers alpha 1–208 within fourteen pixels and can attenuate the nearby portions of broader shadows. Neither mode modifies the opaque core.
+3. Require a rising-alpha ray that does not cross a transparent gap and reaches a coherent solid 2×2 support patch. Balanced permits four alpha levels of local decline and 40 RGB levels of support variation; Strong permits twelve and 48. A narrow ridge with same-color/coverage continuation along its axis is protected as a possible fine line.
+4. Compare each candidate with the nearest supported artwork color. Require matte-like color divergence: at least 36 RGB levels for Balanced or 24 for Strong, plus a fit toward neutral black/gray/white (minimum matte contribution 35%/20%, residual 24/32), or a low-chroma tinted matte clearly differing from a more colorful core. Strong also considers coherent-color blur tails with alpha ≤64 at distance ≥4. Require at least three matching pixels in the component.
+5. Balanced removes matching alpha ≤24 pixels and retains 25% alpha for other matches. Strong removes matching alpha ≤64 pixels or those at distance ≥4, retaining 10% alpha for other matches. Retained pixels receive the supported artwork color to reduce matte contamination. All unmatched pixels, dimensions, print size, and the original remain unchanged.
+
+These local evidence rules are not semantic recognition: an intentional soft shadow or neutral highlight can resemble contamination. Strong deliberately permits more shadow reduction. Inspect the comparison before applying; Edit Background remains the manual fallback.
+
+Run `node tests/edge-strength.test.cjs` for a six-pixel connected corner halo, black/white/tinted mattes, clean colored AA, 1–3 px colored lines, enclosed holes, broad shadows, mode switching, immutable Original, and exact selected-candidate Apply. Each black, white, and tinted halo fixture has 2,704 nonzero-alpha pixels after the four isolated dots are removed:
+
+| Mode | Isolated dots removed | Fringe cleaned | Fringe removed | Fringe reduced/recolored | Nonzero alpha after |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Safe | 4 | 0 | 0 | 0 | 2,704 |
+| Balanced | 4 | 768 | 204 | 564 | 2,500 |
+| Strong | 4 | 1,104 | 588 | 516 | 2,116 |
+
+Clean colored AA stays at 2,116 pixels with zero fringe changes in all modes. The broader intentional shadow stays at 3,600 pixels in Safe/Balanced; Strong cleans 1,924 pixels (1,428 removed, 496 reduced), leaving 2,172. Core pixels remain exact. These fixtures also check idempotence for repeated cleanup.
+
+Run `node tests/edge-fringe.test.cjs` for the earlier smaller connected-corner fixtures, gray matte, hair/highlights, Cancel/Apply/Undo/Reset, and actual cleaned-source PNG/TIFF comparisons. Balanced still cleans 516 pixels on each smaller black/white/gray halo (180 removed, 336 reduced/recolored; 2,116 → 1,936 nonzero-alpha pixels).
+
+Fixtures are generated in the browser, not reconstructed from screenshots. The reported real artwork still needs its original PNG for pixel-level diagnosis. No Photoshop, MainTop, or physical printing was exercised.
+
+```sh
+node tests/print-optimizer.test.cjs
+node tests/rgb-w1-tiff.test.cjs
+node tests/background-editor.test.cjs
+node tests/zero-spacing.test.cjs
+```
+
+The print optimizer suite checks unchanged clean high-resolution pixels, isolated corner ghosts, connected soft edges, explicit upscale, original-detail PPI, Undo/Reset, full-resolution inspection, responsive dialog geometry, and memory limits. It downloads an actual 3-inch / 300-DPI PNG and TIFFs at 900×900 and compares opaque source pixels with the PNG and RGB+W1 raster despite invalidated thumbnail data and a 40px CSS sheet preview. It checks DTF RGB/CMYK, UV RGB/CMYK Photoshop spot resource names and sample counts, and Tarpaulin alpha TIFF. The background editor and zero-spacing suites cover alpha-bearing PNG/TIFF output. These tests do not run Photoshop or MainTop or assess physical print quality.
 
 Background removal is optional, uses a dominant edge color and connected flood fill with feathered transitions, and keeps the canvas dimensions. It cannot segment arbitrary photographic backgrounds and can affect artwork connected to an edge. Optional speck removal preserves surviving alpha but can remove small intentional details.
 
 Add and Arrange rebuild all uploaded designs' current quantities and sizes together. Packing preserves dimensions to the export pixel grid and rounds spacing up to the next pixel so it is never smaller than requested. The header area remains reserved. Automatic rotation and additional sheets respect their checkboxes. Oversized pieces, or pieces left when additional sheets are disabled, are reported as skipped. Packing is heuristic; it does not guarantee the mathematical minimum number of sheets.
 
 The synthetic PNG checks do not diagnose a particular customer's exported file. A matching original PNG and actual exported PNG/TIFF are still needed to compare the reported pixelation at native pixel scale. Photoshop compatibility, RIP behavior, physical print size in a specific downstream application, and final printed quality were not tested.
+
+### Interactive print comparison checks
+
+Run `node tests/print-preview-ui.test.cjs`. This verifies the unchanged PPI-analysis/resampler hash, true original/candidate pixel differences, linked hover and touch lenses, Fit/100/200/400 zoom, drag panning, keyboard/draggable swipe, rendered swipe transparency, mobile stacking, immutable original, and exact applied-candidate equality. Explicit smooth upscale now prepares the same existing resampler result before Apply so it can be inspected; Apply publishes that candidate without recomputing it. Identical candidates show **No visual change required** and **Close — no changes**, with no image-edit callback. The old Compare original active source / Show optimized preview toggles are absent.
+
+### Optional Force smooth enhance
+
+Image enhancement is separate from edge cleanup. Auto / Print-safe remains the default and retains its existing no-op at 300 source PPI and optional low-PPI upscale. Force smooth enhance explicitly runs at 2× even at 300 PPI, from the full-resolution cleaned session source. It uses the existing premultiplied-alpha Lanczos-2 resampler followed by a local source-envelope clamp that excludes hidden transparent RGB and constrains alpha overshoot. A mild bounded unsharp pass affects only fully opaque 3×3 neighborhoods with at most 24 levels of per-channel variation: strength 0.12, at most two RGB levels, clamped to local color bounds. Alpha and transparent edges are never sharpened. The forced result uses a stable CPU-backed candidate canvas for comparison and Apply. Physical size and honest original-detail PPI remain unchanged. Existing 2×/16-megapixel/8192-side limits and a larger per-operation memory estimate apply; Force is not a memory-limit bypass. Smooth enhancement cannot recreate lost detail.
+
+Run `node tests/force-enhance.test.cjs` for 300-PPI Auto no-op versus forced 2×, rendered 200%/400% differences, colored transparent edges, source-color overshoot bounds, mode reversal, Cancel, immutable source and exact selected-candidate Apply. `print-optimizer.test.cjs` additionally applies Force through the real design card and compares its full-resolution PNG and alpha-TIFF exports pixel by pixel. Existing DTF RGB/CMYK and UV spot-resource checks remain. These synthetic/browser checks do not assess physical print quality or MainTop/Photoshop operation.
