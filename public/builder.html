@@ -533,7 +533,6 @@
       upscaledPixels: 'Smooth upscaled pixels',
       enhanceOnce: 'Already enhanced 2×. Undo or restore the original before enhancing again.',
       enhancedMessage: 'Smooth upscaling applied; print size unchanged. No new detail is restored.',
-      imageMemoryLimit: 'Image operation exceeds the memory limit (16 megapixels, 8192 px per side, 256 MiB working budget). Use a smaller source or remove other designs.',
       invalidDesignSize: 'Enter positive design dimensions and a whole quantity from 1 to 10,000.',
       imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original canvas resets all edits and restores the full upload.',
       sourceQuality: function(w, h, ppi){ return 'Active source: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
@@ -657,7 +656,6 @@
       upscaledPixels: 'Smooth upscaled pixels',
       enhanceOnce: 'Already enhanced 2×. Undo or restore the original before enhancing again.',
       enhancedMessage: 'Smooth upscaling applied; print size unchanged. No new detail is restored.',
-      imageMemoryLimit: 'Image operation exceeds the memory limit (16 megapixels, 8192 px per side, 256 MiB working budget). Use a smaller source or remove other designs.',
       invalidDesignSize: 'Enter positive design dimensions and a whole quantity from 1 to 10,000.',
       imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original canvas resets all edits and restores the full upload.',
       sourceQuality: function(w, h, ppi){ return 'Active source: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
@@ -929,7 +927,7 @@
 
   function decodeImageCanvas(img) {
     var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
-    assertImageBudget(w, h);
+    assertImageBudget(w, h, 12, 'PNG upload');
     var c = document.createElement('canvas');
     c.width = w; c.height = h;
     c.getContext('2d').drawImage(img, 0, 0);
@@ -940,6 +938,7 @@
   // including anti-aliased edges and soft shadows, so it is never thresholded away.
   function trimTransparentMargins(sourceCanvas, padding) {
     var w = sourceCanvas.width, h = sourceCanvas.height;
+    assertImageBudget(w, h, 12, 'Transparent-margin trimming');
     var image = sourceCanvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h);
     var data = image.data, left = w, top = h, right = -1, bottom = -1;
     for (var y = 0; y < h; y++) {
@@ -951,6 +950,9 @@
         if (y > bottom) bottom = y;
       }
     }
+    // The full readback is no longer needed after bounds detection. Release
+    // it before allocating the crop readback and canvas (no resampling).
+    image = null; data = null;
     if (right < left || bottom < top) throw new Error(t('emptyTransparentImage'));
     var safePadding = padding == null ? 1 : Math.max(0, Math.floor(padding));
     left = Math.max(0, left - safePadding); top = Math.max(0, top - safePadding);
@@ -965,23 +967,17 @@
     return { canvas: cropped, w: cropW, h: cropH, cropRect: cropRect, noChange: false };
   }
 
-  // RGBA sources plus one undo state are bounded; never silently downsample.
-  function retainedImagePixels() {
-    var canvases = new Set();
-    designs.forEach(function(d) {
-      canvases.add(d.originalCanvas); canvases.add(d.trimmed.canvas);
-      if (d.undoImage) canvases.add(d.undoImage.canvas);
-      if (d.printUndo) { canvases.add(d.printUndo.canvas); canvases.add(d.printUndo.appliedCanvas); }
-    });
-    var total = 0;
-    canvases.forEach(function(c) { if (c) total += c.width * c.height; });
-    return total;
-  }
-
-  function assertImageBudget(w, h, workspaceBytesPerPixel) {
-    if (w > 8192 || h > 8192 || w * h > 16000000 ||
-        retainedImagePixels() * 4 + w * h * (workspaceBytesPerPixel || 4) > 256 * 1024 * 1024) {
-      throw new Error(t('imageMemoryLimit'));
+  // Per-operation peak, including source/readback/candidate buffers. Other
+  // cards and export canvases are not working buffers for this image operation.
+  // Decode/trim reserve up to three RGBA buffers; editor/cleanup callers pass
+  // their larger working-set estimate. Never silently reduce source resolution.
+  function assertImageBudget(w, h, workspaceBytesPerPixel, operation) {
+    var bytes = w * h * Math.max(12, workspaceBytesPerPixel || 12) + 16 * 1024 * 1024;
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0 ||
+        w > 8192 || h > 8192 || w * h > 16 * 1024 * 1024 || bytes > 256 * 1024 * 1024) {
+      throw new Error((operation || 'Native image processing') + ' cannot process ' + w + ' × ' + h +
+        ' px: estimated peak ' + Math.ceil(bytes / 1048576) +
+        ' MiB; memory limit 256 MiB, 16,777,216 pixels and 8192 px per side. This operation was not applied.');
     }
   }
 
@@ -1211,7 +1207,7 @@
         if (!window.openBackgroundEditor) throw new Error('Background Editor could not load. Refresh the page and try again.');
         var pixels = design.trimmed.w * design.trimmed.h;
         var historySteps = Math.min(16, Math.floor(48 * 1024 * 1024 / (pixels * 5)));
-        assertImageBudget(design.trimmed.w, design.trimmed.h, 36 + 5 * (historySteps + 1));
+        assertImageBudget(design.trimmed.w, design.trimmed.h, 36 + 5 * (historySteps + 1), 'Edit Background');
         window.openBackgroundEditor({
           canvas: design.trimmed.canvas, original: design.originalCanvas, sourceRect: imageSourceRect(design),
           name: design.file.name,
@@ -1295,7 +1291,7 @@
         if (!window.PrintOptimizer) throw new Error('Print optimizer could not load. Refresh the page and try again.');
         window.PrintOptimizer.open({
           canvas: design.trimmed.canvas, widthIn: design.widthIn, heightIn: design.heightIn,
-          nativeScale: design.nativeScale || 1, enhanced: design.enhanced, budget: assertImageBudget,
+          nativeScale: design.nativeScale || 1, enhanced: design.enhanced,
           canUndo: !!design.printUndo && design.printUndo.appliedCanvas === design.trimmed.canvas,
           undo: function() {
             var previous = design.printUndo;

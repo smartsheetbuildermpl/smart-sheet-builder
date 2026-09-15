@@ -118,7 +118,7 @@ for (const [a,b] of [
     assert.equal(await card.getByRole('button',{name:'Undo',exact:true}).count(),0);
     assert.equal(await card.getByRole('button',{name:'Restore original canvas',exact:true}).count(),0);
     await card.getByRole('button',{name:'Optimize for Print',exact:true}).click();
-    await page.locator('.print-upscale input').check();
+    await page.locator('[data-enhancement]').selectOption('force');
     await page.getByRole('button',{name:'Apply optimization',exact:true}).click();
     await page.waitForFunction(()=>window.testBuilder.designs[0].enhanced);
     assert.deepEqual(await page.evaluate(()=>window.testBuilder.designs.map(d=>[d.widthIn,d.heightIn])),dims);
@@ -143,7 +143,7 @@ for (const [a,b] of [
       await card.screenshot({path:path.join(outputDir, 'card-'+width+'.png')});
     }
     await card.getByRole('button',{name:'Optimize for Print',exact:true}).click();
-    await page.locator('.print-upscale input').check();
+    await page.locator('[data-enhancement]').selectOption('force');
     await page.getByRole('button',{name:'Apply optimization',exact:true}).click();
     await page.waitForFunction(()=>window.testBuilder.designs[0].enhanced);
     for(const width of [1440,375,320]) {

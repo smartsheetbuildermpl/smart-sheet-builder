@@ -288,7 +288,7 @@
     }
     horizontal.clear();data=null;return canvasFrom(output);
   }
-  // Opt-in only. Keep Auto's existing resampler and cleanup unchanged.
+  // Opt-in only. Auto runs native-resolution cleanup without this resampler.
   async function forceEnhance(source,progress,cancelled) {
     checkMemory(source.width,source.height,'balanced',2,true);
     var result=await upscale(source,2,progress,cancelled),w=source.width,h=source.height,ow=result.width,oh=result.height;
@@ -352,13 +352,13 @@
       '<p id="print-edge-hint">Safe: isolated dots only. Balanced: likely connected edge halo. Strong: tighter blur/matte cleanup; may reduce soft outer shadows.</p>',
       '<label class="print-edge-strength">Image enhancement <select data-enhancement disabled><option value="auto" selected>Auto / Print-safe</option><option value="force">Force smooth enhance</option></select></label>',
       '<p>Smooth enhancement improves jagged edges but cannot recreate lost original detail.</p>',
-      '<label class="print-upscale"><input type="checkbox" disabled> Smooth upscale if needed (Lanczos, up to 2×)</label>',
+      '<p>Auto / Print-safe keeps the active source resolution. Only Force smooth enhance creates a 2× working image.</p>',
       '<p class="print-detail">Scroll or drag to pan both views. Hover or tap to inspect matching pixels; press Enter in a pane to inspect its center. Zoom uses optimized pixels, aligned to the same print area. Smooth upscale does not restore lost detail.</p>',
       '<div class="print-toolbar"><div role="group" aria-label="Comparison mode"><button type="button" data-mode="side" aria-pressed="true">Side by side</button><button type="button" data-mode="swipe" aria-pressed="false">Swipe compare</button></div><div role="group" aria-label="Preview zoom"><button type="button" data-fit aria-pressed="true">Fit</button><button type="button" data-inspect="1" aria-pressed="false">100%</button><button type="button" data-inspect="2" aria-pressed="false">200%</button><button type="button" data-inspect="4" aria-pressed="false">400%</button></div></div>',
       '<div class="print-comparison"></div>',
       '<footer><button type="button" data-undo>Undo last optimization</button><button type="button" data-retry hidden>Retry optimization</button><button type="button" data-cancel>Cancel</button><button type="button" data-apply disabled>Apply optimization</button></footer>'
     ].join('');
-    var $=function(s){return dialog.querySelector(s);},status=$('.print-result'),checkbox=$('.print-upscale input'),apply=$('[data-apply]'),strength=$('[data-edge-strength]'),enhancement=$('[data-enhancement]');
+    var $=function(s){return dialog.querySelector(s);},status=$('.print-result'),apply=$('[data-apply]'),strength=$('[data-edge-strength]'),enhancement=$('[data-enhancement]');
     var comparison=createComparison($('.print-comparison'));
     var adopted=false;
     function discard(){
@@ -379,17 +379,18 @@
       if(cleanup.fringe.strength==='safe')result+=' Safe checks isolated dots only.';
       else if(!cleanup.fringe.cleaned)result+=' No removable edge fringe detected in this mode.';
       if(cleanup.skipped)result+=' Dense detached detail preserved.';
-      if(options.enhanced&&enhancement.value==='auto')result+=' Repeated upscaling is disabled.';
+      if(enhancement.value==='auto')result+=' Native resolution retained.';
       return result;
     }
-    function ready(){busy=false;strength.disabled=false;enhancement.disabled=false;checkbox.disabled=enhancement.value==='force'||info.ppi>=300||options.enhanced;apply.disabled=false;apply.textContent=changed?'Apply optimization':'Close — no changes';message(summary());}
+    function ready(){busy=false;strength.disabled=false;enhancement.disabled=false;apply.disabled=false;apply.textContent=changed?'Apply optimization':'Close — no changes';message(summary());}
     async function regenerateCleanup(){
-      busy=true;changed=false;apply.disabled=true;apply.textContent='Apply optimization';checkbox.disabled=true;strength.disabled=true;enhancement.disabled=true;
+      busy=true;changed=false;apply.disabled=true;apply.textContent='Apply optimization';strength.disabled=true;enhancement.disabled=true;
       $('[data-retry]').hidden=true;comparison.clear();discard();
       try {
         if(!Number.isFinite(options.widthIn)||!Number.isFinite(options.heightIn)||options.widthIn<=0||options.heightIn<=0)throw new Error('Enter a valid print width and height before optimizing.');
-        var rasterPpi=Math.min(original.width/options.widthIn,original.height/options.heightIn),ppi=rasterPpi/(options.nativeScale||1);
-        factor=enhancement.value==='force'?2:(checkbox.checked&&ppi<300&&!options.enhanced?Math.max(1,Math.min(2,300/rasterPpi)):1);
+        // Auto never resamples, even at low effective PPI. Enhancement requires
+        // the explicit Force choice and always starts from this session's source.
+        factor=enhancement.value==='force'?2:1;
         var estimate=checkMemory(original.width,original.height,strength.value,factor,enhancement.value==='force');
         dialog.dataset.estimatedPeakBytes=estimate.bytes;
         message('Preparing '+strength.options[strength.selectedIndex].text+' edge cleanup at '+original.width+' × '+original.height+' px…');
@@ -399,7 +400,7 @@
         info=analyze(cleanup.canvas,options.widthIn,options.heightIn,options.nativeScale);
         candidate=cleanup.canvas;
         if(factor>1){
-          candidate=enhancement.value==='force'?await forceEnhance(cleanup.canvas,message,cancelled):await upscale(cleanup.canvas,factor,message,cancelled);
+          candidate=await forceEnhance(cleanup.canvas,message,cancelled);
           releaseCanvas(cleanup.canvas,original);cleanup.canvas=candidate;cleanup.fringe.canvas=candidate;
         }
         if(closed)return;
@@ -407,7 +408,7 @@
         comparison.setImages(original,candidate);ready();
       }catch(error){
         discard();comparison.clear();
-        if(!closed){busy=false;strength.disabled=false;enhancement.disabled=false;checkbox.disabled=enhancement.value==='force'||options.enhanced;
+        if(!closed){busy=false;strength.disabled=false;enhancement.disabled=false;
           apply.disabled=true;$('[data-retry]').hidden=false;
           message('Optimization failed: '+error.message+' Nothing was applied. Retry, change the selected option, or Cancel.');}
       }finally{if(closed){busy=false;discard();}}
@@ -419,7 +420,6 @@
     dialog.querySelectorAll('[data-mode]').forEach(function(button){button.onclick=function(){comparison.setMode(button.dataset.mode);dialog.querySelectorAll('[data-mode]').forEach(function(b){b.setAttribute('aria-pressed',String(b===button));});};});
     $('[data-undo]').disabled=!options.canUndo;
     $('[data-undo]').onclick=function(){options.undo();close();};
-    checkbox.onchange=regenerateCleanup;
     enhancement.onchange=regenerateCleanup;
     strength.onchange=regenerateCleanup;
     $('[data-retry]').onclick=regenerateCleanup;

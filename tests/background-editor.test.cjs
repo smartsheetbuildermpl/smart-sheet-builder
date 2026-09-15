@@ -134,7 +134,7 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
     page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'Reset image',exact:true}).click();assert.equal(await page.evaluate(()=>bgTest.designs[0].trimmed.canvas.toDataURL()),original.original,'Reset image restores the untouched upload');
     await page.getByRole('spinbutton',{name:'Width',exact:true}).fill('2');
     await page.getByRole('button',{name:'Optimize for Print',exact:true}).click();
-    await page.locator('.print-upscale input').check();
+    await page.locator('[data-enhancement]').selectOption('force');
     await page.getByRole('button',{name:'Apply optimization',exact:true}).click();
     await page.waitForFunction(()=>bgTest.designs[0].enhanced);
     await open();await act('Erase Brush').click();await slider('#bg-size',12);const enhancedBefore=await rgba(160,140);await clickPixel(160,140);await act('Restore Brush').click();await clickPixel(160,140);assert.deepEqual(await rgba(160,140),enhancedBefore,'restore mapping also works after 2× enhancement');await act('Cancel').click();
