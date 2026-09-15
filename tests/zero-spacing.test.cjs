@@ -23,11 +23,17 @@ assert.notEqual(html, source);
     const doc = page.frames().find(f => f.url().endsWith('/builder.html'));
     assert.equal(await frame.locator('#gapNumber').inputValue(), '0');
     assert.equal(await frame.locator('#gap').inputValue(), '0');
+    assert.equal(await frame.locator('#edgeAllowanceNumber').inputValue(), '0.30');
+    assert.equal(await doc.evaluate(() => zeroTest.settings().autoEdgeAllowancePx), 90, 'default edge allowance is 0.30 in at 300 DPI');
     for (const unit of ['cm', 'ft', 'in']) {
       await frame.locator('#measureUnit').selectOption(unit);
       assert(await frame.locator('#gapNumber').evaluate(e => e.checkValidity() && Number(e.value) === 0 && e.min === '0'));
       assert.equal(await doc.evaluate(() => zeroTest.settings().gapPx), 0);
     }
+    // This suite specifically checks zero inter-piece spacing. Turn off the
+    // separate auto-layout inset so its established edge-touch cases remain
+    // focused on spacing rather than the new margin setting.
+    await frame.locator('#edgeAllowanceNumber').fill('0');
     await frame.locator('#dpi').fill('100'); await frame.locator('#sheetWidth').fill('2'); await frame.locator('#sheetLength').fill('2.36');
     await frame.locator('#autoRotate').uncheck();
     await doc.evaluate(async () => {
@@ -35,31 +41,31 @@ assert.notEqual(html, source);
       const ctx = c.getContext('2d'); ctx.fillStyle = '#ff0000'; ctx.fillRect(0, 0, 100, 100); ctx.clearRect(0, 0, 3, 3);
       const blob = await new Promise(r => c.toBlob(r, 'image/png'));
       window.zeroFile = () => new File([blob], 'zero-gap.png', { type: 'image/png' });
-      await smartSheetWorkspace.addFile(zeroFile(), { sheetIndex: 0, x: 0, y: 36 });
+      await smartSheetWorkspace.addFile(zeroFile(), { sheetIndex: 0, x: 0, y: 0 });
     });
     // A nonzero prior sheet gap must not linger when the selected spacing is zero.
     await frame.locator('#gapNumber').fill('0.2');
     const rejected = () => doc.evaluate(async () => {
       const before = JSON.stringify(smartSheetWorkspace.snapshot());
-      try { await smartSheetWorkspace.addFile(zeroFile(), { sheetIndex: 0, x: 100, y: 36 }); return false; }
+      try { await smartSheetWorkspace.addFile(zeroFile(), { sheetIndex: 0, x: 100, y: 0 }); return false; }
       catch { return before === JSON.stringify(smartSheetWorkspace.snapshot()); }
     });
     assert(await rejected());
     await frame.locator('#gap').evaluate(e => { e.value = '0'; e.dispatchEvent(new Event('input', { bubbles: true })); });
     assert.equal(await frame.locator('#gapNumber').inputValue(), '0');
     await doc.evaluate(async () => {
-      await smartSheetWorkspace.addFile(zeroFile(), { sheetIndex: 0, x: 100, y: 36 });
+      await smartSheetWorkspace.addFile(zeroFile(), { sheetIndex: 0, x: 100, y: 0 });
       await smartSheetWorkspace.addFile(zeroFile());
       await smartSheetWorkspace.addFile(zeroFile());
     });
     const state = await doc.evaluate(() => smartSheetWorkspace.snapshot());
     assert.equal(state.sheets.length, 1); assert.equal(state.sheets[0].gap, 0);
-    assert.deepEqual(state.sheets[0].placements.map(p => [p.x, p.y, p.w, p.h]), [[0,36,100,100],[100,36,100,100],[0,136,100,100],[100,136,100,100]]);
+    assert.deepEqual(state.sheets[0].placements.slice(0,2).map(p => [p.x, p.y, p.w, p.h]), [[0,0,100,100],[100,0,100,100]]);
     assert(await doc.evaluate(() => {
       const sheet = zeroTest.sheets[0], p = sheet.placements[1];
       return smartSheetWorkspace.validate(p, sheet, p) && !smartSheetWorkspace.validate({ ...p, x: p.x - 1 }, sheet, p)
         && !smartSheetWorkspace.validate({ ...p, x: p.x + 1 }, sheet, p) && !zeroTest.overlaps().size;
-    }), 'touching is valid; one-pixel overlap or overflow is invalid');
+    }), 'manual placements can touch the physical edge; one-pixel overlap or overflow is invalid');
     assert(await rejected());
     await frame.locator('#autoExtend').uncheck();
     assert(await doc.evaluate(async () => { try { await smartSheetWorkspace.addFile(zeroFile()); return false; } catch { return smartSheetWorkspace.snapshot().sheets.length === 1; } }));
@@ -72,7 +78,7 @@ assert.notEqual(html, source);
     assert.equal(arranged.sheets.reduce((n,s) => n + s.placements.length, 0), 5);
     for (const s of arranged.sheets) for (const p of s.placements) {
       assert.equal(s.gap, 0); assert.equal(p.w, 100); assert.equal(p.h, 100);
-      assert(p.x >= 0 && p.y >= 36 && p.x + p.w <= s.width && p.y + p.h <= s.height);
+      assert(p.x >= 0 && p.y >= 0 && p.x + p.w <= s.width && p.y + p.h <= s.height);
       for (const q of s.placements) if (p.id !== q.id) assert(p.x + p.w <= q.x || q.x + q.w <= p.x || p.y + p.h <= q.y || q.y + q.h <= p.y);
     }
     const expected = await doc.evaluate(() => {
@@ -107,7 +113,19 @@ assert.notEqual(html, source);
     assert.deepEqual(pixels, Buffer.from(expected.rgba), 'TIFF retains exact sheet pixels and transparency');
     for (const x of [99,100]) assert.equal(pixels[(86 * expected.width + x)*4+3],255,'no artificial gap at touching seam');
     assert.deepEqual(await page.evaluate(() => exportsRequested), ['png','tiff']);
+    // A 23 × 39 in automatic run uses the full physical sheet dimensions but
+    // keeps every auto-packed bounding box at least 0.30 in from each edge.
+    await frame.locator('#sheetWidth').fill('23'); await frame.locator('#sheetLength').fill('39');
+    await frame.locator('#edgeAllowanceNumber').fill('0.3');
+    await frame.locator('#sw-arrange').click();
+    const edged = await doc.evaluate(() => ({ settings:zeroTest.settings(), sheets:smartSheetWorkspace.snapshot().sheets }));
+    assert.equal(edged.settings.sheetWidthPx, 2300); assert.equal(edged.settings.sheetLengthPx, 3900);
+    assert.equal(edged.settings.autoEdgeAllowancePx, 30);
+    for (const sheet of edged.sheets) for (const p of sheet.placements) {
+      assert(p.x >= 30 && p.y >= 30 && p.x + p.w <= sheet.width - 30 && p.y + p.h <= sheet.height - 30,
+        'auto-layout respects the physical 0.30 in allowance on every edge');
+    }
     assert.deepEqual(errors, []);
-    console.log('Zero spacing passed: defaults and unit/input/slider validity; prior spacing cleared; edge-touching manual and auto placements; overlap/bounds rejection; exact quantities and multi-sheet; real PNG/TIFF downloads decoded with identical RGBA pixels and no seam. Photoshop was not tested.');
+    console.log('Zero spacing and edge allowance passed: defaults and unit/input/slider validity; manual edge placement; auto-layout 0.30 in margins; prior spacing cleared; overlap/bounds rejection; exact quantities and multi-sheet; real PNG/TIFF downloads decoded with identical RGBA pixels and no seam. Photoshop was not tested.');
   } finally { await browser.close(); }
 })().catch(error => { console.error(error); process.exitCode = 1; });

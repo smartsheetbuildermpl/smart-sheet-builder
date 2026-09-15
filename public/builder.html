@@ -287,6 +287,11 @@
         <div class="field">
           <label><input type="checkbox" id="autoRotate" checked><span data-i18n="autoRotateLabel">Payagan ang auto-rotate para mapuno ang mga gap</span></label>
         </div>
+        <div class="field">
+          <label for="edgeAllowanceNumber" data-i18n="edgeAllowanceLabel">Auto-layout edge allowance (in)</label>
+          <input type="number" id="edgeAllowanceNumber" min="0" step="0.05" value="0.30" class="small-input" aria-describedby="edgeAllowanceHelp">
+          <small id="edgeAllowanceHelp" data-i18n="edgeAllowanceHelp">Auto-arrange only. Manual placement can still reach the real sheet edge.</small>
+        </div>
         <div class="row">
           <div class="field">
             <label for="dpi" data-i18n="dpiLabel">DPI</label>
@@ -461,6 +466,8 @@
       sheetLengthLabel: 'Length ng sheet',
       autoExtendLabel: 'Gumawa ng kasunod na sheet kapag puno',
       autoRotateLabel: 'Payagan ang auto-rotate para mapuno ang mga gap',
+      edgeAllowanceLabel: 'Allowance sa gilid para sa auto-layout',
+      edgeAllowanceHelp: 'Para lang sa auto-arrange. Puwede pa ring idikit sa totoong gilid ang manual placement.',
       dpiLabel: 'DPI',
       gapLabel: 'Gap sa pagitan',
       priceLabel: 'Presyo per yard/metro (\u20b1)',
@@ -583,6 +590,8 @@
       sheetLengthLabel: 'Sheet length',
       autoExtendLabel: 'Create another sheet when full',
       autoRotateLabel: 'Allow auto-rotate to fill gaps',
+      edgeAllowanceLabel: 'Auto-layout edge allowance',
+      edgeAllowanceHelp: 'Auto-arrange only. Manual placement can still reach the real sheet edge.',
       dpiLabel: 'DPI',
       gapLabel: 'Spacing between pieces',
       priceLabel: 'Price per yard/meter (\u20b1)',
@@ -684,6 +693,7 @@
   var emptyHint = document.getElementById('emptyHint');
   var gapSlider = document.getElementById('gap');
   var gapNumber = document.getElementById('gapNumber');
+  var edgeAllowanceNumber = document.getElementById('edgeAllowanceNumber');
   var packBtn = document.getElementById('packBtn');
   var errorMsg = document.getElementById('errorMsg');
   var resultArea = document.getElementById('resultArea');
@@ -782,12 +792,15 @@
     document.querySelector('label[for="sheetWidth"]').textContent = t('sheetWidthLabel') + ' (' + suffix + ')';
     document.querySelector('label[for="sheetLength"]').textContent = t('sheetLengthLabel') + ' (' + suffix + ')';
     document.querySelector('label[for="gapNumber"]').textContent = t('gapLabel') + ' (' + suffix + ')';
+    document.querySelector('label[for="edgeAllowanceNumber"]').textContent = t('edgeAllowanceLabel') + ' (' + suffix + ')';
     setMeasureInputRules(document.getElementById('sheetWidth'));
     setMeasureInputRules(document.getElementById('sheetLength'));
     // Spacing can be zero in every unit; size inputs still require positive values.
     gapNumber.min = '0';
     gapNumber.step = 'any';
     gapNumber.max = String(fromInches(5, currentMeasureUnit));
+    edgeAllowanceNumber.min = '0';
+    edgeAllowanceNumber.step = 'any';
     var preset = currentMachinePreset();
     if (preset.maxWidthIn) document.getElementById('sheetWidth').max = String(fromInches(preset.maxWidthIn, currentMeasureUnit));
     else document.getElementById('sheetWidth').removeAttribute('max');
@@ -798,6 +811,10 @@
   function getSheetWidthIn() { return readMeasureInput(document.getElementById('sheetWidth')); }
   function getSheetLengthIn() { return readMeasureInput(document.getElementById('sheetLength')); }
   function getGapIn() { return readMeasureInput(gapNumber) || 0; }
+  function getAutoLayoutEdgeAllowanceIn() {
+    var value = parseFloat(edgeAllowanceNumber.value);
+    return Number.isFinite(value) && value >= 0 ? toInches(value, currentMeasureUnit) : null;
+  }
 
   function setSheetSize(widthIn, lengthIn) {
     setMeasureInput(document.getElementById('sheetWidth'), widthIn);
@@ -834,9 +851,11 @@
     var sheetWidthIn = readMeasureInput(document.getElementById('sheetWidth'));
     var sheetLengthIn = readMeasureInput(document.getElementById('sheetLength'));
     var gapIn = readMeasureInput(gapNumber) || 0;
+    var edgeAllowanceIn = getAutoLayoutEdgeAllowanceIn();
     currentMeasureUnit = nextUnit;
     setSheetSize(sheetWidthIn, sheetLengthIn);
     setMeasureInput(gapNumber, gapIn);
+    setMeasureInput(edgeAllowanceNumber, edgeAllowanceIn);
     gapSlider.value = Math.min(1, Math.max(0, gapIn));
     updateUnitLabels();
     renderAllDesigns();
@@ -1499,12 +1518,12 @@
     var centerX = old.x + old.w / 2, centerY = old.y + old.h / 2;
     var next = {
       x: Math.max(0, Math.min(sheet.widthPx - d.w, centerX - d.w / 2)),
-      y: Math.max(sheet.headerHeightPx || 0, Math.min(sheet.heightPx - d.h, centerY - d.h / 2)),
+      y: Math.max(0, Math.min(sheet.heightPx - d.h, centerY - d.h / 2)),
       w: d.w, h: d.h
     };
     var gap = sheet.gapPx || 0;
     var padded = { x: next.x - gap, y: next.y - gap, w: next.w + 2 * gap, h: next.h + 2 * gap };
-    var blocked = next.w > sheet.widthPx || next.h > sheet.heightPx - (sheet.headerHeightPx || 0) ||
+    var blocked = next.w > sheet.widthPx || next.h > sheet.heightPx ||
       sheet.placements.some(function(other){ return other !== p && rectsOverlap(padded, other); });
     if (blocked) {
       p.inst.rotation = old.rotation;
@@ -1678,18 +1697,23 @@
     var autoExtend = document.getElementById('autoExtend').checked;
     var allowRotation = document.getElementById('autoRotate').checked;
     var gapIn = getGapIn();
+    var edgeAllowanceIn = getAutoLayoutEdgeAllowanceIn();
     var sheetWidthPx = Math.round(sheetWidthIn * dpi);
     var sheetLengthPx = Math.round(sheetLengthIn * dpi);
-    if (!Number.isFinite(gapIn) || gapIn < 0) throw new Error(t('invalidSheetSize'));
+    if (!Number.isFinite(gapIn) || gapIn < 0 || !Number.isFinite(edgeAllowanceIn) || edgeAllowanceIn < 0) throw new Error(t('invalidSheetSize'));
     var gapPx = Math.ceil(gapIn * dpi);
     var headerHeightPx = Math.round(0.36 * dpi);
+    // This inset is used only by automatic placement. Manual drag validation
+    // continues to use the physical sheet bounds below.
+    var autoEdgeAllowancePx = Math.ceil(edgeAllowanceIn * dpi);
     dpiGlobal = dpi;
     sheetWidthPxGlobal = sheetWidthPx;
-    return { dpi: dpi, sheetWidthPx: sheetWidthPx, sheetLengthPx: sheetLengthPx, gapPx: gapPx, headerHeightPx: headerHeightPx, autoExtend: autoExtend, allowRotation: allowRotation, meterPaged: meterPaged };
+    return { dpi: dpi, sheetWidthPx: sheetWidthPx, sheetLengthPx: sheetLengthPx, gapPx: gapPx, headerHeightPx: headerHeightPx, autoEdgeAllowancePx: autoEdgeAllowancePx, autoExtend: autoExtend, allowRotation: allowRotation, meterPaged: meterPaged };
   }
 
-  function offsetPackedPlacements(placements, yOffset) {
+  function offsetPackedPlacements(placements, xOffset, yOffset) {
     return placements.map(function(p){
+      p.x += xOffset;
       p.y += yOffset;
       p.inst.manualX = p.x;
       p.inst.manualY = p.y;
@@ -1702,6 +1726,7 @@
     var sheetWidthPx = settings.sheetWidthPx;
     var sheetLengthPx = settings.sheetLengthPx;
     var gapPx = settings.gapPx;
+    var edgePx = settings.autoEdgeAllowancePx;
     var autoExtend = settings.autoExtend;
 
     lastSkipped = 0;
@@ -1720,13 +1745,16 @@
     var remaining = instances.slice();
     while (remaining.length > 0) {
       var isLongTarpaulin = !settings.meterPaged && autoExtend;
-      var contentHeight = isLongTarpaulin ? Math.max(sheetLengthPx * 50, 3000000) : Math.max(0, sheetLengthPx - settings.headerHeightPx);
-      var result = packSheet(remaining, sheetWidthPx, contentHeight, gapPx, settings.allowRotation);
+      var contentTopPx = Math.max(settings.headerHeightPx, edgePx);
+      var packedSheetHeight = isLongTarpaulin ? Math.max(sheetLengthPx * 50, 3000000) : sheetLengthPx;
+      var contentWidth = Math.max(0, sheetWidthPx - (2 * edgePx));
+      var contentHeight = Math.max(0, packedSheetHeight - contentTopPx - edgePx);
+      var result = packSheet(remaining, contentWidth, contentHeight, gapPx, settings.allowRotation);
       if (result.placements.length === 0) { lastSkipped = remaining.length; break; }
-      var placed = offsetPackedPlacements(result.placements, settings.headerHeightPx);
-      var usedH = placed.reduce(function(m, p){ return Math.max(m, p.y + p.h); }, settings.headerHeightPx) + gapPx;
+      var placed = offsetPackedPlacements(result.placements, edgePx, contentTopPx);
+      var usedH = placed.reduce(function(m, p){ return Math.max(m, p.y + p.h); }, contentTopPx) + gapPx + edgePx;
       var sheetH = isLongTarpaulin ? Math.max(sheetLengthPx, usedH) : sheetLengthPx;
-      sheets.push({ placements: placed, widthPx: sheetWidthPx, heightPx: sheetH, headerHeightPx: settings.headerHeightPx, gapPx: gapPx });
+      sheets.push({ placements: placed, widthPx: sheetWidthPx, heightPx: sheetH, headerHeightPx: settings.headerHeightPx, gapPx: gapPx, autoEdgeAllowancePx: edgePx });
       remaining = result.unplaced;
       if (!autoExtend) {
         lastSkipped = remaining.length;
@@ -1794,7 +1822,7 @@
     var growsRight = corner.indexOf('e') > -1;
     var growsDown = corner.indexOf('s') > -1;
     var maxW = growsRight ? sheet.widthPx - anchorX : anchorX;
-    var maxH = growsDown ? sheet.heightPx - anchorY : anchorY - (sheet.headerHeightPx || 0);
+    var maxH = growsDown ? sheet.heightPx - anchorY : anchorY;
     var minScale = Math.max(minSize / original.w, minSize / original.h);
     var maxScale = Math.max(minScale, Math.min(maxW / original.w, maxH / original.h));
 
@@ -1909,7 +1937,7 @@
           var dx = (ev.clientX - startX) * scaleX;
           var dy = (ev.clientY - startY) * scaleY;
           dx = Math.max(-minX, Math.min(sheet.widthPx - maxRight, dx));
-          dy = Math.max((sheet.headerHeightPx || 0) - minY, Math.min(sheet.heightPx - maxBottom, dy));
+          dy = Math.max(-minY, Math.min(sheet.heightPx - maxBottom, dy));
           originals.forEach(function(o){
             o.p.x = o.x + dx;
             o.p.y = o.y + dy;
