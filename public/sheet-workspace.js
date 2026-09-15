@@ -24,7 +24,9 @@ window.installSheetWorkspace = function(b) {
   }
   function gapFor(sheet) { return sheet.gapPx == null ? b.settings().gapPx : sheet.gapPx; }
   function valid(p, sheet, ignore) {
-    if (![p.x,p.y,p.w,p.h].every(Number.isFinite) || p.w <= 0 || p.h <= 0 || p.x < 0 || p.y < (sheet.headerHeightPx || 0) || p.x + p.w > sheet.widthPx + 1e-7 || p.y + p.h > sheet.heightPx + 1e-7) return false;
+    // The auto-layout header reservation and edge allowance never restrict a
+    // deliberate manual placement; only the real physical sheet does.
+    if (![p.x,p.y,p.w,p.h].every(Number.isFinite) || p.w <= 0 || p.h <= 0 || p.x < 0 || p.y < 0 || p.x + p.w > sheet.widthPx + 1e-7 || p.y + p.h > sheet.heightPx + 1e-7) return false;
     var gap = gapFor(sheet);
     return sheet.placements.every(function(q){
       return q === ignore || q === p || p.x + p.w + gap <= q.x + 1e-7 || q.x + q.w + gap <= p.x + 1e-7 || p.y + p.h + gap <= q.y + 1e-7 || q.y + q.h + gap <= p.y + 1e-7;
@@ -87,10 +89,16 @@ window.installSheetWorkspace = function(b) {
       if (fresh && planned.length && !settings.autoExtend) break;
       var sheet = fresh ? previewSheet() : planned[index];
       var header = sheet.headerHeightPx || 0;
-      var occupied = sheet.placements.map(function(p){ return { x:p.x, y:p.y-header, w:p.w, h:p.h }; });
-      var packed = b.pack([inst], sheet.widthPx, Math.max(0, sheet.heightPx-header), gapFor(sheet), settings.allowRotation, occupied);
+      var edge = settings.autoEdgeAllowancePx || 0;
+      var top = Math.max(header, edge);
+      // Automatic additions use the same inset as Arrange on sheet. Existing
+      // manual pieces are converted into this local packing area, so they keep
+      // their physical locations and still block overlaps correctly.
+      var left = edge, width = Math.max(0, sheet.widthPx - edge * 2), height = Math.max(0, sheet.heightPx - top - edge);
+      var occupied = sheet.placements.map(function(p){ return { x:p.x-left, y:p.y-top, w:p.w, h:p.h }; });
+      var packed = b.pack([inst], width, height, gapFor(sheet), settings.allowRotation, occupied);
       if (packed.placements.length) {
-        var p = packed.placements[0]; p.y += header;
+        var p = packed.placements[0]; p.x += left; p.y += top;
         if (!valid(p, sheet)) continue;
         if (fresh) { index = planned.length; planned.push(sheet); }
         sheet.placements.push(p); return { p:p, index:index };
