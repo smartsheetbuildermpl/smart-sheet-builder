@@ -13,15 +13,24 @@
     var c=document.createElement('canvas');c.width=image.width;c.height=image.height;c.getContext('2d').putImageData(image,0,0);return c;
   }
   var MEMORY_LIMIT=256*1024*1024,MAX_PIXELS=16*1024*1024;
+  // Recycle consumed BFS entries. The old queue retained every visited pixel
+  // (64 MiB at 4096 square), although only the active frontier is needed.
+  function frontierQueue(n) {
+    var capacity=Math.min(n,1024*1024),buffer=new Uint32Array(capacity),head=0,tail=0,size=0;
+    return {push:function(p){if(size===capacity)throw new Error('This image has an unusually complex connected edge exceeding the 4 MiB traversal budget. Cancel keeps the source unchanged.');buffer[tail]=p;tail=(tail+1)%capacity;size++;},
+      pop:function(){var p=buffer[head];head=(head+1)%capacity;size--;return p;},
+      clear:function(){head=tail=size=0;},get length(){return size;}};
+  }
   function estimateMemory(w,h,strength,factor,forced) {
     factor=factor||1;var n=w*h,ow=Math.round(w*factor),oh=Math.round(h*factor),m=ow*oh;
     // Per-card peak, including the borrowed active canvas. Other cards and
     // export sheets are not working buffers for this operation.
-    // Dot classification: source + RGBA + visited byte + uint32 queue (13N).
-    // Fringe classification: active + dot candidate + immutable RGBA (12N),
-    // shared flags + distance + queue (6N). Queue/distance are released before
-    // creating the striped output canvas, so they are not counted together.
-    var cleanup=n*(strength==='safe'?13:18);
+    // Dot classification: source + RGBA + visited byte plus bounded frontier.
+    // Fringe: active + optional dot candidate + immutable RGBA (12N), flags
+    // and distance (2N). Classification and stripe output are separate phases.
+    // Immutable source/data + compact flags/distance; recycle frontier entries.
+    // Output overwrites only an owned dot candidate, never the session source.
+    var cleanup=Math.max(n*(strength==='safe'?9:14)+Math.min(n,1024*1024)*4,13*n);
     // Resampling: active + cleanup + source RGBA (12N), output RGBA + canvas
     // (8M), four Float32 horizontal rows and one output/refinement stripe.
     var resampling=factor>1?12*n+8*m+ow*(4*4*4+128*4)+2*1024*1024:0;
@@ -45,23 +54,23 @@
   async function clean(source,cancelled) {
     var w=source.width,h=source.height,n=w*h;
     var image=source.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h),data=image.data;
-    var seen=new Uint8Array(n),queue=new Uint32Array(n),dots=[];
+    var seen=new Uint8Array(n),queue=frontierQueue(n),dots=[];
     var core={x:w,y:h,right:-1,bottom:-1},removed=0;
     for(var p=0;p<n;p++) {
       if(p%65536===0) { await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.'); }
       if(seen[p]||!data[p*4+3]) continue;
-      var end=1;queue[0]=p;seen[p]=1;
+      var end=0,tiny=[];queue.clear();queue.push(p);seen[p]=1;
       var box={x:w,y:h,right:-1,bottom:-1};
-      for(var start=0;start<end;start++) {
-        var cur=queue[start],x=cur%w,y=Math.floor(cur/w);
+      for(var start=0;queue.length;start++) {
+        var cur=queue.pop(),x=cur%w,y=Math.floor(cur/w);end++;if(end<=4)tiny.push(cur);
         box.x=Math.min(box.x,x);box.y=Math.min(box.y,y);box.right=Math.max(box.right,x);box.bottom=Math.max(box.bottom,y);
         for(var dy=-1;dy<=1;dy++) for(var dx=-1;dx<=1;dx++) {
           var nx=x+dx,ny=y+dy,next=ny*w+nx;
-          if(nx>=0&&nx<w&&ny>=0&&ny<h&&!seen[next]&&data[next*4+3]){seen[next]=1;queue[end++]=next;}
+          if(nx>=0&&nx<w&&ny>=0&&ny<h&&!seen[next]&&data[next*4+3]){seen[next]=1;queue.push(next);}
         }
         if(start && start%65536===0) { await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.'); }
       }
-      if(end<=4 && box.right-box.x<=1 && box.bottom-box.y<=1) dots.push(Array.from(queue.subarray(0,end)));
+      if(end<=4 && box.right-box.x<=1 && box.bottom-box.y<=1) dots.push(tiny);
       else {core.x=Math.min(core.x,box.x);core.y=Math.min(core.y,box.y);core.right=Math.max(core.right,box.right);core.bottom=Math.max(core.bottom,box.bottom);}
       // A field of thousands of detached details may be intentional texture.
       // Preserve it and bound component bookkeeping rather than guessing.
@@ -79,7 +88,7 @@
   }
   // Source-pixel exterior rings, not a global alpha cutoff. Balanced widens
   // matte detection; Strong also attenuates broad low-alpha blur tails.
-  async function cleanFringe(source,cancelled,strength) {
+  async function cleanFringe(source,cancelled,strength,owned) {
     strength=['safe','balanced','strong'].includes(strength)?strength:'balanced';
     var strong=strength==='strong',cfg=strong?
       {radius:14,maxAlpha:208,agreement:48,contrast:24,mix:.2,residual:32,slop:12,removeAlpha:64,retain:.1}:
@@ -87,22 +96,23 @@
     var w=source.width,h=source.height,n=w*h;
     var original=source.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h),data=original.data;
     if(strength==='safe'){
-      var count=0;for(var p=0;p<n;p++)if(data[p*4+3])count++;
+      var count=0;for(var p=0;p<n;p++){if(data[p*4+3])count++;if(p%262144===0){await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.');}}
       return {canvas:source,cleaned:0,removed:0,reduced:0,before:count,after:count,strength:strength};
     }
-    var seen=new Uint8Array(n),distance=new Uint8Array(n),queue=new Uint32Array(n);
+    var seen=new Uint8Array(n),distance=new Uint8Array(n),queue=frontierQueue(n);
     var end=0,cleaned=0,removed=0,reduced=0,before=0;
-    async function pause(){await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.');}
-    function visit(p){if(!seen[p]&&data[p*4+3]===0){seen[p]=1;queue[end++]=p;}}
+    var sliceStarted=performance.now();
+    async function pause(){await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.');sliceStarted=performance.now();}
+    function visit(p){if(!seen[p]&&data[p*4+3]===0){seen[p]=1;queue.push(p);}}
     function neighbors(p,fn){var x=p%w,y=Math.floor(p/w);for(var dy=-1;dy<=1;dy++)for(var dx=-1;dx<=1;dx++){var nx=x+dx,ny=y+dy;if((dx||dy)&&nx>=0&&nx<w&&ny>=0&&ny<h)fn(ny*w+nx);}}
     // Exterior transparency only: enclosed transparent holes are not seeds.
     for(var x=0;x<w;x++){visit(x);visit((h-1)*w+x);}
     for(var y=0;y<h;y++){visit(y*w);visit(y*w+w-1);}
-    for(var start=0;start<end;start++){neighbors(queue[start],visit);if(start%65536===0)await pause();}
+    for(var start=0;queue.length;start++){neighbors(queue.pop(),visit);if(start%4096===0&&performance.now()-sliceStarted>12)await pause();}
     // Exact capped Chebyshev distance to strong alpha, with two linear sweeps.
     // Balanced protects broad shadow components; a few distant connected
     // outliers no longer veto cleanup around an otherwise supported edge.
-    for(var p=0;p<n;p++){distance[p]=data[p*4+3]>=240?0:cfg.radius+1;if(data[p*4+3])before++;}
+    for(var p=0;p<n;p++){distance[p]=data[p*4+3]>=240?0:cfg.radius+1;if(data[p*4+3])before++;if(p%262144===0)await pause();}
     for(var y=0;y<h;y++){
       for(var x=0;x<w;x++){var p=y*w+x,d=distance[p];if(x)d=Math.min(d,distance[p-1]+1);if(y){d=Math.min(d,distance[p-w]+1);if(x)d=Math.min(d,distance[p-w-1]+1);if(x+1<w)d=Math.min(d,distance[p-w+1]+1);}distance[p]=d;}
       if(y%128===0)await pause();
@@ -177,28 +187,29 @@
     for(var seed=0;seed<n;seed++){
       if(seed%65536===0)await pause();
       var alpha=data[seed*4+3];if(seen[seed]||!alpha||alpha>cfg.maxAlpha)continue;
-      end=1;queue[0]=seed;seen[seed]=2;var exterior=false,wide=0;
-      for(var start=0;start<end;start++){
-        var p=queue[start];if(distance[p]>cfg.radius)wide++;
+      end=0;queue.clear();queue.push(seed);seen[seed]=2;var exterior=false,wide=0,matches=0;
+      for(var start=0;queue.length;start++){
+        var p=queue.pop();end++;if(distance[p]>cfg.radius)wide++;
         if(p<w||p>=n-w||p%w===0||p%w===w-1)exterior=true;
-        neighbors(p,function(next){if(seen[next]===1)exterior=true;var a=data[next*4+3];if(!seen[next]&&a>0&&a<=cfg.maxAlpha){seen[next]=2;queue[end++]=next;}});
-        if(start%65536===0)await pause();
-      }
-      if(!exterior||(!strong&&wide>end*.15))continue;
-      var matches=0;
-      for(var i=0;i<end;i++){
-        var p=queue[i];
+        neighbors(p,function(next){if(seen[next]===1)exterior=true;var a=data[next*4+3];if(!seen[next]&&a>0&&a<=cfg.maxAlpha){seen[next]=2;queue.push(next);}});
         if(distance[p]<=cfg.radius&&!fineFeature(p)){
           var ref=reference(p);
           var tail=strong&&distance[p]>=4&&data[p*4+3]<=64&&ref&&ref.every(function(c,k){return Math.abs(data[p*4+k]-c)<=32;});
           if(ref&&(matteMatch(p,ref)||tail)){seen[p]|=4;matches++;}
         }
-        if(i%16384===0)await pause();
+        if(start%256===0&&performance.now()-sliceStarted>12)await pause();
       }
       // Isolated low-alpha highlights are too ambiguous for automatic removal.
-      if(matches<3)continue;
-      for(var i=0;i<end;i++){
-        var p=queue[i];if(!(seen[p]&4))continue;
+      if(!exterior||(!strong&&wide>end*.15)||matches<3)continue;
+      // Traverse the accepted component a second time instead of retaining all
+      // its indices. The classification rule and immutable pixel input match
+      // the former full-component implementation exactly.
+      queue.push(seed);seen[seed]|=32;
+      for(var i=0;queue.length;i++){
+        var p=queue.pop();
+        neighbors(p,function(next){if((seen[next]&2)&&!(seen[next]&32)){seen[next]|=32;queue.push(next);}});
+        if(i%16384===0)await pause();
+        if(!(seen[p]&4))continue;
         seen[p]|=8;
         if(data[p*4+3]<=cfg.removeAlpha||(strong&&distance[p]>=4)){seen[p]|=16;removed++;}else reduced++;
         cleaned++;if(i%16384===0)await pause();
@@ -210,7 +221,7 @@
     try {
       queue=null;distance=null;
       if(cleaned){
-        output=document.createElement('canvas');output.width=w;output.height=h;
+        output=owned?source:document.createElement('canvas');output.width=w;output.height=h;
         var ctx=output.getContext('2d');
         for(var y=0;y<h;y+=128){
           var rows=Math.min(128,h-y),stripe=new ImageData(new Uint8ClampedArray(data.subarray(y*w*4,(y+rows)*w*4)),w,rows);
@@ -228,7 +239,7 @@
   }
   async function prepare(source,cancelled,strength){
     var dots=await clean(source,cancelled),edge;
-    try {edge=await cleanFringe(dots.canvas,cancelled,strength);return {canvas:edge.canvas,removed:dots.removed,skipped:dots.skipped,fringe:edge};}
+    try {edge=await cleanFringe(dots.canvas,cancelled,strength,dots.canvas!==source);return {canvas:edge.canvas,removed:dots.removed,skipped:dots.skipped,fringe:edge};}
     finally {if(!edge||edge.canvas!==dots.canvas)releaseCanvas(dots.canvas,source);}
   }
   function analyze(source,widthIn,heightIn,nativeScale) {

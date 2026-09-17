@@ -197,8 +197,16 @@
         input.getContext('2d').putImageData(pixels, 0, 0);
         var result = action(input);
         if (!result || result.noChange) { history.pop(); status('No image changes from ' + label + '.'); render(); return; }
-        pixels = result.canvas.getContext('2d', {willReadFrequently:true}).getImageData(0, 0, w, h);
-        selection.fill(0); lastWand = null; status(label + ' applied in the editor. Undo or Reset is available before Apply.'); render();
+        if (result.mask) {
+          selection.set(result.mask);
+          status('Outside-connected background selection ready. Review the blue preview, then Apply or Erase selection. Enclosed details are protected.');
+        } else {
+          pixels = result.canvas.getContext('2d', {willReadFrequently:true}).getImageData(0, 0, w, h);
+          selection.fill(0); status(label + ' applied in the editor. Undo or Reset is available before Apply.');
+        }
+        lastWand = null; render();
+        if (result.canvas !== input) result.canvas.width = result.canvas.height = 0;
+        input.width = input.height = 0;
       } catch(error) { status(error.message, true); }
     }
     function dab(at, from) {

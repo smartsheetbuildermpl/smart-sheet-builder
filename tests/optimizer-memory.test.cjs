@@ -91,27 +91,56 @@ const reference=execFileSync('git',['show','3ffdc5b:public/print-optimizer.js'],
     await page.evaluate(()=>{applied.c.width=0;applied=null;});
     // Oversized cleanup fails before any source pixel read or processing.
     await page.evaluate(()=>{
-      const big=document.createElement('canvas');big.width=big.height=4096;window.bigSource=big;window.bigReads=0;
+      const big=document.createElement('canvas');big.width=big.height=5000;window.bigSource=big;window.bigReads=0;
       big.getContext=()=>{bigReads++;throw Error('Unexpected read before preflight');};
       PrintOptimizer.open({canvas:big,widthIn:4096/300,heightIn:4096/300,apply(){throw Error('Invalid apply');}});
     });
     await page.locator('[data-retry]').waitFor({state:'visible'});
     assert(await page.locator('[data-apply]').isDisabled());assert.equal(await page.evaluate(()=>bigReads),0);
-    assert.match(await page.locator('.print-result').innerText(),/Balanced edge cleanup cannot process 4096 × 4096 px: estimated peak 312 MiB/);
+    assert.match(await page.locator('.print-result').innerText(),/Balanced edge cleanup cannot process 5000 × 5000 px/);
     assert.doesNotMatch(await page.locator('.print-result').innerText(),/pixels cleaned/);
     await page.locator('[data-cancel]').click();await page.evaluate(()=>{bigSource.width=0;});
-    // Safe's real 232 MiB working peak fits: exercise actual 4096 pixels.
+    // Native 4096 now fits every cleanup mode without weaker classification.
     await page.evaluate(()=>{
       window.safe4096=fixture(4096);window.safe4096Applied=null;
       PrintOptimizer.open({canvas:safe4096,widthIn:4096/300,heightIn:4096/300,apply(c,f,dots){safe4096Applied={c,f,dots};}});
     });
-    await page.locator('[data-retry]').waitFor({state:'visible'});
+    await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);
+    assert.match(await page.locator('.print-result').innerText(),/Balanced edge cleanup: 768/);
+    assert.equal(Number(await page.locator('.print-optimizer').getAttribute('data-estimated-peak-bytes')),252*1048576);
+    await page.locator('[data-edge-strength]').selectOption('strong');
+    await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);
+    assert.match(await page.locator('.print-result').innerText(),/Strong edge cleanup: 1104/);
     await page.locator('[data-edge-strength]').selectOption('safe');
     await page.waitForFunction(()=>!document.querySelector('[data-apply]').disabled);
     assert.equal(Number(await page.locator('.print-optimizer').getAttribute('data-estimated-peak-bytes')),232*1048576);
     await page.locator('[data-apply]').click();
     assert(await page.evaluate(()=>safe4096Applied.c.width===4096&&safe4096Applied.c.height===4096&&safe4096Applied.dots===4&&safe4096Applied.c.getContext('2d').getImageData(2,2,1,1).data[3]===0&&safe4096.getContext('2d').getImageData(2,2,1,1).data[3]===255));
     await page.evaluate(()=>{safe4096Applied.c.width=0;safe4096.width=0;});
+    // Decode an actual large transparent PNG; native Strong uses the same
+    // algorithm, preserves all source pixels, and yields to UI timers.
+    const largeReport=await page.evaluate(async()=>{
+      let encoded=fixture(5000);encoded.height=3000;
+      const ctx=encoded.getContext('2d'),small=fixture(256);ctx.drawImage(small,2000,1200);
+      ctx.fillStyle='black';ctx.fillRect(2,2,1,1);
+      const blob=await new Promise(r=>encoded.toBlob(r,'image/png')),bitmap=await createImageBitmap(blob);
+      encoded.width=0;encoded=null;
+      window.largePNG=document.createElement('canvas');largePNG.width=bitmap.width;largePNG.height=bitmap.height;largePNG.getContext('2d').drawImage(bitmap,0,0);bitmap.close();
+      let ticks=0,last=performance.now(),maxGap=0;const timer=setInterval(()=>{const now=performance.now();maxGap=Math.max(maxGap,now-last);last=now;ticks++;},16);
+      const started=performance.now(),result=await PrintOptimizer.prepare(largePNG,null,'strong');clearInterval(timer);
+      if(result.canvas.width!==5000||result.canvas.height!==3000||result.fringe.strength!=='strong'||result.fringe.cleaned!==1104)throw Error('large native Strong changed dimensions or quality');
+      if(result.canvas.getContext('2d').getImageData(2,2,1,1).data[3]!==0||largePNG.getContext('2d').getImageData(2,2,1,1).data[3]!==255)throw Error('large source mutated or candidate incomplete');
+      if(ticks<10)throw Error('large cleanup blocked UI timers');
+      result.canvas.width=0;small.width=0;
+      return {dimensions:[5000,3000],pngBytes:blob.size,fringe:result.fringe.cleaned,dots:result.removed,elapsedMs:Math.round(performance.now()-started),uiTicks:ticks,maxTimerGapMs:Math.round(maxGap),estimatedMiB:Math.ceil(PrintOptimizer.estimateMemory(5000,3000,'strong',1,false).bytes/1048576)};
+    });
+    console.log(JSON.stringify({largeReport}));
+    await page.evaluate(()=>PrintOptimizer.open({canvas:largePNG,widthIn:10,heightIn:6,apply(){throw Error('must not apply');}}));
+    await page.locator('[data-enhancement]').selectOption('force');
+    await page.locator('[data-retry]').waitFor({state:'visible'});
+    assert.match(await page.locator('.print-result').innerText(),/Force smooth enhance cannot process 5000 × 3000 px/);
+    assert(await page.locator('[data-apply]').isDisabled());assert.doesNotMatch(await page.locator('.print-result').innerText(),/pixels cleaned/);
+    await page.locator('[data-cancel]').click();await page.evaluate(()=>{largePNG.width=0;});
     // Simulate a real failure after successful cleanup, during Force readback.
     await page.evaluate(()=>{
       window.savedRead=CanvasRenderingContext2D.prototype.getImageData;
@@ -131,6 +160,6 @@ const reference=execFileSync('git',['show','3ffdc5b:public/print-optimizer.js'],
     assert.match(await page.locator('.print-result').innerText(),/Strong edge cleanup: 1104/);
     await page.locator('[data-cancel]').click();assert(await page.evaluate(()=>applied===null&&memorySource.toDataURL()===memorySourceSnapshot));
     assert.deepEqual(errors,[]);
-    console.log('2048 all modes + explicit 4096 Force output; 4096 Safe completes, Balanced rejects before processing; bounded comparison and resampler rows; exact selected Apply; failure/Cancel integrity passed.');
+    console.log('2048 and 4096 all native modes complete + explicit 4096 Force output; oversized requests reject before processing; bounded comparison and resampler rows; exact selected Apply; failure/Cancel integrity passed.');
   }finally{await browser.close();}
 })().catch(e=>{console.error(e.stack);process.exitCode=1;});

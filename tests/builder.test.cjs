@@ -103,7 +103,7 @@ for (const [a,b] of [
       const bgResult=t.removeConnectedEdgeBackground(bg,42), rgba=bgResult.canvas.getContext('2d');
       check(rgba.getImageData(0,0,1,1).data[3]===0,'connected uniform background removed');
       const soft=rgba.getImageData(6,6,1,1).data[3];
-      check(soft>0 && soft<255,'background transition feathered');
+      check(soft===255,'outside-tolerance foreground is not reached through a feather-range bridge');
       check(rgba.getImageData(14,14,1,1).data[3]===255,'enclosed same-color detail preserved');
       check(bgResult.w===30 && bgResult.h===30,'background removal preserves canvas dimensions');
       return results;
