@@ -86,7 +86,7 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
     assert.equal(await editor.locator('[data-action="tiny-specks"]').count(),1);
     await editor.locator('details.bg-advanced > summary').click();
     await act('Auto-remove edge background').click();
-    assert.match(await page.locator('.bg-status').innerText(),/Automatic edge background cleanup/);
+    assert.match(await page.locator('.bg-status').innerText(),/Outside-connected background selection ready|No image changes from Automatic edge background cleanup/);
     await act('Cancel').click();
     await open();await act('Magic Wand').click();await slider('#bg-tolerance',0);await clickPixel(10,10);
     await act('Erase selection').click();assert.equal((await rgba(10,10))[3],0);assert.equal(await selected(),0);

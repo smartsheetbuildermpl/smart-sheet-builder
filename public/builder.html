@@ -104,6 +104,9 @@
   .ruler-top .ruler-label { top: 3px; transform: translateX(3px); }
   .ruler-right .ruler-label { left: 10px; transform: translateY(3px); }
   .drag-handle { position: absolute; cursor: move; z-index: 1; }
+  .drag-handle,.resize-handle { touch-action:none; }
+  .layout-drag-preview { position:absolute; pointer-events:none; z-index:4; outline:2px solid #138e9c; will-change:transform; }
+  .layout-drag-preview.invalid { outline:3px solid #d93025; }
   .drag-handle.selected { outline: 2px solid #1677ff; outline-offset: 2px; background: rgba(22,119,255,0.08); }
   .drag-handle.overlap { outline-color: #d93025; background: rgba(217,48,37,0.14); }
   .drag-handle.selected.quality-ok { outline-color: #1f9d55; background: rgba(31,157,85,0.08); }
@@ -335,6 +338,10 @@
             <option value="5">5x</option>
           </select>
           <button id="rotateSelectedBtn" class="secondary" style="width:auto; padding:8px 12px; font-size:13px;" data-i18n="rotateSelected" disabled>I-rotate selected</button>
+          <button id="layoutUndo" class="secondary" style="width:auto" disabled title="Undo layout action (Ctrl/Cmd+Z)">Undo layout</button>
+          <button id="layoutRedo" class="secondary" style="width:auto" disabled title="Redo layout action (Ctrl/Cmd+Shift+Z)">Redo layout</button>
+          <button id="removeSelectedPieces" class="secondary" style="width:auto" disabled>Remove selected pieces</button>
+          <span id="layoutHistoryStatus" role="status" aria-live="polite" style="font-size:12px"></span>
         </div>
         <p id="manualModeNote" data-i18n="manualModeNote"></p>
         <p id="overlapWarning" data-i18n="overlapWarning"></p>
@@ -724,6 +731,55 @@
   var manualMode = false;
   var sheetWidthPxGlobal = 0, dpiGlobal = 300;
   var currentMeasureUnit = 'in';
+  var layoutDragActive = false;
+  // Geometry-only session history: source canvases are shared, never cloned.
+  // Restoring geometry resolves the latest active image of each design, so
+  // layout Undo cannot accidentally undo a background/optimization edit.
+  var layoutHistory = (function(){
+    var past=[],future=[],depth=0,restoring=false;
+    function capture(){
+      return {designs:designs.map(function(d){return {ref:d,qty:d.qty,widthIn:d.widthIn,heightIn:d.heightIn};}),
+        instances:instances.map(function(i){var copy=Object.assign({},i);delete copy.canvas;return copy;}),
+        sheets:sheets.map(function(s){var copy=Object.assign({},s,{placements:s.placements.map(function(p){return Object.assign({},p,{inst:p.inst.id});})});delete copy.renderCanvas;delete copy.exportUi;return copy;}),
+        selected:Array.from(selectedInstanceIds),manual:manualMode,dpi:dpiGlobal,width:sheetWidthPxGlobal};
+    }
+    function signature(s){return JSON.stringify([s.instances,s.sheets,s.designs.map(function(d){return [d.ref.id,d.qty,d.widthIn,d.heightIn];})]);}
+    function update(){
+      document.getElementById('layoutUndo').disabled=!past.length||layoutDragActive;
+      document.getElementById('layoutRedo').disabled=!future.length||layoutDragActive;
+    }
+    function trim(){
+      while(past.length+future.length>32||past.concat(future).reduce(function(n,e){return n+e.state.instances.length;},0)>100000){if(past.length)past.shift();else future.shift();}
+      // Deleted design references may retain originals for undo; cap those too.
+      function retained(){var canvases=new Set();past.concat(future).forEach(function(e){e.state.designs.forEach(function(d){if(designs.includes(d.ref))return;Object.values(d.ref).forEach(function(v){if(v instanceof HTMLCanvasElement)canvases.add(v);else if(v&&v.canvas instanceof HTMLCanvasElement)canvases.add(v.canvas);});});});var bytes=0;canvases.forEach(function(c){bytes+=c.width*c.height*4;});return bytes;}
+      while(past.length+future.length>1&&retained()>128*1024*1024){if(past.length>1)past.shift();else future.shift();}
+    }
+    function record(before,label){if(restoring||depth||signature(before)===signature(capture()))return;past.push({state:before,label:label});future=[];trim();update();}
+    function restore(s){
+      restoring=true;
+      try {
+        // Keep newly uploaded, unplaced cards when undoing earlier geometry.
+        var extras=designs.filter(function(d){return !s.designs.some(function(old){return old.ref.id===d.id;})&&!instances.some(function(i){return i.designId===d.id;});});
+        designs=s.designs.map(function(d){d.ref.qty=d.qty;d.ref.widthIn=d.widthIn;d.ref.heightIn=d.heightIn;d.ref.layoutFeedback='';return d.ref;}).concat(extras);
+        var byId=new Map();instances=s.instances.map(function(i){var d=designs.find(function(d){return d.id===i.designId;});var copy=Object.assign({},i,{canvas:d.trimmed.canvas});byId.set(i.id,copy);return copy;});
+        sheets=s.sheets.map(function(sheet){return Object.assign({},sheet,{placements:sheet.placements.map(function(p){return Object.assign({},p,{inst:byId.get(p.inst)});})});});
+        selectedInstanceIds=new Set(s.selected);manualMode=s.manual;dpiGlobal=s.dpi;sheetWidthPxGlobal=s.width;
+        renderAllDesigns();setOverlapState(computeAllOverlaps());setQualityState(computeAllLowRes());
+        if(sheets.length)renderAllSheets();else renderStartupSheetPreview();computeStats();
+      }finally{restoring=false;}
+    }
+    function travel(from,to,prefix){if(layoutDragActive||!from.length)return;var entry=from.pop();to.push({state:capture(),label:entry.label});restore(entry.state);trim();update();document.getElementById('layoutHistoryStatus').textContent=prefix+entry.label;}
+    var api={capture:capture,record:record,update:update,undo:function(){travel(past,future,'Undid ');},redo:function(){travel(future,past,'Redid ');},
+      run:function(label,fn){if(depth||restoring)return fn();var before=capture(),result;depth++;try{result=fn();}catch(error){restore(before);throw error;}finally{depth--;record(before,label);}return result;},
+      wrap:function(label,fn){return function(){var args=arguments,that=this;return api.run(label,function(){return fn.apply(that,args);});};}};
+    document.getElementById('layoutUndo').onclick=api.undo;document.getElementById('layoutRedo').onclick=api.redo;
+    document.addEventListener('keydown',function(e){
+      if(e.defaultPrevented||!(e.ctrlKey||e.metaKey)||e.altKey||e.key.toLowerCase()!=='z'||document.querySelector('dialog[open]'))return;
+      if(e.target.closest('input,textarea,select,[contenteditable="true"]'))return;
+      e.preventDefault();if(e.shiftKey)api.redo();else api.undo();
+    });
+    return api;
+  })();
   var machinePresets = {
     dtf: { widthIn: 23, lengthIn: 39, maxWidthIn: null, maxLengthIn: 39, paged: true, family: 'dtf' },
     uvdtf24: { widthIn: 23, lengthIn: 39, maxWidthIn: null, maxLengthIn: 39, paged: true, family: 'uvdtf' },
@@ -887,6 +943,7 @@
   document.getElementById('langToggleEN').addEventListener('click', function(){ applyLanguage('en'); });
   rotateSelectedBtn.addEventListener('click', function(){
     if (selectedInstanceIds.size === 0) return;
+    layoutHistory.run('Rotate selected pieces',function(){
     enterManualModeIfNeeded();
     sheets.forEach(function(sheet){
       sheet.placements.forEach(function(p){
@@ -897,7 +954,18 @@
     setQualityState(computeAllLowRes());
     renderAllSheets();
     computeStats();
+    });
   });
+
+  document.getElementById('removeSelectedPieces').onclick=function(){layoutHistory.run('Remove selected pieces',function(){
+    var affected=new Set(instances.filter(function(i){return selectedInstanceIds.has(i.id);}).map(function(i){return i.designId;}));
+    instances=instances.filter(function(i){return !selectedInstanceIds.has(i.id);});
+    sheets.forEach(function(s){s.placements=s.placements.filter(function(p){return !selectedInstanceIds.has(p.inst.id);});});
+    sheets=sheets.filter(function(s){return s.placements.length;});
+    designs.forEach(function(d){if(affected.has(d.id))d.qty=Math.max(1,instances.filter(function(i){return i.designId===d.id;}).length);});
+    selectedInstanceIds.clear();setOverlapState(computeAllOverlaps());setQualityState(computeAllLowRes());renderAllDesigns();
+    if(sheets.length)renderAllSheets();else renderStartupSheetPreview();updateSelectionControls();computeStats();
+  });};
 
   function applyLanguage(lang){
     currentLang = lang;
@@ -1073,12 +1141,13 @@
     dominant.forEach(function(p){ bg[0] += p[0]; bg[1] += p[1]; bg[2] += p[2]; });
     bg[0] /= dominant.length; bg[1] /= dominant.length; bg[2] /= dominant.length;
     var toleranceSq = tolerance * tolerance;
-    var featherSq = toleranceSq * 4;
     function isBackgroundPixel(pixel) {
       var i = pixel * 4;
       if (data[i + 3] === 0) return true;
       var dr = data[i] - bg[0], dg = data[i + 1] - bg[1], db = data[i + 2] - bg[2];
-      return dr * dr + dg * dg + db * db < featherSq;
+      // Only the requested tolerance may propagate the edge-connected fill.
+      // Feathering must never form a bridge across a foreground outline.
+      return dr * dr + dg * dg + db * db <= toleranceSq;
     }
     var visited = new Uint8Array(w * h);
     var queue = new Uint32Array(w * h), queueLength = 0;
@@ -1092,12 +1161,8 @@
     for (var qi = 0; qi < queueLength; qi++) {
       var p = queue[qi], px = p % w, py = (p - px) / w;
       var i = p * 4;
-      var dr = data[i] - bg[0], dg = data[i + 1] - bg[1], db = data[i + 2] - bg[2];
-      var distance = Math.sqrt(dr * dr + dg * dg + db * db);
-      var keep = Math.max(0, Math.min(1, (distance - tolerance) / tolerance));
-      keep = keep * keep * (3 - 2 * keep);
       var alpha = data[i + 3];
-      data[i + 3] = Math.round(alpha * keep);
+      data[i + 3] = 0;
       if (data[i + 3] < alpha) removed++;
       var neighbours = [];
       if (px > 0) neighbours.push(p - 1);
@@ -1110,7 +1175,9 @@
     }
     if (!removed) return { canvas: sourceCanvas, w: w, h: h, noChange: true, removedPercent: 0 };
     ctx.putImageData(image, 0, 0);
-    return { canvas: c, w: w, h: h, removedPercent: Math.round(removed / (w * h) * 100), noChange: false };
+    queue = null;
+    for (var maskPixel = 0; maskPixel < visited.length; maskPixel++) visited[maskPixel] *= 255;
+    return { canvas: c, mask: visited, w: w, h: h, removedPercent: Math.round(removed / (w * h) * 100), noChange: false };
   }
 
   function updateDesignCanvas(design, result) {
@@ -1545,6 +1612,7 @@
   }
 
   function updateSelectionControls() {
+    document.getElementById('removeSelectedPieces').disabled=selectedInstanceIds.size===0;
     if (rotateSelectedBtn) rotateSelectedBtn.disabled = selectedInstanceIds.size === 0;
     if (window.smartSheetWorkspace) window.smartSheetWorkspace.syncSelection();
   }
@@ -1825,6 +1893,7 @@
   }
 
   function resizePlacementOnSheet(p, sheet, canvasEl, overlayEl, corner, e) {
+    var historyBefore=layoutHistory.capture();
     e.preventDefault();
     e.stopPropagation();
     if (!selectedInstanceIds.has(p.inst.id)) {
@@ -1891,6 +1960,7 @@
       setQualityState(computeAllLowRes());
       renderOverlayFor(overlayEl, sheet, canvasEl, true);
       computeStats();
+      layoutHistory.record(historyBefore,'Resize piece');
     }
 
     document.addEventListener('pointermove', onMove);
@@ -1942,6 +2012,7 @@
       }
 
       handle.addEventListener('pointerdown', function(e){
+        if(e.button!==0||layoutDragActive)return;
         e.preventDefault();
         e.stopPropagation();
         if (!selectedInstanceIds.has(p.inst.id)) {
@@ -1949,6 +2020,7 @@
           selectedInstanceIds.add(p.inst.id);
         }
         updateSelectionControls();
+        var historyBefore=layoutHistory.capture();
         enterManualModeIfNeeded();
         var rect = canvasEl.getBoundingClientRect();
         var scaleX = canvasEl.width / rect.width;
@@ -1961,39 +2033,65 @@
         var maxRight = Math.max.apply(null, originals.map(function(o){ return o.x + o.p.w; }));
         var maxBottom = Math.max.apply(null, originals.map(function(o){ return o.y + o.p.h; }));
         renderOverlayFor(overlayEl, sheet, canvasEl, true);
-        function onMove(ev){
-          var dx = (ev.clientX - startX) * scaleX;
-          var dy = (ev.clientY - startY) * scaleY;
-          dx = Math.max(-minX, Math.min(sheet.widthPx - maxRight, dx));
-          dy = Math.max(-minY, Math.min(sheet.heightPx - maxBottom, dy));
-          originals.forEach(function(o){
-            o.p.x = o.x + dx;
-            o.p.y = o.y + dy;
-            o.p.inst.manualX = o.p.x;
-            o.p.inst.manualY = o.p.y;
-          });
-          setOverlapState(computeAllOverlaps());
-          drawSheetCanvas(canvasEl, sheet);
-          renderOverlayFor(overlayEl, sheet, canvasEl, true);
+        var movingIds=new Set(moving.map(function(p){return p.inst.id;}));
+        var stationary=sheet.placements.filter(function(p){return !movingIds.has(p.inst.id);});
+        var preview=document.createElement('canvas'),previewScale=Math.min(1,2048/Math.max(maxRight-minX,maxBottom-minY));
+        preview.width=Math.max(1,Math.ceil((maxRight-minX)*previewScale));preview.height=Math.max(1,Math.ceil((maxBottom-minY)*previewScale));
+        preview.className='layout-drag-preview';preview.style.left=minX/sheet.widthPx*100+'%';preview.style.top=minY/sheet.heightPx*100+'%';
+        preview.style.width=(maxRight-minX)/sheet.widthPx*100+'%';preview.style.height=(maxBottom-minY)/sheet.heightPx*100+'%';
+        var previewCtx=preview.getContext('2d');previewCtx.scale(previewScale,previewScale);
+        moving.forEach(function(p){var i=p.inst;previewCtx.save();previewCtx.translate(p.x-minX+p.w/2,p.y-minY+p.h/2);previewCtx.rotate(i.rotation*Math.PI/180);previewCtx.filter='saturate('+Math.max(0,100+(i.vibrance||0))+'%)';previewCtx.drawImage(i.canvas,-i.baseW/2,-i.baseH/2,i.baseW,i.baseH);previewCtx.restore();});
+        overlayEl.appendChild(preview);
+        overlayEl.querySelectorAll('[data-instance-id]').forEach(function(node){if(movingIds.has(Number(node.dataset.instanceId)))node.style.visibility='hidden';});
+        // Bake stationary artwork once, then translate only the bounded drag
+        // preview. The committed full-resolution source is never altered.
+        drawSheetCanvas(canvasEl,Object.assign({},sheet,{placements:stationary}));
+        layoutDragActive=true;layoutHistory.update();if(lens)lens.style.display='none';
+        var latest=e,raf=0,dx=0,dy=0,valid=true,finished=false;
+        function paint(){
+          raf=0;var current=canvasEl.getBoundingClientRect();
+          dx=(latest.clientX-current.left)*sheet.widthPx/current.width-(startX-rect.left)*scaleX;
+          dy=(latest.clientY-current.top)*sheet.heightPx/current.height-(startY-rect.top)*scaleY;
+          dx=Math.max(-minX,Math.min(sheet.widthPx-maxRight,dx));dy=Math.max(-minY,Math.min(sheet.heightPx-maxBottom,dy));
+          var gap=sheet.gapPx||0;
+          valid=originals.every(function(o){return stationary.every(function(q){return o.x+dx+o.p.w+gap<=q.x+1e-7||q.x+q.w+gap<=o.x+dx+1e-7||o.y+dy+o.p.h+gap<=q.y+1e-7||q.y+q.h+gap<=o.y+dy+1e-7;});});
+          preview.style.transform='translate('+dx*current.width/sheet.widthPx+'px,'+dy*current.height/sheet.heightPx+'px)';
+          preview.classList.toggle('invalid',!valid);
         }
-        function onUp(){
+        function onMove(ev){if(ev.pointerId!==e.pointerId)return;latest=ev;if(!raf)raf=requestAnimationFrame(paint);}
+        function finish(cancel){
+          if(finished)return;finished=true;cancelAnimationFrame(raf);paint();
           document.removeEventListener('pointermove', onMove);
           document.removeEventListener('pointerup', onUp);
-          if (window.smartSheetWorkspace && window.smartSheetWorkspace.opened && moving.some(function(p){return !window.smartSheetWorkspace.validate(p,sheet,p);})) {
-            originals.forEach(function(o){o.p.x=o.x;o.p.y=o.y;o.p.inst.manualX=o.x;o.p.inst.manualY=o.y;});
-            drawSheetCanvas(canvasEl,sheet);
-            window.smartSheetWorkspace.showStatus('Move cancelled: another piece needs its spacing.',true);
+          document.removeEventListener('pointercancel',onCancel);document.removeEventListener('keydown',onKey,true);
+          window.removeEventListener('blur',onCancel);
+          if(!cancel&&valid&&(dx||dy)) {
+            originals.forEach(function(o){o.p.x=o.x+dx;o.p.y=o.y+dy;o.p.inst.manualX=o.p.x;o.p.inst.manualY=o.p.y;});
+            layoutHistory.record(historyBefore,'Move pieces');
+          } else {
+            manualMode=historyBefore.manual;
+            document.getElementById('layoutHistoryStatus').textContent=cancel?'Move cancelled.':!valid?'Move cancelled: leave the configured space between pieces.':'';
           }
+          preview.remove();preview.width=preview.height=0;layoutDragActive=false;layoutHistory.update();
+          if(overlayEl.hasPointerCapture(e.pointerId))overlayEl.releasePointerCapture(e.pointerId);
           setOverlapState(computeAllOverlaps());
+          drawSheetCanvas(canvasEl,sheet);
           renderOverlayFor(overlayEl, sheet, canvasEl, true);
+          manualModeNote.style.display=manualMode?'block':'none';computeStats();
         }
+        function onUp(ev){if(ev.pointerId===e.pointerId){latest=ev;finish(false);}}
+        function onCancel(){finish(true);}
+        function onKey(ev){if(ev.key==='Escape'){ev.preventDefault();ev.stopPropagation();finish(true);}}
+        overlayEl.setPointerCapture(e.pointerId);
         document.addEventListener('pointermove', onMove);
         document.addEventListener('pointerup', onUp);
+        document.addEventListener('pointercancel',onCancel);document.addEventListener('keydown',onKey,true);window.addEventListener('blur',onCancel);
       });
       overlayEl.appendChild(handle);
 
       var rotateBtn = document.createElement('button');
       rotateBtn.className = 'rotate-btn';
+      rotateBtn.dataset.instanceId=String(p.inst.id);
       rotateBtn.setAttribute('aria-label', 'Rotate design 90 degrees');
       rotateBtn.innerHTML = '&#8635;';
       rotateBtn.style.left = ((p.x + p.w) / sheet.widthPx * 100) + '%';
@@ -3138,12 +3236,14 @@
     }
     packBtn.disabled = true;
     packBtn.textContent = t('packBtnBusy');
-    manualMode = false;
-    manualModeNote.style.display = 'none';
     setTimeout(function(){
       try {
+        layoutHistory.run('Arrange on sheet',function(){
+        manualMode = false;
+        manualModeNote.style.display = 'none';
         buildInstances();
         repack();
+        });
         resultArea.style.display = 'block';
         placeholderCard.style.display = 'none';
       } catch (err) {
@@ -3164,6 +3264,7 @@
 
   function attachMagnifier(stageEl, canvasEl) {
     function moveLens(e) {
+      if(layoutDragActive){hideLens();return;}
       var rect = canvasEl.getBoundingClientRect();
       var relX = (e.clientX - rect.left) / rect.width;
       var relY = (e.clientY - rect.top) / rect.height;
@@ -3189,7 +3290,11 @@
   }
 
   applyLanguage('en');
+  rotatePlacementOnSheet=layoutHistory.wrap('Rotate piece',rotatePlacementOnSheet);
+  appendDesignToCurrentLayout=layoutHistory.wrap('Add to layout',appendDesignToCurrentLayout);
+  removeDesignAndLayout=layoutHistory.wrap('Remove design',removeDesignAndLayout);
   if (window.installSheetWorkspace) window.installSheetWorkspace({
+    history:layoutHistory,
     get designs(){return designs;}, set designs(value){designs=value;},
     get instances(){return instances;}, set instances(value){instances=value;},
     get sheets(){return sheets;}, set sheets(value){sheets=value;},
@@ -3200,8 +3305,10 @@
     manual:enterManualModeIfNeeded, renderDesigns:renderAllDesigns, renderSheets:renderAllSheets, stats:computeStats,
     qualityRefresh:function(){setOverlapState(computeAllOverlaps());setQualityState(computeAllLowRes());},
     autoArrange:function(){
+      layoutHistory.run('Arrange on sheet',function(){
       designs.forEach(function(d){if(!instances.some(function(i){return i.designId===d.id;}))instances=instances.concat(createInstancesForDesign(d,dpiGlobal));});
       manualMode=false;repack();
+      });
     }
   });
 })();

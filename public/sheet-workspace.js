@@ -123,10 +123,12 @@ window.installSheetWorkspace = function(b) {
         sheet.placements.push(p); placed = { p:p, index:point.sheetIndex };
       } else placed = placeAutomatically(inst, planned);
       // Publish only after image decoding and all placement checks succeed.
+      var historyBefore=b.history.capture();
       b.designs.push(d); b.instances.push(inst); b.sheets = planned;
       inst.manualX = placed.p.x; inst.manualY = placed.p.y;
       b.selected.clear(); b.selected.add(inst.id); activeSheet = placed.index;
       finish('Added one piece. Drag to move it, or edit its print size below.');
+      b.history.record(historyBefore,'Add piece');
       return { instanceId:inst.id, sheetIndex:activeSheet };
     } catch (error) { status(error.message, true); throw error; }
     finally { importing = false; }
@@ -163,6 +165,7 @@ window.installSheetWorkspace = function(b) {
   }
   function applySelected(event) {
     event.preventDefault(); var s = selected(); if (!s) return;
+    var historyBefore=b.history.capture();
     try {
       var w = Math.round(b.readMeasure(el('width')) * b.dpi), h = Math.round(b.readMeasure(el('height')) * b.dpi), count = Number(el('quantity').value);
       if (!Number.isInteger(count) || count < 1 || count > 1000 || w < 1 || h < 1) throw new Error('Enter a positive size and a whole quantity from 1 to 1,000.');
@@ -184,6 +187,7 @@ window.installSheetWorkspace = function(b) {
       b.sheets = planned;
       s.design.widthIn=w/b.dpi; s.design.heightIn=h/b.dpi; s.design.qty=count;
       finish('Print size and quantity updated. Existing pieces kept their positions.');
+      b.history.record(historyBefore,'Change size and quantity');
     } catch(error) { status(error.message,true); syncSelection(); }
   }
   el('selection').onsubmit=applySelected;
@@ -192,11 +196,13 @@ window.installSheetWorkspace = function(b) {
   el('rotate').onclick=function(){var s=selected();if(!s)return; if(b.rotate(s.p,s.sheet))finish('Rotated 90°.');else status('Rotation needs more space at this position.',true);};
   el('remove').onclick=function(){
     var s=selected();if(!s)return;
+    var historyBefore=b.history.capture();
     s.sheet.placements=s.sheet.placements.filter(function(p){return p!==s.p;});
     b.instances=b.instances.filter(function(i){return i.id!==s.p.inst.id;});
     s.design.qty=b.instances.filter(function(i){return i.designId===s.design.id;}).length;
     if(!s.design.qty)b.designs=b.designs.filter(function(d){return d!==s.design;});
     b.selected.clear();finish('Removed one piece.');
+    b.history.record(historyBefore,'Remove piece');
   };
   el('arrange').onclick=function(){
     try { b.autoArrange(); refreshView(); status('All pieces arranged using your spacing and rotation settings.'); } catch(error){status(error.message,true);}
