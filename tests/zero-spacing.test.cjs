@@ -2,7 +2,7 @@ const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const { chromium } = require('playwright');
 const source = fs.readFileSync('public/builder.html', 'utf8');
-const hook = 'window.zeroTest={get sheets(){return sheets},settings:getSheetPixelSettings,overlaps:computeAllOverlaps,downloadPng,downloadTiff,getExportProfile};';
+const hook = 'window.zeroTest={get sheets(){return sheets},settings:getSheetPixelSettings,overlaps:computeAllOverlaps,downloadPng,downloadTiff,saveExportBlob,getExportProfile};';
 const html = source.replace(/\}\)\(\);\s*<\/script>/, hook + '})();</script>');
 assert.notEqual(html, source);
 
@@ -68,9 +68,11 @@ assert.notEqual(html, source);
     }), 'manual placements can touch the physical edge; one-pixel overlap or overflow is invalid');
     assert(await rejected());
     await frame.locator('#autoExtend').uncheck();
-    assert(await doc.evaluate(async () => { try { await smartSheetWorkspace.addFile(zeroFile()); return false; } catch { return smartSheetWorkspace.snapshot().sheets.length === 1; } }));
-    await frame.locator('#autoExtend').check();
+    // A disabled continuation checkbox now means one continuous DTF roll, not
+    // "drop the next copy". The fifth piece grows the working sheet.
     await doc.evaluate(() => smartSheetWorkspace.addFile(zeroFile()));
+    assert(await doc.evaluate(() => { const s = smartSheetWorkspace.snapshot(); return s.sheets.length === 1 && s.sheets[0].placements.length === 5 && s.sheets[0].height > 236; }));
+    await frame.locator('#autoExtend').check();
     await doc.evaluate(() => smartSheetWorkspace.setOpen(true));
     await frame.locator('#sw-arrange').click();
     const arranged = await doc.evaluate(() => smartSheetWorkspace.snapshot());
@@ -113,6 +115,16 @@ assert.notEqual(html, source);
     assert.deepEqual(pixels, Buffer.from(expected.rgba), 'TIFF retains exact sheet pixels and transparency');
     for (const x of [99,100]) assert.equal(pixels[(86 * expected.width + x)*4+3],255,'no artificial gap at touching seam');
     assert.deepEqual(await page.evaluate(() => exportsRequested), ['png','tiff']);
+    // A native picker handle receives the exact generated Blob. This keeps the
+    // Save As path distinct from the fallback browser download path exercised
+    // above (headless automation has no interactive native picker).
+    const savedThroughPicker = await doc.evaluate(async () => {
+      const writes = [];
+      const picker = { createWritable: async () => ({ write: async blob => writes.push(await blob.text()), close: async () => writes.push('closed') }) };
+      const saved = await zeroTest.saveExportBlob(new Blob(['chosen-folder'], { type: 'text/plain' }), 'proof.txt', picker, 'text/plain');
+      return { saved, writes };
+    });
+    assert.deepEqual(savedThroughPicker, { saved: true, writes: ['chosen-folder', 'closed'] });
     // A 23 × 39 in automatic run uses the full physical sheet dimensions but
     // keeps every auto-packed bounding box at least 0.30 in from each edge.
     await doc.evaluate(() => smartSheetWorkspace.setOpen(false));

@@ -79,32 +79,51 @@ window.installSheetWorkspace = function(b) {
     b.manual(); b.renderDesigns(); b.renderSheets(); b.stats(); b.qualityRefresh();
     refreshView(); if (message) status(message, false);
   }
+  function growContinuousSheet(planned, settings) {
+    var maxContinuousHeight = 3000000;
+    if (!planned.length) { planned.push(previewSheet()); return true; }
+    var sheet = planned[planned.length - 1];
+    if (sheet.heightPx >= maxContinuousHeight) return false;
+    sheet.heightPx = Math.min(maxContinuousHeight, Math.max(sheet.heightPx * 2, sheet.heightPx + settings.sheetLengthPx));
+    return true;
+  }
+  function settleContinuousSheet(sheet, settings) {
+    var edge = settings.autoEdgeAllowancePx || 0;
+    var baseline = Math.max(sheet.headerHeightPx || settings.headerHeightPx || 0, edge);
+    var bottom = sheet.placements.reduce(function(max, p){ return Math.max(max, p.y + p.h); }, baseline);
+    sheet.heightPx = Math.max(settings.sheetLengthPx, bottom + (sheet.gapPx || settings.gapPx || 0) + edge);
+  }
   // Existing MaxRects packing, seeded with occupied rectangles, preserves manual placements.
   function placeAutomatically(inst, planned) {
     var settings = b.settings(), start = Math.min(activeSheet, planned.length - 1);
-    var order = planned.map(function(_,i){ return i; });
-    if (start >= 0) { order.splice(start, 1); order.unshift(start); }
-    for (var k = 0; k <= order.length; k++) {
-      var index = order[k], fresh = index == null;
-      if (fresh && planned.length && !settings.autoExtend) break;
-      var sheet = fresh ? previewSheet() : planned[index];
-      var header = sheet.headerHeightPx || 0;
-      var edge = settings.autoEdgeAllowancePx || 0;
-      var top = Math.max(header, edge);
-      // Automatic additions use the same inset as Arrange on sheet. Existing
-      // manual pieces are converted into this local packing area, so they keep
-      // their physical locations and still block overlaps correctly.
-      var left = edge, width = Math.max(0, sheet.widthPx - edge * 2), height = Math.max(0, sheet.heightPx - top - edge);
-      var occupied = sheet.placements.map(function(p){ return { x:p.x-left, y:p.y-top, w:p.w, h:p.h }; });
-      var packed = b.pack([inst], width, height, gapFor(sheet), settings.allowRotation, occupied);
-      if (packed.placements.length) {
-        var p = packed.placements[0]; p.x += left; p.y += top;
-        if (!valid(p, sheet)) continue;
-        if (fresh) { index = planned.length; planned.push(sheet); }
-        sheet.placements.push(p); return { p:p, index:index };
+    for (var growth = 0; growth < 32; growth++) {
+      var order = planned.map(function(_,i){ return i; });
+      if (start >= 0) { order.splice(start, 1); order.unshift(start); }
+      for (var k = 0; k <= order.length; k++) {
+        var index = order[k], fresh = index == null;
+        if (fresh && planned.length && !settings.autoExtend) break;
+        var sheet = fresh ? previewSheet() : planned[index];
+        var header = sheet.headerHeightPx || 0;
+        var edge = settings.autoEdgeAllowancePx || 0;
+        var top = Math.max(header, edge);
+        // Automatic additions use the same inset as Arrange on sheet. Existing
+        // manual pieces are converted into this local packing area, so they keep
+        // their physical locations and still block overlaps correctly.
+        var left = edge, width = Math.max(0, sheet.widthPx - edge * 2), height = Math.max(0, sheet.heightPx - top - edge);
+        var occupied = sheet.placements.map(function(p){ return { x:p.x-left, y:p.y-top, w:p.w, h:p.h }; });
+        var packed = b.pack([inst], width, height, gapFor(sheet), settings.allowRotation, occupied);
+        if (packed.placements.length) {
+          var p = packed.placements[0]; p.x += left; p.y += top;
+          if (!valid(p, sheet)) continue;
+          if (fresh) { index = planned.length; planned.push(sheet); }
+          sheet.placements.push(p);
+          if (settings.continuousRoll) settleContinuousSheet(sheet, settings);
+          return { p:p, index:index };
+        }
       }
+      if (!settings.continuousRoll || !growContinuousSheet(planned, settings)) break;
     }
-    throw new Error('No space at this print size. Enable another sheet, change the size yourself, or choose Auto-arrange.');
+    throw new Error(settings.continuousRoll ? 'No space within the maximum continuous-sheet length at this print size.' : 'No space at this print size. Enable another sheet, change the size yourself, or choose Auto-arrange.');
   }
   function copySheets() { return b.sheets.map(function(s){ return Object.assign({}, s, { placements:s.placements.slice() }); }); }
   async function addFile(file, point) {

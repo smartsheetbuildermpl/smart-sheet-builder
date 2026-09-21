@@ -286,6 +286,7 @@
         </div>
         <div class="field">
           <label><input type="checkbox" id="autoExtend" checked><span data-i18n="autoExtendLabel">Gumawa ng kasunod na sheet kapag puno</span></label>
+          <small id="autoExtendHelp" data-i18n="autoExtendHelp">Kapag naka-off, isang tuloy-tuloy na sheet ang gagamitin at lalawak ito kung kailangan.</small>
         </div>
         <div class="field">
           <label><input type="checkbox" id="autoRotate" checked><span data-i18n="autoRotateLabel">Payagan ang auto-rotate para mapuno ang mga gap</span></label>
@@ -472,6 +473,7 @@
       sheetWidthLabel: 'Width ng sheet',
       sheetLengthLabel: 'Length ng sheet',
       autoExtendLabel: 'Gumawa ng kasunod na sheet kapag puno',
+      autoExtendHelp: 'Kapag naka-off, isang tuloy-tuloy na sheet ang gagamitin at lalawak ito kung kailangan.',
       autoRotateLabel: 'Payagan ang auto-rotate para mapuno ang mga gap',
       edgeAllowanceLabel: 'Allowance sa gilid para sa auto-layout',
       edgeAllowanceHelp: 'Para lang sa auto-arrange. Puwede pa ring idikit sa totoong gilid ang manual placement.',
@@ -597,6 +599,7 @@
       sheetWidthLabel: 'Sheet width',
       sheetLengthLabel: 'Sheet length',
       autoExtendLabel: 'Create another sheet when full',
+      autoExtendHelp: 'When off, use one continuous sheet that grows only when the requested pieces need it.',
       autoRotateLabel: 'Allow auto-rotate to fill gaps',
       edgeAllowanceLabel: 'Auto-layout edge allowance',
       edgeAllowanceHelp: 'Auto-arrange only. Manual placement can still reach the real sheet edge.',
@@ -781,7 +784,10 @@
     return api;
   })();
   var machinePresets = {
-    dtf: { widthIn: 23, lengthIn: 39, maxWidthIn: null, maxLengthIn: 39, paged: true, family: 'dtf' },
+    // DTF is supplied from a continuous roll. 39 in is the useful default,
+    // not a hard production/export limit: staff may deliberately set 60 in
+    // (or longer) for a single gang sheet.
+    dtf: { widthIn: 23, lengthIn: 39, maxWidthIn: null, maxLengthIn: null, paged: true, family: 'dtf' },
     uvdtf24: { widthIn: 23, lengthIn: 39, maxWidthIn: null, maxLengthIn: 39, paged: true, family: 'uvdtf' },
     uvdtf12: { widthIn: 11, lengthIn: 39, maxWidthIn: null, maxLengthIn: 39, paged: true, family: 'uvdtf' },
     tarpaulin: { widthIn: 63, lengthIn: 39, maxWidthIn: 63, maxLengthIn: 39, paged: true, family: 'tarpaulin' }
@@ -929,6 +935,16 @@
   });
   measureUnitSelect.addEventListener('change', function(){ preserveMeasuresForUnitChange(measureUnitSelect.value); });
   machinePresetSelect.addEventListener('change', applyMachinePreset);
+  document.getElementById('autoExtend').addEventListener('change', function(){
+    if (!sheets.length) { renderStartupSheetPreview(); return; }
+    // The checkbox changes the export layout contract, so apply it immediately
+    // as one undoable Arrange action. Nothing is silently discarded: a single
+    // DTF roll grows as required when continuation sheets are disabled.
+    layoutHistory.run('Change sheet continuation', function(){
+      manualMode = false;
+      repack();
+    });
+  });
   customerNameInput.addEventListener('input', function(){
     if (sheets.length) {
       sheets.forEach(function(sheet){ if (sheet.renderCanvas) drawSheetCanvas(sheet.renderCanvas, sheet); });
@@ -1804,7 +1820,11 @@
     var autoEdgeAllowancePx = Math.ceil(edgeAllowanceIn * dpi);
     dpiGlobal = dpi;
     sheetWidthPxGlobal = sheetWidthPx;
-    return { dpi: dpi, sheetWidthPx: sheetWidthPx, sheetLengthPx: sheetLengthPx, gapPx: gapPx, headerHeightPx: headerHeightPx, autoEdgeAllowancePx: autoEdgeAllowancePx, autoExtend: autoExtend, allowRotation: allowRotation, meterPaged: meterPaged };
+    // Turning off continuation on a paged DTF roll means one continuous sheet.
+    // It starts at the selected length and grows only if all requested pieces
+    // need more space; it never cuts or drops the remaining quantity.
+    var continuousRoll = preset.family === 'dtf' && !autoExtend;
+    return { dpi: dpi, sheetWidthPx: sheetWidthPx, sheetLengthPx: sheetLengthPx, gapPx: gapPx, headerHeightPx: headerHeightPx, autoEdgeAllowancePx: autoEdgeAllowancePx, autoExtend: autoExtend, allowRotation: allowRotation, meterPaged: meterPaged, continuousRoll: continuousRoll };
   }
 
   function offsetPackedPlacements(placements, xOffset, yOffset) {
@@ -1841,17 +1861,19 @@
     var remaining = instances.slice();
     while (remaining.length > 0) {
       var isLongTarpaulin = !settings.meterPaged && autoExtend;
+      var isContinuousSheet = isLongTarpaulin || settings.continuousRoll;
       var contentTopPx = Math.max(settings.headerHeightPx, edgePx);
-      var packedSheetHeight = isLongTarpaulin ? Math.max(sheetLengthPx * 50, 3000000) : sheetLengthPx;
+      var packedSheetHeight = isContinuousSheet ? Math.max(sheetLengthPx * 50, 3000000) : sheetLengthPx;
       var contentWidth = Math.max(0, sheetWidthPx - (2 * edgePx));
       var contentHeight = Math.max(0, packedSheetHeight - contentTopPx - edgePx);
       var result = packSheet(remaining, contentWidth, contentHeight, gapPx, settings.allowRotation);
       if (result.placements.length === 0) { lastSkipped = remaining.length; break; }
       var placed = offsetPackedPlacements(result.placements, edgePx, contentTopPx);
       var usedH = placed.reduce(function(m, p){ return Math.max(m, p.y + p.h); }, contentTopPx) + gapPx + edgePx;
-      var sheetH = isLongTarpaulin ? Math.max(sheetLengthPx, usedH) : sheetLengthPx;
+      var sheetH = isContinuousSheet ? Math.max(sheetLengthPx, usedH) : sheetLengthPx;
       sheets.push({ placements: placed, widthPx: sheetWidthPx, heightPx: sheetH, headerHeightPx: settings.headerHeightPx, gapPx: gapPx, autoEdgeAllowancePx: edgePx });
       remaining = result.unplaced;
+      if (isContinuousSheet) break;
       if (!autoExtend) {
         lastSkipped = remaining.length;
         break;
@@ -2373,10 +2395,14 @@
   async function downloadPng(sheet, idx) {
     var canvas = sheet.renderCanvas;
     if (!canvas) return;
+    var filename = 'dtf-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '.png';
+    var picker = await chooseExportDestination(filename, 'image/png');
+    if (picker === false) return;
     if (!(await requestExportAccess('png'))) return;
-    canvas.toBlob(function(blob){
+    canvas.toBlob(async function(blob){
       if (!blob) return;
-      triggerBlobDownload(blob, 'dtf-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '.png');
+      try { await saveExportBlob(blob, filename, picker, 'image/png'); }
+      catch (err) { console.error('Could not save PNG export', err); }
     }, 'image/png');
   }
 
@@ -2639,6 +2665,41 @@
     return prefix;
   }
 
+  async function chooseExportDestination(filename, mimeType) {
+    // Desktop Chrome and Edge expose the native Windows Save As picker. In the
+    // iframe, request it from the same-origin top window when necessary.
+    // Browser automation has no native picker to answer, so retain the normal
+    // download path for non-interactive verification runs.
+    if (navigator.webdriver) return null;
+    var host = typeof window.top !== 'undefined' && window.top && window.top.showSaveFilePicker ? window.top : window;
+    if (!host || !host.showSaveFilePicker) return null;
+    var extension = filename.slice(filename.lastIndexOf('.') + 1);
+    try {
+      return await host.showSaveFilePicker({
+        suggestedName: filename,
+        types: [{ description: extension.toUpperCase() + ' file', accept: (function(){ var a = {}; a[mimeType] = ['.' + extension]; return a; })() }]
+      });
+    } catch (err) {
+      // Closing the native picker is a normal cancellation, not a failed export.
+      if (err && err.name === 'AbortError') return false;
+      return null;
+    }
+  }
+
+  async function saveExportBlob(blob, filename, picker, mimeType) {
+    if (picker && picker !== false) {
+      var writable = await picker.createWritable();
+      await writable.write(blob);
+      await writable.close();
+      return true;
+    }
+    if (picker === false) return false;
+    // File System Access is unavailable in some browsers. Preserve the
+    // existing download behavior there instead of preventing an export.
+    triggerBlobDownload(blob, filename);
+    return true;
+  }
+
   function triggerBlobDownload(blob, filename) {
     var url = URL.createObjectURL(blob);
     var link = document.createElement('a');
@@ -2814,13 +2875,16 @@
     var ui = sheet.exportUi || {};
     var canvas = sheet.renderCanvas;
     if (!canvas) return;
+    profile = profile || getExportProfile('rgb');
+    var filename = filenameForExport(profile, idx);
+    var picker = await chooseExportDestination(filename, 'image/tiff');
+    if (picker === false) return;
     if (!(await requestExportAccess('tiff'))) return;
     if (ui.tiffBtn) ui.tiffBtn.disabled = true;
     if (ui.pngBtn) ui.pngBtn.disabled = true;
     if (ui.progress) { ui.progress.style.color = '#2457d6'; ui.progress.textContent = t('exportPreparing'); }
 
     try {
-      profile = profile || getExportProfile('rgb');
       var assets = profile.baseMode === 'cmyk' ? await getColorAssets() : null;
       var width = canvas.width, height = canvas.height;
       var rowsPerStrip = 64;
@@ -2897,7 +2961,7 @@
       );
       var blob = new Blob([prefix].concat(pixelParts), { type: 'image/tiff' });
       if (ui.progress) ui.progress.textContent = t('exportSaving');
-      triggerBlobDownload(blob, filenameForExport(profile, idx));
+      await saveExportBlob(blob, filename, picker, 'image/tiff');
     } catch (err) {
       if (ui.progress) {
         ui.progress.style.color = '#b3261e';
@@ -3058,6 +3122,22 @@
       if (group) group.push(inst); else groups.push([inst]);
     });
     var added = [], existingAdded = 0, createdSheets = [], addedBySheet = Object.create(null);
+    function growContinuousSheet() {
+      var maxContinuousHeight = 3000000;
+      if (!planned.length) {
+        var fresh = createIncrementalSheet(settings);
+        planned.push(fresh); states.push(makeState(fresh));
+        return true;
+      }
+      var index = planned.length - 1, sheet = planned[index];
+      if (sheet.heightPx >= maxContinuousHeight) return false;
+      sheet.heightPx = Math.min(maxContinuousHeight, Math.max(sheet.heightPx * 2, sheet.heightPx + settings.sheetLengthPx));
+      var nextState = makeState(sheet);
+      nextState.added = states[index].added;
+      nextState.hadLockedPlacements = states[index].hadLockedPlacements;
+      states[index] = nextState;
+      return true;
+    }
     while (groups.length) {
       var best = null, groupIndex = -1;
       // Large groups first, but try smaller pending groups on existing sheets
@@ -3070,6 +3150,10 @@
         if (best) groupIndex = gi;
       }
       if (!best) {
+        if (settings.continuousRoll) {
+          if (!growContinuousSheet()) break;
+          continue;
+        }
         if (planned.length && !settings.autoExtend) break;
         var fresh = createIncrementalSheet(settings), freshState = makeState(fresh);
         for (var fi = 0; fi < groups.length; fi++) {
@@ -3099,6 +3183,20 @@
       addedBySheet[best.sheetIndex] = (addedBySheet[best.sheetIndex] || 0) + best.count;
       group.splice(0, best.count);
       if (!group.length) groups.splice(groupIndex, 1);
+    }
+    // Keep the continuous export at the requested minimum length, then trim
+    // only unused roll after the final placed artwork and its safe allowance.
+    if (settings.continuousRoll) {
+      planned.forEach(function(sheet, index){
+        var edge = settings.autoEdgeAllowancePx || 0;
+        var baseline = Math.max(sheet.headerHeightPx || settings.headerHeightPx, edge);
+        var usedBottom = sheet.placements.reduce(function(bottom, p){ return Math.max(bottom, p.y + p.h); }, baseline);
+        sheet.heightPx = Math.max(settings.sheetLengthPx, usedBottom + settings.gapPx + edge);
+        var settled = makeState(sheet);
+        settled.added = states[index].added;
+        settled.hadLockedPlacements = states[index].hadLockedPlacements;
+        states[index] = settled;
+      });
     }
     var footprint = 0, largestArea = 0, usedLength = 0, rotations = 0;
     var largestGaps = states.map(function(state){
