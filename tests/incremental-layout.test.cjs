@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const { chromium } = require('playwright');
 
 const source = fs.readFileSync('public/builder.html', 'utf8');
-const hook = "window.incrementalTest={get designs(){return designs},get instances(){return instances},get sheets(){return sheets},add:appendDesignToCurrentLayout,settings:getSheetPixelSettings,plan:planIncrementalBatch,pack:packIncrementalBatch,setState:function(next){designs=next.designs;instances=next.instances;sheets=next.sheets;manualMode=!!next.manualMode;instanceIdCounter=100000;},draw:drawSheetCanvas};";
+const hook = "window.incrementalTest={get designs(){return designs},get instances(){return instances},get sheets(){return sheets},add:appendDesignToCurrentLayout,repack:repack,settings:getSheetPixelSettings,plan:planIncrementalBatch,pack:packIncrementalBatch,setState:function(next){designs=next.designs;instances=next.instances;sheets=next.sheets;manualMode=!!next.manualMode;instanceIdCounter=100000;},draw:drawSheetCanvas};";
 const html = source.replace(/\}\)\(\);\s*<\/script>/, hook + '})();</script>');
 assert.notEqual(html, source, 'test hook inserted');
 
@@ -234,6 +234,29 @@ assert.notEqual(html, source, 'test hook inserted');
       if (placements.some(p => p.x < 30 || p.y < 36 || p.x + p.w > 2270 || p.y + p.h > 3870)) throw Error('horizontal batch ignored automatic edge allowance');
       return { copies: placements.length, rows: rows.map(row => row.length), rotations: placements.filter(p => p.inst.rotation === 90).length, usedHeightIn: usedHeight };
     });
+    const continuationReport = await doc.evaluate(() => {
+      const t = incrementalTest;
+      for (const [id, value] of Object.entries({ dpi: 100, sheetWidth: 23, sheetLength: 39, gapNumber: 0, edgeAllowanceNumber: 0.3 })) document.getElementById(id).value = value;
+      document.getElementById('autoRotate').checked = false;
+      const canvas = document.createElement('canvas'); canvas.width = canvas.height = 418;
+      canvas.getContext('2d').fillRect(0, 0, 418, 418);
+      const design = { id: 5100, file: { name: 'MAIN.png' }, qty: 60, widthIn: 4.18, heightIn: 4.18,
+        trimmed: { canvas, w: 418, h: 418 }, vibrance: 0 };
+      const instances = Array.from({ length: 60 }, (_, i) => ({ id: 51000 + i, designId: design.id, canvas, baseW: 418, baseH: 418, rotation: 0, vibrance: 0 }));
+      t.setState({ designs: [design], instances, sheets: [], manualMode: false });
+      const continuation = document.getElementById('autoExtend');
+      continuation.checked = true;
+      t.repack();
+      if (t.sheets.length !== 2 || t.sheets.reduce((count, sheet) => count + sheet.placements.length, 0) !== 60) throw Error('39-inch continuation did not retain all 60 copies: sheets=' + t.sheets.length + ' copies=' + t.sheets.reduce((count, sheet) => count + sheet.placements.length, 0));
+      document.getElementById('sheetLength').value = '60';
+      continuation.checked = false;
+      continuation.dispatchEvent(new Event('change', { bubbles: true }));
+      const settings = t.settings(), placed = t.sheets.reduce((count, sheet) => count + sheet.placements.length, 0);
+      if (settings.sheetLengthPx !== 6000 || !settings.continuousRoll) throw Error('DTF length was still capped at 39 inches');
+      if (t.sheets.length !== 1 || placed !== 60 || t.sheets[0].heightPx < 6000) throw Error('continuous roll cut or dropped copies after disabling continuation');
+      for (const p of t.sheets[0].placements) if (p.x < 30 || p.y < 30 || p.x + p.w > 2270 || p.y + p.h > t.sheets[0].heightPx - 30) throw Error('continuous roll violated automatic safe margin');
+      return { sheets: t.sheets.length, copies: placed, heightPx: t.sheets[0].heightPx, requestedLengthPx: settings.sheetLengthPx };
+    });
     const extraCases = await doc.evaluate(() => {
       const t=incrementalTest, c=t.designs[0].trimmed.canvas;
       const options={dpi:100,sheetWidthPx:500,sheetLengthPx:500,headerHeightPx:36,autoEdgeAllowancePx:30,gapPx:10,allowRotation:true,autoExtend:true};
@@ -269,6 +292,7 @@ assert.notEqual(html, source, 'test hook inserted');
     assert.deepEqual(errors, []);
     console.log('Incremental layout passed: locked pieces, grouping, spacing, rotation, margins, exact quantities, UI feedback, and full-sheet rendering.', batchReport);
     console.log('Orientation priority passed:', orientationReport);
+    console.log('DTF continuation mode passed:', continuationReport);
     console.log(extraCases);
   } finally {
     await browser.close();
