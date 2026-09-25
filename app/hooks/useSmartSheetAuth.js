@@ -24,7 +24,7 @@ function localUsage(local) {
 function view(state) {
   const usage = state.mode === 'local' ? localUsage(state.local) : state.usage;
   const signedIn = state.ready && (state.mode === 'local' ? usage.signedIn : Boolean(state.session?.accessToken && usage.signedIn));
-  return { ...state, usage, signedIn, email: signedIn ? usage.email : '', isAdmin: signedIn && (usage.isAdmin ?? (usage.plan === 'admin' || usage.label === 'Admin')), canManageLibrary: signedIn && (state.mode === 'local' ? usage.email === 'masterprintlabcorp@gmail.com' : usage.canManageLibrary === true), accessToken: state.mode === 'server' && signedIn ? state.session.accessToken : '' };
+  return { ...state, usage, signedIn, email: signedIn ? usage.email : '', isSuperAdmin: signedIn && state.mode === 'server' && usage.isSuperAdmin === true, isAdmin: signedIn && (usage.isAdmin ?? (usage.plan === 'admin' || usage.label === 'Admin')), canManageLibrary: signedIn && (state.mode === 'local' ? usage.email === 'masterprintlabcorp@gmail.com' : usage.canManageLibrary === true), accessToken: state.mode === 'server' && signedIn ? state.session.accessToken : '' };
 }
 
 async function request(path, options = {}, session) {
@@ -52,7 +52,8 @@ export default function useSmartSheetAuth() {
     }
     return view(next);
   }
-  function useLocal() {
+  function activateLocalTest() {
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) return publish({ mode: 'server', session: null, ready: true, busy: false, usage: serverUsage({}, null) });
     if (['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) console.warn('Supabase env vars are not configured. Smart Sheet Builder is using local test mode.');
     return publish({ mode: 'local', session: null, ready: true, busy: false });
   }
@@ -66,11 +67,11 @@ export default function useSmartSheetAuth() {
     try {
       const data = await request(session?.accessToken ? '/api/auth/me' : `/api/export/status?guestId=${encodeURIComponent(stateRef.current.guestId)}`, {}, session);
       if (operation !== epoch.current) return;
-      if (data.configured === false) return useLocal();
+      if (data.configured === false) return activateLocalTest();
       publish({ ready: true, mode: 'server', session, usage: serverUsage(data, session), busy: false });
     } catch (error) {
       if (operation !== epoch.current) return;
-      if (error.data?.configured === false) return useLocal();
+      if (error.data?.configured === false) return activateLocalTest();
       publish({ ready: true, mode: 'server', session: null, usage: serverUsage({}, null), busy: false });
     }
   }
@@ -86,6 +87,7 @@ export default function useSmartSheetAuth() {
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
   function authenticateLocal(mode, email, password) {
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) throw new Error('Local test accounts are only available on localhost.');
     const local = stateRef.current.local;
     const existing = local.accounts[email];
     if (mode === 'login' && (!existing || existing.password !== password)) throw new Error('Email or password is incorrect. New here? Choose Create account.');
@@ -94,7 +96,7 @@ export default function useSmartSheetAuth() {
     publish({ ready: true, mode: 'local', session: null, local: { ...local, currentEmail: email, accounts: { ...local.accounts, [email]: account } }, busy: false });
     return { signedIn: true };
   }
-  async function authenticate(mode, rawEmail, password) {
+  async function authenticate(mode, rawEmail, password, profile = {}) {
     const email = normalizeEmail(rawEmail);
     if (!email || !password) throw new Error('Enter your email and password.');
     if (password.length < 6) throw new Error('Use a password with at least 6 characters.');
@@ -103,9 +105,9 @@ export default function useSmartSheetAuth() {
     if (stateRef.current.mode === 'local') return authenticateLocal(mode, email, password);
     publish({ busy: true });
     try {
-      const data = await request(`/api/auth/${mode === 'login' ? 'login' : 'register'}`, { method: 'POST', body: JSON.stringify({ email, password, guestId: stateRef.current.guestId }) });
+      const data = await request(`/api/auth/${mode === 'login' ? 'login' : 'register'}`, { method: 'POST', body: JSON.stringify({ email, password, guestId: stateRef.current.guestId, ...(mode === 'register' ? { profile } : {}) }) });
       if (operation !== epoch.current) return { signedIn: false };
-      if (data.configured === false) { useLocal(); return authenticateLocal(mode, email, password); }
+      if (data.configured === false) { activateLocalTest(); return authenticateLocal(mode, email, password); }
       if (data.session?.accessToken) {
         publish({ ready: true, mode: 'server', session: data.session, usage: serverUsage(data, data.session), busy: false });
         return { signedIn: view(stateRef.current).signedIn };
@@ -113,7 +115,7 @@ export default function useSmartSheetAuth() {
       return { signedIn: false, message: data.message || 'Check your email to confirm your account, then sign in.' };
     } catch (error) {
       if (operation !== epoch.current) return { signedIn: false };
-      if (error.data?.configured === false) { useLocal(); return authenticateLocal(mode, email, password); }
+      if (error.data?.configured === false) { activateLocalTest(); return authenticateLocal(mode, email, password); }
       throw new Error(error.data?.code === 'invalid_credentials' || /invalid login credentials/i.test(error.message) ? 'Email or password is incorrect. Please try again.' : error.message);
     } finally { if (operation === epoch.current) publish({ busy: false }); }
   }
@@ -124,6 +126,7 @@ export default function useSmartSheetAuth() {
     if (stateRef.current.mode === 'server') refresh(null);
   }
   function recordLocalExport(kind) {
+    if (!['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) return { allowed: false, message: 'Account service is not configured. Contact support.' };
     const current = view(stateRef.current), local = current.local, usage = current.usage;
     if (!usage.unlimited && usage.remaining <= 0) return { allowed: false, reason: 'limit_reached', message: usage.signedIn ? 'Your free account has used all 5 trial exports.' : 'Guest trial used up. Create a free account for 5 total exports.' };
     const next = { ...local, accounts: { ...local.accounts } };
@@ -139,12 +142,12 @@ export default function useSmartSheetAuth() {
     try {
       const data = await request('/api/export/consume', { method: 'POST', body: JSON.stringify({ exportKind: kind || 'download', guestId: current.guestId }) }, current.session);
       if (operation !== epoch.current) return { allowed: false, message: 'Your account changed. Please try again.' };
-      if (data.configured === false) { useLocal(); return recordLocalExport(kind); }
+      if (data.configured === false) { activateLocalTest(); return recordLocalExport(kind); }
       publish({ usage: serverUsage(data, current.session) });
       return { allowed: Boolean(data.allowed), reason: data.reason, message: data.message };
     } catch (error) {
       if (operation !== epoch.current) return { allowed: false, message: 'Your account changed. Please try again.' };
-      if (error.data?.configured === false) { useLocal(); return recordLocalExport(kind); }
+      if (error.data?.configured === false) { activateLocalTest(); return recordLocalExport(kind); }
       if (error.data?.code === 'invalid_session') signOut();
       return { allowed: false, reason: 'access_check_failed', message: error.message || 'Export access check failed.' };
     }

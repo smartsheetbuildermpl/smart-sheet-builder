@@ -37,6 +37,7 @@ const password = 'test-only-password';
     const workspace = page => page.locator('.builder-workspace.is-open');
     async function closeLibrary(page) { await page.getByRole('button', { name: 'Close Design Library' }).click(); }
     async function enterCredentials(page, email = owner) {
+      if (await page.getByLabel('Full name', { exact: true }).count()) await page.getByLabel('Full name', { exact: true }).fill('Test Registrant');
       await page.getByLabel('Email', { exact: true }).fill(email);
       await page.getByLabel('Password', { exact: true }).fill(password);
       await page.locator('.auth-form button[type=submit]').click();

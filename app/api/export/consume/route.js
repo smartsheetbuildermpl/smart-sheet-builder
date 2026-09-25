@@ -31,7 +31,7 @@ export async function POST(request) {
     if (error.code === 'invalid_session') {
       return NextResponse.json({ code: 'invalid_session', message: 'Please sign in again.' }, { status: 401 });
     }
-    throw error;
+    return NextResponse.json({ allowed: false, message: 'Export access could not be verified. Please retry or contact support.' }, { status: error.status || 503 });
   }
 
   if (!guestId) {

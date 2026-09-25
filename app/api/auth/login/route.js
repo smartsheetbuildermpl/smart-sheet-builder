@@ -7,6 +7,7 @@ import {
   unconfiguredPayload,
   usageForProfile,
 } from '../../_lib/supabase';
+import { apiError } from '../../_lib/user-management';
 
 export const dynamic = 'force-dynamic';
 
@@ -41,9 +42,6 @@ export async function POST(request) {
       usage: usageForProfile(profile, user),
     });
   } catch (error) {
-    return NextResponse.json(
-      { message: error.data?.error_description || error.data?.msg || error.message || 'Sign in failed.' },
-      { status: error.status || 401 }
-    );
+    return apiError(error);
   }
 }

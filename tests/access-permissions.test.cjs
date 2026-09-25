@@ -21,7 +21,8 @@ const basic = { id: 'basic-id', email: 'mpl.smartsheetbuilder@gmail.com' };
 const other = { id: 'other-id', email: 'other-admin@example.test' };
 const ordinary = { id: 'free-id', email: 'ordinary@example.test' };
 const users = { owner, basic, other, ordinary };
-const profiles = Object.fromEntries(Object.values(users).map(u => [u.id, { id: u.id, email: u.email, role: u === other ? 'admin' : 'customer', plan: 'free', status: 'active', exports_used: 5, exports_unlimited: u === basic }]));
+Object.values(users).forEach(u => { u.email_confirmed_at = '2026-09-01T00:00:00Z'; });
+const profiles = Object.fromEntries(Object.values(users).map(u => [u.id, { id: u.id, email: u.email, is_super_admin: u === owner, role: u === other ? 'admin' : 'customer', plan: 'free', status: 'active', exports_used: 5, exports_unlimited: u === basic }]));
 const env = { NEXT_PUBLIC_SUPABASE_URL: 'https://supabase.example.test', NEXT_PUBLIC_SUPABASE_ANON_KEY: 'test-anon', SUPABASE_SERVICE_ROLE_KEY: 'test-service', SMART_SHEET_ADMIN_EMAILS: other.email };
 Object.assign(process.env, env);
 const writes = [];
@@ -33,6 +34,14 @@ global.fetch = async (url, options = {}) => {
   const u = new URL(url), method = options.method || 'GET', body = options.body && typeof options.body === 'string' ? JSON.parse(options.body) : null;
   if (u.pathname === '/auth/v1/user') return users[options.headers.Authorization?.slice(7)] ? response(users[options.headers.Authorization.slice(7)]) : response({ message: 'Invalid token' }, 401);
   if (method !== 'GET') writes.push({ path: u.pathname, method, body });
+  if (u.pathname === '/rest/v1/rpc/ssb_import_guest_usage') return response(profiles[body.p_user]);
+  if (u.pathname === '/rest/v1/rpc/ssb_consume_export') {
+    const p = profiles[body.p_user];
+    const unlimited = p.is_super_admin || p.exports_unlimited || p.role === 'admin';
+    const allowed = p.status !== 'blocked' && (unlimited || p.exports_used < 5);
+    if (allowed && !unlimited) p.exports_used++;
+    return response({ allowed, profile: p });
+  }
   if (u.pathname === '/rest/v1/profiles') {
     const id = u.searchParams.get('id')?.slice(3);
     if (method === 'PATCH') Object.assign(profiles[id], body);

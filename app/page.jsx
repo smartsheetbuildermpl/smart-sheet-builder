@@ -3,6 +3,9 @@
 import { useEffect, useRef, useState } from 'react';
 import DesignLibraryDialog from './components/DesignLibraryDialog';
 import useSmartSheetAuth from './hooks/useSmartSheetAuth';
+import RegistrationFields, { emptyRegistration } from './components/RegistrationFields';
+import UsersDialog from './components/UsersDialog';
+import AccountProfile from './components/AccountProfile';
 
 export default function HomePage() {
   const auth = useSmartSheetAuth();
@@ -12,6 +15,8 @@ export default function HomePage() {
   const [authMode, setAuthMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [registration, setRegistration] = useState(emptyRegistration);
+  const [usersOpen, setUsersOpen] = useState(false);
   const [authMessage, setAuthMessage] = useState('');
   const [paywallOpen, setPaywallOpen] = useState(false);
   const [libraryOpen, setLibraryOpen] = useState(false);
@@ -56,6 +61,7 @@ export default function HomePage() {
   }
 
   function showAccount() {
+    setRegistration(emptyRegistration);
     setEmail(''); setPassword(''); setAuthMessage(''); setAuthMode('login'); setPaywallOpen(true);
   }
   function dismissAccount() {
@@ -64,7 +70,7 @@ export default function HomePage() {
   async function handleAuth(event) {
     event.preventDefault(); setAuthMessage('');
     try {
-      const result = await authRef.current.authenticate(authMode, email, password);
+      const result = await authRef.current.authenticate(authMode, email, password, registration);
       setPassword('');
       if (result.signedIn) {
         setEmail(''); setPaywallOpen(false);
@@ -73,6 +79,7 @@ export default function HomePage() {
     } catch (error) { setPassword(''); setAuthMessage(error.message); }
   }
   function signOut() {
+    setUsersOpen(false);
     pendingAction.current = null; closeLibrary(); dismissAccount(); setLibraryMessage('');
     authRef.current.signOut();
   }
@@ -216,6 +223,7 @@ export default function HomePage() {
               Sign out
             </button>
           )}
+          {auth.isSuperAdmin && <button className="access-button ghost" type="button" onClick={() => setUsersOpen(true)}>Users & Registrations</button>}
         </div>
       </section>
 
@@ -252,7 +260,7 @@ export default function HomePage() {
         <section ref={accountRef} className="access-modal" role="dialog" aria-modal="true" aria-labelledby="account-title" onKeyDown={event => {
           if (event.key === 'Escape') dismissAccount();
           if (event.key !== 'Tab') return;
-          const controls = Array.from(accountRef.current.querySelectorAll('button,input')).filter(el => !el.disabled);
+          const controls = Array.from(accountRef.current.querySelectorAll('button,input,select,summary,a[href]')).filter(el => !el.disabled && el.getClientRects().length);
           if (event.shiftKey && event.target === controls[0]) { event.preventDefault(); controls.at(-1)?.focus(); }
           if (!event.shiftKey && event.target === controls.at(-1)) { event.preventDefault(); controls[0]?.focus(); }
         }}>
@@ -262,7 +270,8 @@ export default function HomePage() {
             </button>
             <p className="access-kicker">Master PrintLab access</p>
             <h2 id="account-title">{modalTitle}</h2>
-            <p className="modal-copy">{auth.signedIn ? `${auth.email} · ${usage.label} · ${remainingText}` : 'Sign in to your workspace. New accounts include 5 trial exports.'}</p>
+            <p className="modal-copy">{auth.signedIn ? `${auth.email} · ${usage.label} · ${remainingText}` : authMode === 'register' ? 'Create a free account to save your access and receive the standard export allowance.' : 'Sign in to your workspace. New accounts include 5 trial exports.'}</p>
+            {auth.signedIn && auth.accessToken && <AccountProfile key={auth.accessToken} token={auth.accessToken} />}
             {!auth.signedIn && (
             <form className="auth-form" onSubmit={handleAuth}>
               <div className="auth-tabs" role="tablist" aria-label="Account mode">
@@ -281,13 +290,14 @@ export default function HomePage() {
                   Sign in
                 </button>
               </div>
+              {authMode === 'register' && <RegistrationFields value={registration} onChange={setRegistration} />}
               <label>
                 Email
-                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="off" required />
+                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" maxLength={254} required />
               </label>
               <label>
                 Password
-                <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} required />
+                <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={6} maxLength={1024} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} required />
               </label>
               <button type="submit" disabled={busy || !auth.ready}>
                 {busy ? 'Please wait...' : authMode === 'register' ? 'Create account' : 'Sign in'}
@@ -302,6 +312,7 @@ export default function HomePage() {
         </section>
       )}
 
+      {usersOpen && auth.isSuperAdmin && <UsersDialog token={auth.accessToken} onClose={() => setUsersOpen(false)} />}
       <noscript>
         <div className="noscript-message">
           Smart Sheet Builder needs JavaScript enabled to arrange and export sheets.

@@ -106,6 +106,11 @@ export async function getUserFromRequest(request) {
 
   try {
     const user = await supabaseFetch('/auth/v1/user', { token });
+    if (!user.id || !user.email_confirmed_at) {
+      const error = new Error('Verify your email, then sign in.');
+      error.status = 401;
+      throw error;
+    }
     return {
       id: user.id,
       email: normalizeEmail(user.email),
@@ -125,43 +130,38 @@ export async function getProfile(userId) {
 }
 
 async function createProfile(user) {
-  const isAdmin = getAdminEmails().includes(normalizeEmail(user.email));
-  const rows = await supabaseFetch('/rest/v1/profiles', {
+  // Recovery for an older verified account only. Signup profiles are created by
+  // the auth.users trigger; neither metadata nor configured emails grant roles.
+  const rows = await supabaseFetch('/rest/v1/profiles?on_conflict=id', {
     method: 'POST',
     service: true,
-    headers: { Prefer: 'return=representation' },
+    headers: { Prefer: 'resolution=ignore-duplicates,return=representation' },
     body: [
       {
         id: user.id,
         email: normalizeEmail(user.email),
-        role: isAdmin ? 'admin' : 'customer',
-        plan: isAdmin ? 'admin' : 'free',
+        role: 'user',
+        plan: 'free',
         status: 'active',
         exports_used: 0,
       },
     ],
   });
-  return rows?.[0] || null;
+  return rows?.[0] || getProfile(user.id);
 }
 
 async function updateProfileEmail(profile, user) {
   const email = normalizeEmail(user.email);
   const isOwner = OWNER_EMAILS.includes(email);
-  const isAdmin = getAdminEmails().includes(email);
 
   // The owner account is already granted Admin/Unlimited below. Avoid a redundant
   // profile PATCH on every sign-in, which is the request timing out on Vercel.
-  if (isOwner) return profile;
+  if (isOwner || profile.email === email) return profile;
 
   const patch = {
     email,
     updated_at: new Date().toISOString(),
   };
-
-  if (isAdmin && profile.plan !== 'admin') {
-    patch.role = 'admin';
-    patch.plan = 'admin';
-  }
 
   const rows = await supabaseFetch(`/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}`, {
     method: 'PATCH',
@@ -183,10 +183,10 @@ export function isAdminProfile(profile, user) {
   return getAdminEmails().includes(email) || profile?.role === 'admin' || profile?.plan === 'admin';
 }
 
-export function canManageLibrary(user) {
-  // Only the identity verified by Supabase Auth may grant library management.
-  // Profile roles, plans and configurable admin email lists are not library grants.
-  return OWNER_EMAILS.includes(normalizeEmail(user?.email));
+export function canManageLibrary(user, profile) {
+  // The migration binds the existing owner's UUID once. Only that same verified
+  // Auth identity may manage the library; roles/plans/email metadata cannot grant it.
+  return Boolean(user?.id && user.id === profile?.id && profile?.is_super_admin === true);
 }
 
 export async function getLibraryActor(request, { manage = false } = {}) {
@@ -204,7 +204,7 @@ export async function getLibraryActor(request, { manage = false } = {}) {
     error.code = 'account_blocked';
     throw error;
   }
-  const canManage = canManageLibrary(user);
+  const canManage = canManageLibrary(user, profile);
   if (manage && !canManage) {
     const error = new Error('Only the library owner can manage designs and categories.');
     error.status = 403;
@@ -287,40 +287,29 @@ export async function getGuestUsage(guestId) {
 }
 
 export async function migrateGuestUsageToProfile(user, guestId) {
-  if (!guestId) return ensureProfile(user);
-  const profile = await ensureProfile(user);
-  if (usageForProfile(profile, user).unlimited) return profile;
-
-  const guestUsage = await getGuestUsage(guestId);
-  const importedUses = Math.min(Number(guestUsage.exports_used || 0), FREE_LIMIT);
-  if (importedUses <= Number(profile.exports_used || 0)) return profile;
-
-  const rows = await supabaseFetch(`/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}`, {
-    method: 'PATCH',
-    service: true,
-    headers: { Prefer: 'return=representation' },
-    body: {
-      exports_used: importedUses,
-      updated_at: new Date().toISOString(),
-    },
+  await ensureProfile(user);
+  return supabaseFetch('/rest/v1/rpc/ssb_import_guest_usage', {
+    method: 'POST', service: true, body: { p_user: user.id, p_guest: String(guestId || '').slice(0, 200) },
   });
-  return rows?.[0] || profile;
 }
 
 export function usageForProfile(profile, user) {
   const email = normalizeEmail(user?.email || profile?.email);
-  const isOwner = OWNER_EMAILS.includes(email);
+  const isOwner = profile?.is_super_admin === true;
   const plan = isOwner ? 'admin' : profile?.plan || 'free';
   const role = isOwner ? 'admin' : profile?.role || 'customer';
   const isAdmin = isOwner || plan === 'admin' || role === 'admin';
-  const unlimited = isAdmin || plan === 'subscriber' || profile?.exports_unlimited === true;
+  const unlimited = isOwner || (profile?.export_access_override != null
+    ? profile.export_access_override === 'unlimited'
+    : isAdmin || plan === 'subscriber' || profile?.exports_unlimited === true);
   const used = Number(profile?.exports_used || 0);
 
   return {
     email,
     label: isAdmin ? 'Admin' : plan === 'subscriber' ? 'Subscribed' : unlimited ? 'Basic account' : 'Free account',
     isAdmin,
-    canManageLibrary: profile?.status !== 'blocked' && canManageLibrary(user),
+    isSuperAdmin: profile?.is_super_admin === true && profile?.status === 'active',
+    canManageLibrary: profile?.status !== 'blocked' && canManageLibrary(user, profile),
     plan,
     limit: unlimited ? null : FREE_LIMIT,
     used,
@@ -365,48 +354,10 @@ export async function recordUsageExport({ userId = null, guestId = null, exportK
 }
 
 export async function incrementProfileUsage(profile, user, exportKind) {
-  const currentUsage = usageForProfile(profile, user);
-
-  if (profile?.status === 'blocked') {
-    return {
-      allowed: false,
-      reason: 'account_blocked',
-      message: 'This account is blocked. Please contact support.',
-      usage: currentUsage,
-    };
-  }
-
-  if (currentUsage.unlimited) {
-    await recordUsageExport({ userId: user.id, exportKind });
-    return { allowed: true, usage: currentUsage };
-  }
-
-  if (currentUsage.remaining <= 0) {
-    return {
-      allowed: false,
-      reason: 'limit_reached',
-      message: 'Your free account has used all 5 trial exports.',
-      usage: currentUsage,
-    };
-  }
-
-  const nextUsed = Number(profile.exports_used || 0) + 1;
-  const rows = await supabaseFetch(`/rest/v1/profiles?id=eq.${encodeURIComponent(user.id)}`, {
-    method: 'PATCH',
-    service: true,
-    headers: { Prefer: 'return=representation' },
-    body: {
-      exports_used: nextUsed,
-      updated_at: new Date().toISOString(),
-    },
+  const result = await supabaseFetch('/rest/v1/rpc/ssb_consume_export', {
+    method: 'POST', service: true, body: { p_user: user.id, p_kind: String(exportKind || 'download').slice(0, 40) },
   });
-  const nextProfile = rows?.[0] || { ...profile, exports_used: nextUsed };
-  await recordUsageExport({ userId: user.id, exportKind });
-
-  return {
-    allowed: true,
-    usage: usageForProfile(nextProfile, user),
-  };
+  return { allowed: result.allowed === true, reason: result.reason, message: result.message, usage: usageForProfile(result.profile, user) };
 }
 
 export async function incrementGuestUsage(guestId, exportKind) {

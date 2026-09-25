@@ -21,6 +21,7 @@ export async function GET(request) {
     const user = await getUserFromRequest(request);
     if (user) {
       const profile = await ensureProfile(user);
+      if (profile.status === 'blocked') return NextResponse.json({ code: 'account_blocked', message: 'This account is suspended. Contact support.' }, { status: 403 });
       return NextResponse.json({ configured: true, usage: usageForProfile(profile, user) });
     }
   } catch {
