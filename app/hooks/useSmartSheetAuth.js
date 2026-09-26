@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import { localPasswordVerifier, sanitizeLocalAccounts } from '../lib/local-test-credentials';
 
 const SESSION_KEY = 'smart-sheet-builder-v53b-session';
 const GUEST_KEY = 'smart-sheet-builder-v53b-guest-id';
@@ -76,23 +77,32 @@ export default function useSmartSheetAuth() {
     }
   }
   useEffect(() => {
+    let cancelled = false;
+    (async () => {
     let local = emptyLocal(), session = null;
     try { const saved = JSON.parse(localStorage.getItem(LOCAL_KEY) || localStorage.getItem(LEGACY_KEY) || 'null'); if (saved) local = { ...local, ...saved, accounts: saved.accounts || {} }; } catch {}
     try { session = JSON.parse(localStorage.getItem(SESSION_KEY) || 'null'); } catch {}
+    local.accounts = await sanitizeLocalAccounts(local.accounts);
+    if (cancelled) return;
+    localStorage.setItem(LOCAL_KEY, JSON.stringify(local));
+    localStorage.removeItem(LEGACY_KEY);
     const guestId = localStorage.getItem(GUEST_KEY) || crypto.randomUUID();
     localStorage.setItem(GUEST_KEY, guestId);
     publish({ guestId, local, session });
     refresh(session);
-    return () => { epoch.current++; };
+    })();
+    return () => { cancelled = true; epoch.current++; };
   }, []); // eslint-disable-line react-hooks/exhaustive-deps
 
-  function authenticateLocal(mode, email, password) {
+  async function authenticateLocal(mode, email, password) {
+    const operation = epoch.current;
     if (!['localhost', '127.0.0.1', '[::1]'].includes(location.hostname)) throw new Error('Local test accounts are only available on localhost.');
     const local = stateRef.current.local;
     const existing = local.accounts[email];
-    if (mode === 'login' && (!existing || existing.password !== password)) throw new Error('Email or password is incorrect. New here? Choose Create account.');
+    if (mode === 'login' && (!existing?.passwordVerifier || (await localPasswordVerifier(password, existing.passwordVerifier.salt)).hash !== existing.passwordVerifier.hash)) throw new Error('Email or password is incorrect. New here? Choose Create account.');
     if (mode === 'register' && existing) throw new Error('An account with this email already exists. Choose Sign in.');
-    const account = existing || { email, password, plan: adminEmails().includes(email) ? 'admin' : 'free', exportsUsed: adminEmails().includes(email) ? 0 : Math.min(Number(local.guestExportsUsed || 0), 5), createdAt: new Date().toISOString() };
+    const account = existing || { email, passwordVerifier: await localPasswordVerifier(password), plan: adminEmails().includes(email) ? 'admin' : 'free', exportsUsed: adminEmails().includes(email) ? 0 : Math.min(Number(local.guestExportsUsed || 0), 5), createdAt: new Date().toISOString() };
+    if (operation !== epoch.current) return { signedIn: false };
     publish({ ready: true, mode: 'local', session: null, local: { ...local, currentEmail: email, accounts: { ...local.accounts, [email]: account } }, busy: false });
     return { signedIn: true };
   }

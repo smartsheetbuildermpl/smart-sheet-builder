@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 
 const date = value => value ? new Date(value).toLocaleString() : 'Not recorded';
+const eventLabel = event => ({ export: 'Export access consumed', registration: 'Registration', password_changed_by_user: 'Password changed by user', admin_access_change: 'Admin access change' }[event] || 'Account activity');
 const statusLabel = value => ({ active: 'Active', suspended: 'Suspended', pending_email_verification: 'Pending verification' }[value] || value);
 const historyValue = value => Object.entries(value).map(([key, item]) => `${({ role: 'Role', export_access: 'Export access', account_status: 'Account status', status: 'Status', format: 'Format' })[key] || key}: ${item === 'blocked' ? 'Suspended' : item === 'pending_email_verification' ? 'Pending verification' : item}`).join(' · ');
 export default function UsersDialog({ token, onClose }) {
@@ -82,7 +83,7 @@ export default function UsersDialog({ token, onClose }) {
           </div>}
           <h3>View History</h3>
           {!detail.history.length && <p>No activity recorded {historyPage ? 'on this page' : 'yet'}. Historical events have not been reconstructed.</p>}
-          <ol className="user-history">{detail.history.map(event => <li key={event.sort_key}><strong>{event.event === 'export' ? 'Export access consumed' : event.event === 'registration' ? 'Registration' : 'Admin access change'}</strong><small>{date(event.created_at)}{event.actor_id && ` · ${event.actor_email || event.actor_id}`}</small>{event.old_value && <p>Before: {historyValue(event.old_value)}</p>}{event.new_value && <p>{event.old_value ? 'After' : 'Details'}: {historyValue(event.new_value)}</p>}</li>)}</ol>
+          <ol className="user-history">{detail.history.map(event => <li key={event.sort_key}><strong>{eventLabel(event.event)}</strong><small>{date(event.created_at)}{event.actor_id && ` · ${event.actor_email || event.actor_id}`}</small>{event.old_value && <p>Before: {historyValue(event.old_value)}</p>}{event.new_value && <p>{event.old_value ? 'After' : 'Details'}: {historyValue(event.new_value)}</p>}</li>)}</ol>
           <nav aria-label="History pages"><button disabled={!historyPage || saving} onClick={() => setHistoryPage(p => p - 1)}>Newer</button><span>Page {historyPage + 1}</span><button disabled={detail.history.length < 30 || saving} onClick={() => setHistoryPage(p => p + 1)}>Older</button></nav>
         </>}
       </section>

@@ -6,6 +6,8 @@ import useSmartSheetAuth from './hooks/useSmartSheetAuth';
 import RegistrationFields, { emptyRegistration } from './components/RegistrationFields';
 import UsersDialog from './components/UsersDialog';
 import AccountProfile from './components/AccountProfile';
+import PasswordRequestForm from './components/PasswordRequestForm';
+import ChangePassword from './components/ChangePassword';
 
 export default function HomePage() {
   const auth = useSmartSheetAuth();
@@ -86,6 +88,13 @@ export default function HomePage() {
   useEffect(() => {
     if (paywallOpen) accountRef.current?.querySelector('input,button')?.focus();
   }, [paywallOpen]);
+  useEffect(() => {
+    if (new URLSearchParams(location.search).get('signin') === '1') {
+      const changed = new URLSearchParams(location.search).get('passwordChanged') === '1';
+      history.replaceState(null, '', '/'); showAccount();
+      if (changed) setAuthMessage('Password changed successfully. Sign in with your new password.');
+    }
+  }, []);
   useEffect(() => () => clearAccessHideTimer(), []); // Do not leave a delayed update behind after navigation.
   useEffect(() => { if (backgroundEditorOpen) { clearAccessHideTimer(); setAccessBarOpen(false); } }, [backgroundEditorOpen]);
   useEffect(() => {
@@ -192,7 +201,7 @@ export default function HomePage() {
 
   const remainingText = usage.unlimited ? 'Unlimited' : `${usage.remaining} left`;
   const modeText = !auth.ready ? 'Checking account…' : auth.mode === 'server' ? 'Server protected' : 'Local test mode';
-  const modalTitle = auth.signedIn ? 'Your account' : authMode === 'login' ? 'Welcome back' : 'Create your account';
+  const modalTitle = auth.signedIn ? 'Your account' : authMode === 'forgot' ? 'Reset your password' : authMode === 'login' ? 'Welcome back' : 'Create your account';
 
   return (
     <main className="app-shell">
@@ -270,9 +279,11 @@ export default function HomePage() {
             </button>
             <p className="access-kicker">Master PrintLab access</p>
             <h2 id="account-title">{modalTitle}</h2>
-            <p className="modal-copy">{auth.signedIn ? `${auth.email} · ${usage.label} · ${remainingText}` : authMode === 'register' ? 'Create a free account to save your access and receive the standard export allowance.' : 'Sign in to your workspace. New accounts include 5 trial exports.'}</p>
+            <p className="modal-copy">{auth.signedIn ? `${auth.email} · ${usage.label} · ${remainingText}` : authMode === 'forgot' ? 'Recover access to your existing account.' : authMode === 'register' ? 'Create a free account to save your access and receive the standard export allowance.' : 'Sign in to your workspace. New accounts include 5 trial exports.'}</p>
             {auth.signedIn && auth.accessToken && <AccountProfile key={auth.accessToken} token={auth.accessToken} />}
-            {!auth.signedIn && (
+            {auth.signedIn && auth.accessToken && <ChangePassword key={`security-${auth.accessToken}`} token={auth.accessToken} onChanged={warning => { signOut(); showAccount(); setAuthMessage(`Password changed successfully. Sign in with your new password.${warning ? ` ${warning}` : ''}`); }} />}
+            {!auth.signedIn && authMode === 'forgot' && <PasswordRequestForm onBack={() => { setAuthMode('login'); setAuthMessage(''); }} />}
+            {!auth.signedIn && authMode !== 'forgot' && (
             <form className="auth-form" onSubmit={handleAuth}>
               <div className="auth-tabs" role="tablist" aria-label="Account mode">
                 <button
@@ -302,6 +313,7 @@ export default function HomePage() {
               <button type="submit" disabled={busy || !auth.ready}>
                 {busy ? 'Please wait...' : authMode === 'register' ? 'Create account' : 'Sign in'}
               </button>
+              {authMode === 'login' && <button className="password-link" type="button" onClick={() => { setPassword(''); setAuthMessage(''); setAuthMode('forgot'); }}>Forgot password?</button>}
             </form>
             )}
 
