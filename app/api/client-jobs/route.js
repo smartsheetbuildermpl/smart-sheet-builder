@@ -11,7 +11,6 @@ import {
   portalSetup,
   publicOrigin,
   uuid,
-  cleanup,
   rate
 } from '../_lib/client-jobs';
 export const dynamic = 'force-dynamic';
@@ -27,7 +26,6 @@ export async function GET(request) {
         job: { ...job, notification: undefined, link_hash: undefined }
       });
     }
-    await cleanup().catch(() => {});
     let portal = await jobs('portal', { p_owner: user.id });
     if (!portal)
       portal = await jobs('portal-create', {
@@ -79,9 +77,9 @@ export async function POST(request) {
       old = await jobs('portal', { p_owner: user.id });
     await rate(request, `portal-settings:${user.id}`, 30);
     if (body.action !== 'disable') publicOrigin(request);
-    if (body.action !== 'disable' && !process.env.CLIENT_JOBS_CRON_SECRET)
+    if (body.action !== 'disable' && !process.env.CRON_SECRET)
       throw failure(
-        'Configure the Client Jobs maintenance scheduler before enabling uploads.',
+        'Configure Vercel CRON_SECRET before enabling uploads.',
         503
       );
     if (!['save', 'rotate', 'disable'].includes(body.action))

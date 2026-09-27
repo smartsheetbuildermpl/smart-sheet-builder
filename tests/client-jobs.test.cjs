@@ -56,7 +56,7 @@ async function fixture() {
     RESEND_API_KEY: 'test-provider',
     CLIENT_JOBS_EMAIL_FROM: 'print@test.example',
     SMART_SHEET_SITE_URL: 'https://shop.test',
-    CLIENT_JOBS_CRON_SECRET: 'test-maintenance'
+    CRON_SECRET: 'test-maintenance'
   });
   const prior = global.fetch,
     objects = new Map(),
@@ -401,6 +401,11 @@ async function run() {
       [id]
     );
     assert.equal(
+      (await f.owner.GET(req(`/?id=${id}`, undefined, 'basic'))).status,
+      410,
+      'owner job detail is blocked at the server expiry deadline'
+    );
+    assert.equal(
       (
         await f.files.GET(req('/file', undefined, 'basic'), {
           params: { id, file }
@@ -459,8 +464,15 @@ async function run() {
     assert.equal(disabled.code, 'portal_disabled');
     assert.equal(disabled.message, 'This upload portal is currently disabled.');
     assert.equal(
-      (await f.maintenance.POST(req('/maintenance', {}))).status,
+      (await f.maintenance.GET(req('/maintenance', undefined))).status,
       401
+    );
+    assert.equal(
+      (await f.maintenance.GET(req('/maintenance', undefined, undefined, {
+        authorization: 'Bearer test-maintenance'
+      }))).status,
+      200,
+      'Vercel CRON_SECRET authorizes the daily GET maintenance route'
     );
     await f.db.exec('set role authenticated');
     await assert.rejects(() => f.q('select * from client_jobs'));

@@ -4,7 +4,7 @@
 
 - The Supabase project configured in local `.env.local` is `xczwxxybbohnzkxgtsjd`. It contains one portal record, with `enabled = false`. The existing database function filters out disabled portals before lookup, then raises the same `P0002` message for a disabled record, an unknown token, and an inactive shop. This reproduced the exact reported error. Portal tokens do not expire; draft submission sessions do.
 - All four Client Jobs tables, both RPCs, and the private `client-job-sources` bucket exist in that project. Anonymous direct table reads and RPC execution were tested and denied. The deployed RPC still has the earlier ambiguous lookup logic and needs the updated migration.
-- Local configuration has Supabase URL/anon/service credentials, but no `SMART_SHEET_SITE_URL`, `RESEND_API_KEY`, `CLIENT_JOBS_EMAIL_FROM`, or `CLIENT_JOBS_CRON_SECRET`. Missing notification/maintenance configuration prevents enabling a portal intentionally. The owner previously lacked useful setup feedback.
+- Local configuration has Supabase URL/anon/service credentials, but no `SMART_SHEET_SITE_URL`, `RESEND_API_KEY`, `CLIENT_JOBS_EMAIL_FROM`, or `CRON_SECRET`. Missing notification/maintenance configuration prevents enabling a portal intentionally. The owner previously lacked useful setup feedback.
 - The real saved-token lookup at `http://localhost:3000` now returns `503 portal_setup_required` against the old live RPC, correctly requesting the database update.
 - Both the production portal page and public API at `https://smart-sheet-builder.vercel.app` return HTTP 404 HTML. The Client Portal application code is not available at that production deployment yet. Production is **not verified working**.
 - Vercel project-management credentials are not available here. Its actual environment variable values and whether it targets this same Supabase project could not be inspected. No production environment, database record, email, deployment or enabled state was changed during these checks.
@@ -40,7 +40,7 @@ Owner settings show **Portal link active** or **Portal link setup required**, li
    - `has_disabled_link_fix` is true for `ssb_client_jobs`.
    - The restrictive `client_job_sources_private` policy exists; the bucket is private, PNG-only, 4 MiB per file.
 3. Keep existing Auth Site URL, allowed callback/reset URLs, email confirmation and existing auth/credit migrations. Public customers do **not** need a Supabase Auth redirect URL for `/client-upload/*` and do not sign in.
-4. Configure the every-minute maintenance POST described in `CLIENT-JOBS-SETUP.md`, including matching secret, and verify its HTTP result. SQL Editor success alone does not verify scheduler HTTP delivery.
+4. Set Vercel's standard `CRON_SECRET` and deploy the repository's daily Hobby-compatible cron. `vercel.json` schedules **GET `/api/client-jobs/maintenance` at `15 2 * * *`**. No external scheduler is required.
 
 ## Exact Vercel environment configuration
 
@@ -54,13 +54,13 @@ Set these for the **Production** environment of the Smart Sheet Builder Vercel p
 | `SUPABASE_SERVICE_ROLE_KEY` | That same project's existing server-only service-role key |
 | `RESEND_API_KEY` | Your configured Resend sending API key |
 | `CLIENT_JOBS_EMAIL_FROM` | An actual verified sender, e.g. `Smart Sheet Builder <jobs@YOUR-VERIFIED-DOMAIN>` |
-| `CLIENT_JOBS_CRON_SECRET` | A generated random secret of at least 32 bytes, matching the maintenance scheduler's Bearer secret |
+| `CRON_SECRET` | A generated random secret of at least 32 bytes. Vercel sends it as the cron route's Bearer secret. |
 
 Preserve `SMART_SHEET_EXPORT_SECRET` if already configured. The existing service-role-key fallback remains supported; do not rotate signing keys as a troubleshooting shortcut. No new service-role or provider key belongs in a `NEXT_PUBLIC_*` variable.
 
 For **local `.env.local`**, use `SMART_SHEET_SITE_URL=http://localhost:3000` and real development credentials/provider configuration. Local loopback origin resolution works without that variable for the portal, but setting it also documents the intended auth redirects. Do not copy the local value into Vercel Production. For Vercel Preview, use a validated preview origin or the trusted `VERCEL_URL` fallback, not localhost. Redeploy after changing Vercel environment variables; changing local `.env.local` does not update Vercel.
 
-Resend sender/domain verification and the maintenance scheduler must be configured before enabling uploads; the app does not fabricate these credentials or silently skip notifications/retention.
+Resend sender/domain verification and Vercel `CRON_SECRET` must be configured before enabling uploads; the app does not fabricate these credentials or silently skip notifications/retention. Exact access expiry remains server-enforced at `expires_at`; the daily cron performs physical deletion afterwards.
 
 ## URL formats and smoke test
 

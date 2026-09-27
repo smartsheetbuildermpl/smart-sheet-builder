@@ -152,7 +152,7 @@ export function portalSetup(request) {
   try { publicOrigin(request); } catch { issues.push('Set SMART_SHEET_SITE_URL to the public app origin.'); }
   if (!process.env.RESEND_API_KEY) issues.push('Set RESEND_API_KEY for job notifications.');
   if (!process.env.CLIENT_JOBS_EMAIL_FROM) issues.push('Set CLIENT_JOBS_EMAIL_FROM to a verified sender.');
-  if (!process.env.CLIENT_JOBS_CRON_SECRET) issues.push('Set CLIENT_JOBS_CRON_SECRET and configure the cleanup scheduler.');
+  if (!process.env.CRON_SECRET) issues.push('Set Vercel CRON_SECRET for the daily cleanup job.');
   return issues;
 }
 export async function rate(request, scope, limit) {

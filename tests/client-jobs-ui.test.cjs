@@ -339,8 +339,15 @@ const jwt = (user) =>
     await owner.page.getByRole('button', { name: 'Close Client Portal' }).click();
     await owner.page.locator('.access-reveal-handle').hover();
     await owner.page.getByRole('button', { name: /^Client Portal/ }).click();
-    await owner.page.getByText('Expired — files deleted · Expired', { exact: true }).waitFor();
-    assert.equal(f.objects.size, 0, 'expired UI refresh purges private files');
+    await owner.page.getByText('Expired — files are no longer available. · Expired', { exact: true }).waitFor();
+    assert(f.objects.size > 0, 'opening Client Portal does not invoke physical cleanup');
+    const maintenance = await f.maintenance.GET(
+      new NextRequest('https://shop.test/api/client-jobs/maintenance', {
+        headers: { authorization: 'Bearer test-maintenance' }
+      })
+    );
+    assert.equal(maintenance.status, 200);
+    assert.equal(f.objects.size, 0, 'daily cron purges expired private files');
     owner.page.once('dialog', d => d.accept());
     await owner.page.getByRole('button', { name: 'Disable link', exact: true }).click();
     await owner.page.getByText('Portal link setup required', { exact: true }).waitFor();

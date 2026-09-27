@@ -46,7 +46,7 @@ begin
  end if;
  if p_action='cleanup-list' then
   delete from client_job_rates where window_start<stamp-interval '2 hours';
-  return coalesce((select jsonb_agg(to_jsonb(j)) from (select id,assets from client_jobs where expires_at<=stamp and purged_at is null order by expires_at limit 30) j),'[]');
+  return coalesce((select jsonb_agg(to_jsonb(j)) from (select id,assets from client_jobs where expires_at<=stamp and purged_at is null order by expires_at limit 100) j),'[]');
  elsif p_action='purged' then
   update client_jobs set assets='[]',manifest=null,notification=null,purged_at=stamp where id=p_job and expires_at<=stamp;
   return '{}';

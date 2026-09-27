@@ -14,30 +14,11 @@ For the disabled-link error investigation, live check results, updated migration
    | `SMART_SHEET_SITE_URL` | Canonical HTTPS app origin, e.g. `https://smart-sheet-builder.vercel.app` |
    | `RESEND_API_KEY` | Transactional sending key from your Resend account |
    | `CLIENT_JOBS_EMAIL_FROM` | Sender on your verified Resend domain, e.g. `Print Shop <jobs@your-domain.example>` |
-   | `CLIENT_JOBS_CRON_SECRET` | A new random secret, at least 32 bytes; also configure it in the scheduler |
+   | `CRON_SECRET` | A new random secret, at least 32 bytes. Vercel sends it automatically to the daily cron route. |
 
-   Preserve the existing Supabase URL, anon key, service-role key, and export signing secret. Never prefix the service role, email key or maintenance secret with `NEXT_PUBLIC_`. Local development uses its own Supabase project/provider sandbox and `SMART_SHEET_SITE_URL=http://localhost:3000`.
+   Preserve the existing Supabase URL, anon key, service-role key, and export signing secret. Never prefix the service role, email key or maintenance secret with `NEXT_PUBLIC_`. Local development uses its own Supabase project/provider sandbox, `SMART_SHEET_SITE_URL=http://localhost:3000`, and a separate non-public `CRON_SECRET` so portal setup can be exercised; Vercel does not invoke cron jobs on localhost.
 
-3. Schedule **POST `/api/client-jobs/maintenance` every minute**, with `Authorization: Bearer <CLIENT_JOBS_CRON_SECRET>` and JSON body `{}`. Use Supabase Cron + pg_net, or an existing reliable scheduler. Monitor failures. Do not rely on a once-daily scheduler for this retention policy. This endpoint is not a public cron URL and rejects missing/incorrect secrets.
-
-   Supabase example: enable `pg_cron`, `pg_net`, and Vault in the dashboard. Store the endpoint URL as Vault secret `ssb_client_jobs_maintenance_url` and the matching secret as `ssb_client_jobs_cron_secret`. Then schedule:
-
-   ```sql
-   select cron.schedule('ssb-client-jobs-maintenance', '* * * * *', $$
-     select net.http_post(
-       url := (select decrypted_secret from vault.decrypted_secrets
-               where name = 'ssb_client_jobs_maintenance_url'),
-       headers := jsonb_build_object(
-         'Content-Type', 'application/json',
-         'Authorization', 'Bearer ' || (select decrypted_secret
-           from vault.decrypted_secrets where name = 'ssb_client_jobs_cron_secret')),
-       body := '{}'::jsonb,
-       timeout_milliseconds := 55000
-     );
-   $$);
-   ```
-
-   Confirm the POST returns HTTP 200 with `purged` / `notified` counts. Check scheduler HTTP results, not just whether the SQL scheduled successfully. Keep secrets out of shared SQL screenshots and logs. The scheduling pattern follows [Supabase Cron, pg_net and Vault documentation](https://supabase.com/docs/guides/functions/schedule-functions). Vercel's scheduler capabilities vary by plan; see [Vercel Cron limits](https://vercel.com/docs/cron-jobs/usage-and-pricing).
+3. Vercel Hobby requires no external scheduler. This repository includes exactly one production cron in `vercel.json`: **GET `/api/client-jobs/maintenance` at `15 2 * * *` (02:15 UTC daily)**. Add the same `CRON_SECRET` value in Vercel → Project → Settings → Environment Variables for Production, then redeploy. Vercel automatically sends `Authorization: Bearer <CRON_SECRET>` and the endpoint rejects any other request. Do not configure Supabase Cron, pg_net, or an every-minute scheduler. Vercel Hobby schedules daily cron jobs only; delivery can occur within Vercel's documented hourly precision window.
 
 4. Sign in as a verified normal shop user. Open **Client Jobs → Shop portal settings**. Confirm shop name/email, click **Use current Builder sheet settings**, review the preset, and save/enable the link. New verified accounts get an opaque link on first access, disabled until settings are explicitly enabled. No customer account is required.
 5. Send a small test submission through the link in a signed-out browser. Check notification delivery to the configured address, open the authenticated job, and test a PNG and TIFF using an account with sufficient credits. The public preview and confirmation use no credit.
@@ -45,8 +26,8 @@ For the disabled-link error investigation, live check results, updated migration
 ## Retention and honest limitations
 
 - Confirmation uses database `clock_timestamp()` exactly once; `expires_at = confirmed_at + 24 hours`. Drafts expire two hours after creation. Retries, reopening, link rotation, or email delivery do not extend either deadline.
-- Source requests and both export preparation and consumption check server expiry. There are **no signed read URLs**; private source responses use `no-store`. The displayed job clears its source references and preview at expiry. A file already legitimately saved before expiry cannot be revoked from someone's computer.
-- Physical object removal runs on the next maintenance invocation, normally within one minute of expiry, and also when owners list jobs. Storage/network outages can delay physical deletion. Access is blocked at the deadline independently. The UI honestly says **“Expired — deletion pending”** until Storage deletion succeeds; only then says **“Expired — files deleted.”** Exact-to-the-millisecond physical deletion across an external storage service is not promised.
+- Access expires exactly at `expires_at`, independently of the cron. Every public submission action, owner job view, preview, private file response, PNG/TIFF preparation and export consumption checks server/database time and rejects when `now >= expires_at`; refreshes never extend it. The UI says **“Expired — files are no longer available.”** A file legitimately saved before expiry cannot be revoked from a device.
+- Physical temporary source objects, manifests, notifications and temporary output metadata are removed by the daily Vercel cron. Deletion can therefore occur after the exact 24-hour access deadline, or later after a transient Storage outage; no bytes, preview, download or export are served during that interval. Cleanup deletes Storage objects before clearing their database paths, so a failed delete remains retryable and the task is idempotent.
 - Storage deletion precedes removal of asset paths/manifest, so failed deletion remains retryable. A removed draft design is immediately excluded from preview/access, and its private object is removed by the same bounded lifecycle. No flattened preview or final PNG/TIFF is persisted to the server.
 - The history keeps only reference, dates, counts, meters, notification-sent date, and PNG/TIFF saved flags; source metadata and layout are cleared on purge. The UI lists the newest 100 jobs.
 - Email has an exact UTC expiry and an authenticated **Open Client Job** button. A reliable live countdown runs in the app, not the static email. The durable outbox retries failed sends; stable [Resend idempotency keys](https://resend.com/docs/dashboard/emails/idempotency-keys) prevent duplicates. No attachments or public source URLs. Sending requires explicit provider setup; no real email was sent during automated tests. SMTP used for Supabase Auth is separate from this job-notification adapter. See [Resend send-email API](https://resend.com/docs/api-reference/emails/send-email).
@@ -75,7 +56,7 @@ The server finds nonzero-alpha bounds with the builder's one-native-pixel paddin
 - `app/api/client-jobs/route.js`: verified-owner link/settings/list and confirmed job detail (GET/POST).
 - `app/api/client-upload/[token]/route.js`: public shop name and signed draft create/upload/remove/preview/confirm (GET/POST).
 - `app/api/client-jobs/[id]/files/[file]/route.js`: checked private source proxy (GET).
-- `app/api/client-jobs/maintenance/route.js`: secret-protected expiry purge/email retry (POST).
+- `app/api/client-jobs/maintenance/route.js`: Vercel-`CRON_SECRET` protected daily expiry purge/email retry (GET).
 - `app/api/_lib/client-jobs.js`: validation, shared packing adapter, private Storage, signed draft/link credentials and email provider adapter.
 - `app/api/_lib/export-security.js`, `app/api/_lib/supabase.js`, `app/api/export/consume/route.js`: optional job binding/expiry around the existing export guard; ordinary exports retain their previous path.
 - `app/client-upload/[token]/page.jsx`: public customer form/read-only preview.

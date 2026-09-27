@@ -5,9 +5,7 @@ import ClientJobPreview from './ClientJobPreview';
 const stamp = (v) => (v ? new Date(v).toLocaleString() : 'Not recorded');
 function status(j, now) {
   return new Date(j.expires_at) <= now
-    ? j.purged_at
-      ? 'Expired — files deleted'
-      : 'Expired — deletion pending'
+    ? 'Expired — files are no longer available.'
     : j.downloaded_png || j.downloaded_tiff
       ? 'Downloaded'
       : j.confirmed_at

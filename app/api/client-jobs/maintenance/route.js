@@ -7,8 +7,9 @@ import {
 } from '../../_lib/client-jobs';
 export const dynamic = 'force-dynamic';
 export const maxDuration = 60;
-export async function POST(request) {
-  const expected = process.env.CLIENT_JOBS_CRON_SECRET,
+async function runMaintenance(request) {
+  // Vercel Cron sends `Authorization: Bearer <CRON_SECRET>` to this route.
+  const expected = process.env.CRON_SECRET,
     actual = request.headers.get('authorization');
   if (
     !expected ||
@@ -24,4 +25,10 @@ export async function POST(request) {
   } catch (e) {
     return errorReply(e);
   }
+}
+
+// Vercel invokes cron routes with GET. One daily Vercel cron is sufficient:
+// expiry itself is enforced separately in the database on every access.
+export async function GET(request) {
+  return runMaintenance(request);
 }
