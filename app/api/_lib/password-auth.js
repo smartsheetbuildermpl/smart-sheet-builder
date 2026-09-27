@@ -10,21 +10,24 @@ export function sameOrigin(request) {
   if (request.headers.get('origin') !== new URL(request.url).origin) throw failure('Open this form from Smart Sheet Builder and try again.', 403);
 }
 export function resetUrl(request) {
+  return appAuthUrl(request, '/reset-password');
+}
+export function appAuthUrl(request, path = '/auth/callback') {
   const deploymentHost = process.env.VERCEL_ENV === 'preview' ? process.env.VERCEL_URL : process.env.VERCEL_PROJECT_PRODUCTION_URL;
   const value = process.env.SMART_SHEET_SITE_URL || (deploymentHost ? `https://${deploymentHost}` : '');
   const url = new URL(value || (process.env.NODE_ENV !== 'production' ? request.url : 'https://invalid.invalid'));
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
   if ((!value && process.env.NODE_ENV === 'production') || url.username || url.password || (url.protocol !== 'https:' && !(local && process.env.NODE_ENV !== 'production' && url.protocol === 'http:'))) throw failure('The password recovery site URL is not configured. Contact support.', 503);
-  return `${url.origin}/reset-password`;
+  return `${url.origin}${path}`;
 }
 function key() {
   const secret = process.env.SMART_SHEET_RECOVERY_SECRET || getSupabaseConfig().serviceRoleKey;
   if (!secret) throw failure('Password service is unavailable.', 503);
   return createHash('sha256').update(`ssb-password-cookie-v1:${secret}`).digest();
 }
-export function readCookie(request) {
+export function readCookie(request, name = COOKIE) {
   try {
-    const value = request.cookies.get(COOKIE)?.value;
+    const value = request.cookies.get(name)?.value;
     if (!value) return null;
     const bytes = Buffer.from(value, 'base64url'), decipher = createDecipheriv('aes-256-gcm', key(), bytes.subarray(0, 12));
     decipher.setAuthTag(bytes.subarray(12, 28));
@@ -32,10 +35,10 @@ export function readCookie(request) {
     return data.expires > Date.now() ? data : null;
   } catch { return null; }
 }
-export function setCookie(response, request, data) {
+export function setCookie(response, request, data, name = COOKIE) {
   const iv = randomBytes(12), cipher = createCipheriv('aes-256-gcm', key(), iv);
   const encrypted = Buffer.concat([cipher.update(JSON.stringify(data)), cipher.final()]);
-  response.cookies.set(COOKIE, Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url'), { httpOnly: true, secure: new URL(request.url).protocol === 'https:', sameSite: 'lax', path: '/api/auth/password', maxAge: 900 });
+  response.cookies.set(name, Buffer.concat([iv, cipher.getAuthTag(), encrypted]).toString('base64url'), { httpOnly: true, secure: new URL(request.url).protocol === 'https:', sameSite: 'lax', path: name === COOKIE ? '/api/auth/password' : '/api/auth', maxAge: 900 });
   return response;
 }
 export function clearCookie(response) { response.cookies.set(COOKIE, '', { httpOnly: true, sameSite: 'lax', path: '/api/auth/password', maxAge: 0 }); return response; }

@@ -4,7 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { chromium } = require('playwright');
 const source = fs.readFileSync('public/builder.html','utf8');
-const hook = 'window.bgTest={get designs(){return designs},get instances(){return instances},get sheets(){return sheets},drawSheetCanvas,downloadTiff,downloadPng,appendDesignToCurrentLayout,imageSourceRect};';
+const hook = 'window.bgTest={get designs(){return designs},get instances(){return instances},get sheets(){return sheets},drawSheetCanvas,downloadTiff,downloadPng,appendDesignToCurrentLayout,imageSourceRect};exportDelivery=SmartSheetExportDelivery.create({gate:async()=>({allowed:true,authorization:"encoder-fixture-only"}),save:saveExportBlob});';
 const html = source.replace(/\}\)\(\);\s*<\/script>/,hook+'})();</script>');
 const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
 
@@ -16,7 +16,7 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
     page.on('pageerror',e=>errors.push(e.message));
     await page.route('http://localhost:4184/**',route=>{
       const name=new URL(route.request().url()).pathname;
-      if(/^\/(background-editor|sheet-workspace|print-optimizer)\.(js|css)$/.test(name)) return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
+      if(/^\/(background-editor|sheet-workspace|print-optimizer|export-delivery)\.(js|css)$/.test(name)) return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
       return route.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4184/builder.html');

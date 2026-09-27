@@ -1,5 +1,5 @@
 const GUEST_LIMIT = 2;
-const FREE_LIMIT = 5;
+const FREE_LIMIT = 2;
 const OWNER_EMAILS = ['masterprintlabcorp@gmail.com'];
 
 function normalizeSupabaseUrl(value) {
@@ -57,12 +57,18 @@ export async function supabaseFetch(path, options = {}) {
     ...(options.headers || {}),
   };
 
-  const response = await fetch(`${config.url}${path}`, {
+  let response;
+  try { response = await fetch(`${config.url}${path}`, {
     method: options.method || 'GET',
     headers,
     body: options.body === undefined ? undefined : JSON.stringify(options.body),
     cache: 'no-store',
-  });
+  }); } catch (cause) {
+    // Log endpoint and transport code only, never keys, bodies or tokens.
+    console.error('[ssb-supabase-network]', path.split('?')[0], cause.cause?.code || cause.name);
+    const error = new Error('The account service could not reach Supabase. Please try again shortly.');
+    error.status = 503; error.code = 'supabase_unreachable'; throw error;
+  }
 
   const text = await response.text();
   let data = null;
@@ -75,6 +81,7 @@ export async function supabaseFetch(path, options = {}) {
   }
 
   if (!response.ok) {
+    console.error('[ssb-supabase-response]', path.split('?')[0], response.status, data?.code || data?.error_code || 'http_error');
     const error = new Error(data?.msg || data?.message || data?.error_description || 'Supabase request failed.');
     error.status = response.status;
     error.data = data;
@@ -117,7 +124,7 @@ export async function getUserFromRequest(request) {
       token,
     };
   } catch (error) {
-    error.code = 'invalid_session';
+    if (error.status === 401 || error.status === 403) error.code = 'invalid_session';
     throw error;
   }
 }
@@ -279,11 +286,12 @@ export async function deleteLibraryObject(storagePath) {
 }
 
 export async function getGuestUsage(guestId) {
-  if (!guestId) return { guest_id: '', exports_used: 0 };
+  if (!guestId) throw new Error('Guest identity required.');
   const rows = await supabaseFetch(`/rest/v1/guest_usage?guest_id=eq.${encodeURIComponent(guestId)}&select=*`, {
     service: true,
   });
-  return rows?.[0] || { guest_id: guestId, exports_used: 0 };
+  if (!rows?.[0]) throw new Error('Guest trial was not initialized. Reload the app.');
+  return rows[0];
 }
 
 export async function migrateGuestUsageToProfile(user, guestId) {
@@ -293,7 +301,7 @@ export async function migrateGuestUsageToProfile(user, guestId) {
   });
 }
 
-export function usageForProfile(profile, user) {
+export function usageForProfile(profile, user, credits) {
   const email = normalizeEmail(user?.email || profile?.email);
   const isOwner = profile?.is_super_admin === true;
   const plan = isOwner ? 'admin' : profile?.plan || 'free';
@@ -313,11 +321,19 @@ export function usageForProfile(profile, user) {
     plan,
     limit: unlimited ? null : FREE_LIMIT,
     used,
-    remaining: unlimited ? null : Math.max(0, FREE_LIMIT - used),
+    remaining: unlimited ? null : credits?.balance ?? 0,
+    creditMode: !unlimited,
+    nextCreditAt: unlimited ? null : credits?.next_credit_at || null,
+    serverTime: credits?.server_time || null,
     signedIn: true,
     unlimited,
     mode: 'server',
   };
+}
+
+export async function currentProfileUsage(profile, user) {
+  const credits = await supabaseFetch('/rest/v1/rpc/ssb_credit_snapshot', { method: 'POST', service: true, body: { p_user: user.id } });
+  return usageForProfile(profile, user, credits);
 }
 
 export function usageForGuest(guestUsage) {
@@ -353,54 +369,9 @@ export async function recordUsageExport({ userId = null, guestId = null, exportK
   }
 }
 
-export async function incrementProfileUsage(profile, user, exportKind) {
-  const result = await supabaseFetch('/rest/v1/rpc/ssb_consume_export', {
-    method: 'POST', service: true, body: { p_user: user.id, p_kind: String(exportKind || 'download').slice(0, 40) },
+export async function incrementProfileUsage(profile, user, exportKind, operation) {
+  const result = await supabaseFetch('/rest/v1/rpc/ssb_credit_export', {
+    method: 'POST', service: true, body: { p_user: user.id, p_kind: exportKind, p_request: operation.requestKey, p_fingerprint: operation.fingerprint, p_action: operation.action || 'consume', p_receipt: operation.receipt || null },
   });
-  return { allowed: result.allowed === true, reason: result.reason, message: result.message, usage: usageForProfile(result.profile, user) };
-}
-
-export async function incrementGuestUsage(guestId, exportKind) {
-  const guestUsage = await getGuestUsage(guestId);
-  const currentUsage = usageForGuest(guestUsage);
-
-  if (currentUsage.remaining <= 0) {
-    return {
-      allowed: false,
-      reason: 'limit_reached',
-      message: 'Guest trial used up. Create a free account for 5 total exports.',
-      usage: currentUsage,
-    };
-  }
-
-  const nextUsed = Number(guestUsage.exports_used || 0) + 1;
-  const body = {
-    guest_id: guestId,
-    exports_used: nextUsed,
-    last_export_at: new Date().toISOString(),
-    updated_at: new Date().toISOString(),
-  };
-
-  if (guestUsage.guest_id) {
-    await supabaseFetch(`/rest/v1/guest_usage?guest_id=eq.${encodeURIComponent(guestId)}`, {
-      method: 'PATCH',
-      service: true,
-      body: {
-        exports_used: nextUsed,
-        last_export_at: body.last_export_at,
-      },
-    });
-  } else {
-    await supabaseFetch('/rest/v1/guest_usage', {
-      method: 'POST',
-      service: true,
-      body: [body],
-    });
-  }
-  await recordUsageExport({ guestId, exportKind });
-
-  return {
-    allowed: true,
-    usage: usageForGuest({ ...guestUsage, exports_used: nextUsed }),
-  };
+  return { allowed: result.allowed === true, reason: result.reason, message: result.message, receipt: result.receipt, duplicate: result.duplicate, usage: usageForProfile(result.profile, user, result.credits) };
 }

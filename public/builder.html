@@ -378,6 +378,7 @@
 <script src="/sheet-workspace.js"></script>
 <script src="/background-editor.js"></script>
 <script src="/print-optimizer.js"></script>
+<script src="/export-delivery.js"></script>
 <script>
 (function(){
   var directOnlineAccess = window.top === window.self &&
@@ -390,28 +391,15 @@
   }
 
   var exportRequestSeq = 0;
-  function localStandaloneExportGate(kind) {
-    try {
-      var key = 'smart-sheet-builder-standalone-guest-exports';
-      var used = Number(localStorage.getItem(key) || '0');
-      if (used >= 2) {
-        alert('Guest trial limit reached. Open the Smart Sheet Builder app page and create a free account.');
-        return Promise.resolve(false);
-      }
-      localStorage.setItem(key, String(used + 1));
-      return Promise.resolve(true);
-    } catch (err) {
-      return Promise.resolve(true);
-    }
-  }
 
-  function requestExportAccess(kind) {
+  function requestExportAccess(kind, operation) {
     if (directOnlineAccess) {
       alert('Please open the main Smart Sheet Builder app page to export.');
-      return Promise.resolve(false);
+      return Promise.resolve({ allowed: false });
     }
     if (window.parent === window || !window.parent) {
-      return localStandaloneExportGate(kind);
+      alert('Open the main Smart Sheet Builder app page to verify export access.');
+      return Promise.resolve({ allowed: false });
     }
 
     return new Promise(function(resolve){
@@ -421,27 +409,30 @@
         if (finished) return;
         finished = true;
         window.removeEventListener('message', onMessage);
-        resolve(false);
-      }, 5000);
+        resolve({ allowed: false, reason: 'transport_error' });
+      }, 15000);
 
       function onMessage(event) {
         var payload = event.data || {};
-        if (payload.type !== 'SMART_SHEET_EXPORT_RESPONSE' || payload.requestId !== requestId) return;
+        if (event.origin !== window.location.origin || event.source !== window.parent || payload.type !== 'SMART_SHEET_EXPORT_RESPONSE' || payload.requestId !== requestId) return;
         finished = true;
         clearTimeout(timeout);
         window.removeEventListener('message', onMessage);
-        if (!payload.allowed && payload.message) alert(payload.message);
-        resolve(Boolean(payload.allowed));
+        resolve(payload);
       }
 
       window.addEventListener('message', onMessage);
       window.parent.postMessage({
         type: 'SMART_SHEET_EXPORT_REQUEST',
         requestId: requestId,
-        exportKind: kind || 'download'
-      }, '*');
+        exportKind: kind || 'download',
+        operation: operation
+      }, window.location.origin);
     });
   }
+
+  var exportDelivery = SmartSheetExportDelivery.create({ gate: requestExportAccess, save: saveExportBlob, notice: function(message) { alert(message); } });
+  var exportInProgress = false;
 
   var translations = {
     tl: {
@@ -1886,6 +1877,8 @@
   }
 
   function drawSheetCanvas(canvas, sheet) {
+    canvas._ssbExportRecipe = [sheet.widthPx, sheet.heightPx, dpiGlobal, customerNameInput.value.trim(), sheet.headerHeightPx,
+      sheet.placements.map(function(p) { var i=p.inst; return [exportDelivery.sourceId(i.canvas),i.canvas.width,i.canvas.height,p.x,p.y,p.w,p.h,i.baseW,i.baseH,i.rotation,i.vibrance]; })];
     canvas.width = sheet.widthPx;
     canvas.height = sheet.heightPx;
     var ctx = canvas.getContext('2d');
@@ -2306,7 +2299,7 @@
 
       var tiffBtn = document.createElement('button');
       tiffBtn.textContent = t('downloadTiffBtn') + (sheets.length > 1 ? ' - ' + t('sheetWord') + ' ' + (idx + 1) : '');
-      tiffBtn.addEventListener('click', function(){ showDtfCheck(sheet, idx, tiffBtn); });
+      tiffBtn.addEventListener('click', function(){ downloadTiff(sheet, idx); });
       downloadRow.appendChild(tiffBtn);
 
       var pngBtn = document.createElement('button');
@@ -2367,8 +2360,8 @@
     dtfCheckList.innerHTML = lines.join('');
   }
 
-  function showDtfCheck(sheet, idx, button) {
-    pendingDownload = { sheet: sheet, idx: idx, button: button };
+  function showDtfCheck(sheet, idx, resolve) {
+    pendingDownload = { sheet: sheet, idx: idx, resolve: resolve };
     var isTarpaulin = currentMachinePreset().family === 'tarpaulin';
     modalColorModeField.style.display = isTarpaulin ? 'none' : 'block';
     modalColorModeSelect.value = 'rgb';
@@ -2381,6 +2374,7 @@
   });
 
   document.getElementById('dtfCheckCancel').addEventListener('click', function(){
+    if (pendingDownload) pendingDownload.resolve(null);
     pendingDownload = null;
     dtfCheckOverlay.style.display = 'none';
   });
@@ -2389,21 +2383,44 @@
     var profile = getExportProfile(modalColorModeSelect.value);
     pendingDownload = null;
     dtfCheckOverlay.style.display = 'none';
-    if (job) { await downloadTiff(job.sheet, job.idx, profile); }
+    if (job) job.resolve(profile);
   });
 
-  async function downloadPng(sheet, idx) {
+  // Every format enters here. No encoder or save UI runs before authorization.
+  async function startExport(kind, sheet, idx, profile) {
     var canvas = sheet.renderCanvas;
-    if (!canvas) return;
+    if (!canvas || exportInProgress) return;
+    exportInProgress = true;
+    var ui = sheet.exportUi || {};
+    var buttons = sheets.reduce(function(all, s) { var u=s.exportUi||{}; return all.concat([u.pngBtn,u.tiffBtn].filter(Boolean)); }, []);
+    buttons.forEach(function(button) { button.disabled = true; });
+    try {
+      if (ui.progress) ui.progress.textContent = 'Checking export access…';
+      var ticket = await exportDelivery.prepare(kind, canvas, kind === 'png' ? ['png',idx] : [profile || getExportProfile('rgb'),idx]);
+      if (!ticket) { if (ui.progress) ui.progress.textContent = 'Export blocked. Check Account & exports.'; return; }
+      if (kind === 'tiff' && !profile) {
+        profile = await new Promise(function(resolve) { showDtfCheck(sheet, idx, resolve); });
+        if (!profile) return;
+        // Bind the selected RGB/CMYK profile and recheck after the dialog.
+        ticket = await exportDelivery.prepare(kind, canvas, [profile,idx]);
+        if (!ticket) return;
+      }
+      if (kind === 'png') await encodePng(sheet, idx, ticket);
+      else await encodeTiff(sheet, idx, profile, ticket);
+    } catch (err) {
+      if (ui.progress) { ui.progress.style.color = '#b3261e'; ui.progress.textContent = err.message || 'Could not prepare export.'; }
+    } finally {
+      exportInProgress = false;
+      buttons.forEach(function(button) { button.disabled = false; });
+    }
+  }
+  function downloadPng(sheet, idx) { return startExport('png', sheet, idx); }
+  async function encodePng(sheet, idx, ticket) {
+    if (!ticket) return;
+    var canvas = sheet.renderCanvas, ui = sheet.exportUi || {};
     var filename = 'dtf-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '.png';
-    var picker = await chooseExportDestination(filename, 'image/png');
-    if (picker === false) return;
-    if (!(await requestExportAccess('png'))) return;
-    canvas.toBlob(async function(blob){
-      if (!blob) return;
-      try { await saveExportBlob(blob, filename, picker, 'image/png'); }
-      catch (err) { console.error('Could not save PNG export', err); }
-    }, 'image/png');
+    var blob = await new Promise(function(resolve, reject) { canvas.toBlob(function(result) { if (result) resolve(result); else reject(new Error('PNG encoding failed. No credit was used.')); }, 'image/png'); });
+    if (!(await exportDelivery.deliver(blob, filename, undefined, 'png', canvas, ['png', idx], ticket)) && ui.progress) ui.progress.textContent = 'Export blocked. Check Account & exports.';
   }
 
   /*
@@ -2673,6 +2690,22 @@
     if (navigator.webdriver) return null;
     var host = typeof window.top !== 'undefined' && window.top && window.top.showSaveFilePicker ? window.top : window;
     if (!host || !host.showSaveFilePicker) return null;
+    // Long encodes/server checks can outlive browser user activation. Obtain a
+    // fresh click instead of silently auto-downloading or opening a blank file.
+    if (host.navigator.userActivation && !host.navigator.userActivation.isActive) {
+      return new Promise(function(resolve, reject) {
+        var previous = document.activeElement;
+        var dialog = document.createElement('dialog');
+        dialog.style.cssText = 'max-width:420px;border:1px solid #ccd5dc;border-radius:12px;padding:24px';
+        dialog.innerHTML = '<h2>Export ready</h2><p>Choose where to save your completed file.</p><button type="button">Save as…</button> <button type="button">Cancel</button>';
+        var controls = dialog.querySelectorAll('button');
+        function done(value, error) { dialog.close(); dialog.remove(); if (previous) previous.focus(); error ? reject(error) : resolve(value); }
+        controls[0].onclick = function() { controls[0].disabled=true; chooseExportDestination(filename, mimeType).then(function(value){done(value);},function(error){done(null,error);}); };
+        controls[1].onclick = function() { done(false); };
+        dialog.addEventListener('cancel', function(e) { e.preventDefault(); done(false); });
+        document.body.appendChild(dialog); dialog.showModal(); controls[0].focus();
+      });
+    }
     var extension = filename.slice(filename.lastIndexOf('.') + 1);
     try {
       return await host.showSaveFilePicker({
@@ -2682,11 +2715,15 @@
     } catch (err) {
       // Closing the native picker is a normal cancellation, not a failed export.
       if (err && err.name === 'AbortError') return false;
-      return null;
+      throw new Error('The Save As dialog could not open. Please retry the export from this browser.');
     }
   }
 
   async function saveExportBlob(blob, filename, picker, mimeType) {
+    // Authorization, encoding and the final atomic quota check have succeeded.
+    // Never open a picker for an empty/failed/denied export.
+    if (!blob || !blob.size) throw new Error('The export file is empty. Nothing was saved.');
+    if (picker === undefined) picker = await chooseExportDestination(filename, mimeType);
     if (picker && picker !== false) {
       var writable = await picker.createWritable();
       await writable.write(blob);
@@ -2872,19 +2909,15 @@
   }
 
   async function downloadTiff(sheet, idx, profile) {
+    return startExport('tiff', sheet, idx, profile);
+  }
+  async function encodeTiff(sheet, idx, profile, ticket) {
+    if (!ticket) return;
     var ui = sheet.exportUi || {};
     var canvas = sheet.renderCanvas;
-    if (!canvas) return;
     profile = profile || getExportProfile('rgb');
     var filename = filenameForExport(profile, idx);
-    var picker = await chooseExportDestination(filename, 'image/tiff');
-    if (picker === false) return;
-    if (!(await requestExportAccess('tiff'))) return;
-    if (ui.tiffBtn) ui.tiffBtn.disabled = true;
-    if (ui.pngBtn) ui.pngBtn.disabled = true;
     if (ui.progress) { ui.progress.style.color = '#2457d6'; ui.progress.textContent = t('exportPreparing'); }
-
-    try {
       var assets = profile.baseMode === 'cmyk' ? await getColorAssets() : null;
       var width = canvas.width, height = canvas.height;
       var rowsPerStrip = 64;
@@ -2961,16 +2994,7 @@
       );
       var blob = new Blob([prefix].concat(pixelParts), { type: 'image/tiff' });
       if (ui.progress) ui.progress.textContent = t('exportSaving');
-      await saveExportBlob(blob, filename, picker, 'image/tiff');
-    } catch (err) {
-      if (ui.progress) {
-        ui.progress.style.color = '#b3261e';
-        ui.progress.textContent = t('exportFailed') + (err && err.message ? err.message : t('unknownError'));
-      }
-    } finally {
-      if (ui.tiffBtn) ui.tiffBtn.disabled = false;
-      if (ui.pngBtn) ui.pngBtn.disabled = false;
-    }
+      if (!(await exportDelivery.deliver(blob, filename, undefined, 'tiff', canvas, [profile, idx], ticket)) && ui.progress) ui.progress.textContent = 'Export blocked. Check Account & exports.';
   }
 
   function computeStats() {

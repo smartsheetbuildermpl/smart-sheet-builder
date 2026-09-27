@@ -25,7 +25,7 @@ const html=fs.readFileSync('public/builder.html','utf8').replace(/\}\)\(\);\s*<\
     page.on('pageerror',e=>errors.push(e.message));
     await page.route('http://localhost:4198/**',r=>{
       const p=new URL(r.request().url()).pathname;
-      if(/^\/(sheet-workspace|print-optimizer|background-editor)\.(js|css)$/.test(p))return r.fulfill({body:fs.readFileSync('public'+p),contentType:p.endsWith('.js')?'text/javascript':'text/css'});
+      if(/^\/(sheet-workspace|print-optimizer|background-editor|export-delivery)\.(js|css)$/.test(p))return r.fulfill({body:fs.readFileSync('public'+p),contentType:p.endsWith('.js')?'text/javascript':'text/css'});
       return r.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4198');await page.evaluate(()=>stability.seed());

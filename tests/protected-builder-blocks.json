@@ -1,5 +1,6 @@
 {
-  "  var directOnlineAccess": "874dcc8962c12f94d2e4991c3cd7dacd37544410072a592409b25599e43a3451",
   "  function getExportProfile(": "4a57d8b74999fc53f221e4b64784b6385a712a137fdbb67b882d7e33e657dabb",
-  "  function renderTiffCheck(": "1b7de43f4b8a5ffe43a0ce8dc0790ec80ec62ee959d271309ec035c5d0776d7f"
+  "  var SWOP_ICC_ZLIB_BASE64": "411406f02c4708b4b8005f233cb4177c7809ffb24c179920a56761cfe545329c",
+  "  function u16le(": "b589b783051da9ffafff9eaae2a010401876f6e9167a940adbfed5902553975d",
+  "      var assets = profile.baseMode": "91058b9f3acb88beb1c7af3dc4f59956dbeba9533f023a78024fbc6c589f6082"
 }

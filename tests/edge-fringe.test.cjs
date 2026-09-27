@@ -22,7 +22,7 @@ function parseTiff(bytes){
     page.on('pageerror',e=>errors.push(e.message));
     await page.route('http://localhost:4188/**',route=>{
       const name=new URL(route.request().url()).pathname;
-      if(/^\/(background-editor|sheet-workspace|print-optimizer)\.(js|css)$/.test(name))return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
+      if(/^\/(background-editor|sheet-workspace|print-optimizer|export-delivery)\.(js|css)$/.test(name))return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
       return route.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4188/builder.html');

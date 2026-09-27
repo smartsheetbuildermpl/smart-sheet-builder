@@ -17,7 +17,7 @@ export async function POST(request) {
     } catch (error) {
       // Supabase may return account-dependent SMTP/rate-limit errors. Mask all
       // HTTP outcomes identically; only a network outage is a public error.
-      if (!error.status) throw error;
+      if (!error.status || error.code === 'supabase_unreachable') throw error;
     }
     return setCookie(json({ message: RESET_REQUEST_MESSAGE, retryAfter: 60 }), request, { verifier: proof.verifier, resendAfter: Date.now() + 60000, expires: Date.now() + 900000 });
   } catch (error) { return passwordFailure(error); }

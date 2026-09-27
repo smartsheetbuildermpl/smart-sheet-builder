@@ -54,11 +54,12 @@ const output = fs.mkdtempSync(path.join(os.tmpdir(), 'ssb-password-ui-'));
     await page.getByLabel('Confirm new password', { exact: true }).fill('longer-password-123');
     await page.screenshot({ path: path.join(output, 'reset-mobile.png') });
     await page.getByRole('button', { name: 'Set new password' }).click();
-    await page.getByText('Password changed successfully', { exact: true }).waitFor(); assert.equal(resets, 1);
+    await page.getByText('Password updated successfully', { exact: true }).waitFor(); assert.equal(resets, 1);
     await page.waitForURL(`${base}/`); await page.getByRole('button', { name: 'Forgot password?', exact: true }).waitFor();
-    await page.evaluate(() => localStorage.setItem('smart-sheet-builder-v53b-session', JSON.stringify({ accessToken: 'user-token', user: { email: 'test@example.test' } })));
+    // Seed the separate signed-in scenario before app boot, not while the old guest poll can publish.
+    await page.addInitScript(() => { if (sessionStorage.getItem('password-test-signed-in')) return; sessionStorage.setItem('password-test-signed-in','1'); localStorage.removeItem('ssb-auth-sdk-migrated-v1'); localStorage.setItem('smart-sheet-builder-v53b-session', JSON.stringify({ accessToken: 'user-token', user: { email: 'test@example.test' } })); });
     await page.reload();
-    await page.locator('.access-reveal-handle').hover(); await page.getByRole('button', { name: 'Account', exact: true }).click();
+    await page.waitForFunction(()=>document.querySelector('.usage-card')?.textContent.includes('test@example.test'),null,{timeout:10000});await page.locator('.access-reveal-handle').hover(); await page.getByRole('button', { name: 'Account', exact: true }).click();
     await page.locator('.account-security summary').click();
     await page.getByLabel('Current password', { exact: true }).fill('wrong-current');
     await page.getByLabel('New password', { exact: true }).fill('longer-password-123');

@@ -10,10 +10,12 @@ body {
 .password-page { box-sizing: border-box; overflow: auto; height: 100dvh; padding: 32px 16px; font: 15px/1.5 Arial,sans-serif; color: #172b3a; }
 .password-card { box-sizing: border-box; max-width: 480px; padding: 24px; margin: 0 auto; background: white; border: 1px solid #d4dfe5; border-radius: 16px; }
 .password-card h1 { font-size: 24px; }
+.auth-success-link { display: inline-block; padding: 11px 18px; border-radius: 8px; background: #163e4b; color: white; text-decoration: none; font-weight: 600; }
 .password-card button,.account-security button { border: 1px solid #b9cbd4; border-radius: 8px; padding: 11px 14px; background: #163e4b; color: white; cursor: pointer; }
 .password-card :focus-visible,.account-security :focus-visible { outline: 3px solid #0284c7; outline-offset: 3px; }
 .password-card [role=alert],.account-security [role=alert] { color: #a32121; }
 .auth-form .password-link { background: transparent; color: #164e63; text-decoration: underline; font-weight: 400; }
+.access-modal-card > .password-link { margin-top: 14px; padding: 0; border: 0; background: transparent; color: #164e63; text-decoration: underline; cursor: pointer; }
 
 .registration-optional { margin: 4px 0; }
 .registration-optional summary { cursor: pointer; padding: 8px 0; color: #164e63; }
@@ -709,3 +711,7 @@ body {
   .usage-card { flex:1; min-width:120px; }
 }
 @media(prefers-reduced-motion:reduce) { .builder-workspace.is-open { animation:none; } .workspace-backdrop,.access-bar,.access-reveal-handle span:last-child { transition:none; } }
+.export-credits { display: grid; gap: 8px; margin-block: 8px; }
+.export-credits p { margin: 0; font-size: 13px; }
+.export-credits > button:not(:disabled) { padding: 10px 14px; border: 0; border-radius: 8px; color: #fff; background: #0f172a; cursor: pointer; }
+.credits-coming-soon:disabled { font-size: 12px; opacity: .65; cursor: default; border: 1px solid #cbd5e1; background: #f8fafc; color: #475569; border-radius: 8px; padding: 6px 9px; }

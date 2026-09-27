@@ -1,5 +1,6 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
+import { CreditEvents } from './ExportCredits';
 
 const date = value => value ? new Date(value).toLocaleString() : 'Not recorded';
 const eventLabel = event => ({ export: 'Export access consumed', registration: 'Registration', password_changed_by_user: 'Password changed by user', admin_access_change: 'Admin access change' }[event] || 'Account activity');
@@ -72,7 +73,7 @@ export default function UsersDialog({ token, onClose }) {
           <dl>{[
             ['Role', u.is_super_admin ? 'Super Admin / Executive Admin' : u.role === 'customer' || u.role === 'user' ? 'User (Basic)' : 'Legacy admin (not Super Admin)'],
             ['Account status', statusLabel(u.account_status)], ['Email', u.email_confirmed_at ? `Verified ${date(u.email_confirmed_at)}` : 'Unverified'],
-            ['Export access', u.export_access === 'unlimited' ? 'Unlimited' : 'Standard'], ['Allowance used', `${u.exports_used} counted exports`], ['Remaining allowance', u.remaining === null ? 'Unlimited' : `${u.remaining} of 5`], ['Total recorded exports', u.recorded_exports],
+            ['Export access', u.export_access === 'unlimited' ? 'Unlimited' : 'Standard'], ['Lifetime counter (historical)', `${u.exports_used} counted exports`], ['Free Export Credits', u.export_access === 'unlimited' ? 'Unlimited · no credits deducted' : detail.credits ? `${detail.credits.balance} / 2` : 'Unavailable'], ['Next free credit', detail.credits?.next_credit_at ? date(detail.credits.next_credit_at) : 'No refill pending'], ['Total recorded exports', u.recorded_exports],
             ['Design Library management', u.can_manage_design_library ? 'Owner only · Allowed' : 'Not permitted'], ['Registered', date(u.registered_at)], ['Last sign-in', date(u.last_sign_in_at)],
             ['Business / shop', u.business_name], ['Mobile', u.mobile], ['City', u.city], ['Country', u.country], ['Printing use', u.machine_type], ['Estimated monthly usage', u.monthly_usage], ['Notice acknowledged', date(u.terms_accepted_at)],
           ].map(([name, value]) => <div key={name}><dt>{name}</dt><dd>{value === '' || value == null ? 'Not provided' : value}</dd></div>)}</dl>
@@ -82,9 +83,10 @@ export default function UsersDialog({ token, onClose }) {
             <button disabled={saving} onClick={() => change('status', u.status === 'blocked' ? 'active' : 'blocked')}>{u.status === 'blocked' ? 'Reactivate account' : 'Suspend account'}</button>
           </div>}
           <h3>View History</h3>
+          <h4>Credit activity</h4><CreditEvents events={detail.creditHistory || []} />
           {!detail.history.length && <p>No activity recorded {historyPage ? 'on this page' : 'yet'}. Historical events have not been reconstructed.</p>}
           <ol className="user-history">{detail.history.map(event => <li key={event.sort_key}><strong>{eventLabel(event.event)}</strong><small>{date(event.created_at)}{event.actor_id && ` · ${event.actor_email || event.actor_id}`}</small>{event.old_value && <p>Before: {historyValue(event.old_value)}</p>}{event.new_value && <p>{event.old_value ? 'After' : 'Details'}: {historyValue(event.new_value)}</p>}</li>)}</ol>
-          <nav aria-label="History pages"><button disabled={!historyPage || saving} onClick={() => setHistoryPage(p => p - 1)}>Newer</button><span>Page {historyPage + 1}</span><button disabled={detail.history.length < 30 || saving} onClick={() => setHistoryPage(p => p + 1)}>Older</button></nav>
+          <nav aria-label="History pages"><button disabled={!historyPage || saving} onClick={() => setHistoryPage(p => p - 1)}>Newer</button><span>Page {historyPage + 1}</span><button disabled={(detail.history.length < 30 && (detail.creditHistory || []).length < 30) || saving} onClick={() => setHistoryPage(p => p + 1)}>Older</button></nav>
         </>}
       </section>
     </div>

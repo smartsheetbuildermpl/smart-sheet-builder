@@ -19,6 +19,7 @@ export function profileFields(body, { registration = false } = {}) {
 }
 export function failure(message, status) { const error = new Error(message); error.status = status; return error; }
 export function apiError(error) {
+  if (error.code === 'supabase_unreachable') return NextResponse.json({ message: error.message, code: error.code }, { status: 503, headers: { 'Cache-Control': 'no-store' } });
   const code = error.data?.code;
   const status = code === '42501' ? 403 : code === '40001' ? 409 : code === 'P0002' ? 404 : code === 'PGRST202' ? 503 : code === '22023' || error instanceof SyntaxError ? 400 : error.status || 500;
   return NextResponse.json({ message: status >= 500 ? 'Account service unavailable. Check that the user-management migration is installed, then retry.' : error.message }, { status, headers: { 'Cache-Control': 'no-store' } });

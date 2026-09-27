@@ -5,7 +5,7 @@ import {
   sessionFromAuth,
   supabaseFetch,
   unconfiguredPayload,
-  usageForProfile,
+  currentProfileUsage,
 } from '../../_lib/supabase';
 import { apiError } from '../../_lib/user-management';
 
@@ -39,7 +39,7 @@ export async function POST(request) {
       configured: true,
       message: 'Signed in. Your export counter is now server-side.',
       session,
-      usage: usageForProfile(profile, user),
+      usage: await currentProfileUsage(profile, user),
     });
   } catch (error) {
     return apiError(error);

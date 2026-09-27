@@ -6,7 +6,7 @@ function load(file) {
   file=path.resolve(file); if(cache.has(file)) return cache.get(file);
   const source=fs.readFileSync(file,'utf8'), names=[...source.matchAll(/export (?:async )?(?:function|const) (\w+)/g)].map(m=>m[1]);
   const code=source.replace(/import \{([\s\S]*?)\} from '([^']+)';/g,(_,n,s)=>`const {${n}}=imports(${JSON.stringify(s)});`).replace(/export /g,'');
-  const result=new Function('imports',`${code}\nreturn {${names.join(',')}};`)(s=>s==='next/server'?require('next/server'):load(path.resolve(path.dirname(file),s+'.js')));
+  const result=new Function('imports',`${code}\nreturn {${names.join(',')}};`)(s=>s==='next/server'||s.startsWith('node:')?require(s):load(path.resolve(path.dirname(file),s+'.js')));
   cache.set(file,result);return result;
 }
 const ids=['owner','basic','unlimited','legacy','unverified'].map((key,i)=>[key,`00000000-0000-4000-8000-00000000000${i+1}`]);
@@ -24,6 +24,8 @@ global.fetch=async(url,options={})=>{
     return response(profiles[id]?[profiles[id]]:[]);
   }
   if(u.pathname==='/rest/v1/rpc/ssb_import_guest_usage') return response(profiles[body.p_user]);
+  if(u.pathname==='/rest/v1/rpc/ssb_credit_snapshot') return response({balance:2,next_credit_at:null,server_time:new Date().toISOString()});
+  if(u.pathname==='/rest/v1/rpc/ssb_credit_history') return response({credits:{balance:2},history:[]});
   if(u.pathname==='/rest/v1/rpc/ssb_require_owner') return body.p_actor===users.owner.id?response(null):response({code:'42501',message:'Super Admin required'},403);
   if(u.pathname==='/rest/v1/rpc/ssb_admin_users') return response({users:[profiles[users.basic.id]],total:1});
   if(u.pathname==='/rest/v1/rpc/ssb_admin_user') return response({user:profiles[body.p_target],history:[]});
@@ -43,6 +45,11 @@ const req=(url,method,token,body)=>new Request(`http://localhost${url}`,{method,
   assert.equal((await list.GET(req('/api/admin/users?search=abc&offset=-1','GET','owner'))).status,200);
   assert.equal(calls.at(-1).body.p_offset,0);
   assert.equal((await details.GET(req('/api/admin/users/id','GET','owner'),target)).status,200);
+  const credits=load('app/api/export/credits/route.js');
+  for(const token of [null,'invalid','unverified']) assert.equal((await credits.GET(req('/api/export/credits','GET',token))).status,401);
+  assert.equal((await credits.GET(req(`/api/export/credits?userId=${users.owner.id}`,'GET','basic'))).status,200);
+  assert.equal(calls.at(-1).body.p_target,users.basic.id,'self-service history ignores a forged target query');
+  assert.equal(calls.at(-1).body.p_actor,users.basic.id);
   assert.equal((await details.GET(req('/api/admin/users/id','GET','owner'),{params:{id:'bad-id'}})).status,400);
   assert.equal((await details.PATCH(req('/api/admin/users/id','PATCH','owner',{field:'role',value:'admin',expectedUpdatedAt:profiles[users.basic.id].updated_at}),target)).status,400);
   assert.equal((await details.PATCH(req('/api/admin/users/id','PATCH','owner',{field:'export_access',value:'unlimited',actorId:users.basic.id,expectedUpdatedAt:profiles[users.basic.id].updated_at}),target)).status,400);

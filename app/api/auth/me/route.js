@@ -4,7 +4,7 @@ import {
   getSupabaseConfig,
   getUserFromRequest,
   unconfiguredPayload,
-  usageForProfile,
+  currentProfileUsage,
 } from '../../_lib/supabase';
 
 export const dynamic = 'force-dynamic';
@@ -25,12 +25,12 @@ export async function GET(request) {
 
     return NextResponse.json({
       configured: true,
-      usage: usageForProfile(profile, user),
+      usage: await currentProfileUsage(profile, user),
     });
   } catch (error) {
     return NextResponse.json(
-      { code: error.code || 'invalid_session', message: error.message || 'Please sign in again.' },
-      { status: error.status || 401 }
+      { code: error.code || 'account_unavailable', message: error.message || 'Account status temporarily unavailable.' },
+      { status: error.status || 503 }
     );
   }
 }

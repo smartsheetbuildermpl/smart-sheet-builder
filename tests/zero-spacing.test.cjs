@@ -14,8 +14,8 @@ assert.notEqual(html, source);
     await page.route('http://localhost:4179/**', route => {
       const name = new URL(route.request().url()).pathname;
       if (name === '/builder.html') return route.fulfill({ body: html, contentType: 'text/html' });
-      if (/^\/(sheet-workspace|background-editor|print-optimizer)\.(js|css)$/.test(name)) return route.fulfill({ body: fs.readFileSync('public' + name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css' });
-      return route.fulfill({ body: `<iframe src="/builder.html"></iframe><script>window.exportsRequested=[];addEventListener('message',e=>{if(e.data.type==='SMART_SHEET_EXPORT_REQUEST'){exportsRequested.push(e.data.exportKind);e.source.postMessage({type:'SMART_SHEET_EXPORT_RESPONSE',requestId:e.data.requestId,allowed:true},e.origin)}})</script>`, contentType: 'text/html' });
+      if (/^\/(sheet-workspace|background-editor|print-optimizer|export-delivery)\.(js|css)$/.test(name)) return route.fulfill({ body: fs.readFileSync('public' + name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css' });
+      return route.fulfill({ body: `<iframe src="/builder.html"></iframe><script>window.exportsRequested=[];addEventListener('message',e=>{if(e.data.type==='SMART_SHEET_EXPORT_REQUEST'){if(e.data.operation.action==='consume')exportsRequested.push(e.data.exportKind);e.source.postMessage({type:'SMART_SHEET_EXPORT_RESPONSE',requestId:e.data.requestId,allowed:true,authorization:'encoder-fixture-only'},e.origin)}})</script>`, contentType: 'text/html' });
     });
     await page.goto('http://localhost:4179');
     const frame = page.frameLocator('iframe');

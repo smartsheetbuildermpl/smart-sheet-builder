@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const { chromium } = require('playwright');
 
 const source = fs.readFileSync('public/builder.html', 'utf8');
-const hook = "window.rgbW1Test={downloadTiff,getExportProfile,settings:getSheetPixelSettings};";
+const hook = "window.rgbW1Test={downloadTiff,getExportProfile,settings:getSheetPixelSettings};exportDelivery=SmartSheetExportDelivery.create({gate:async()=>({allowed:true,authorization:'encoder-fixture-only'}),save:saveExportBlob});";
 const html = source.replace(/\}\)\(\);\s*<\/script>/, hook + '})();</script>');
 assert.notEqual(html, source, 'test hook inserted');
 
@@ -44,7 +44,7 @@ function rational(tags, tag) {
     page.on('pageerror', error => errors.push(error.message));
     await page.route('http://localhost:4180/**', route => {
       const pathname = new URL(route.request().url()).pathname;
-      if (/^\/(sheet-workspace|background-editor|print-optimizer)\.(js|css)$/.test(pathname)) {
+      if (/^\/(sheet-workspace|background-editor|print-optimizer|export-delivery)\.(js|css)$/.test(pathname)) {
         return route.fulfill({ body: fs.readFileSync('public' + pathname), contentType: pathname.endsWith('.js') ? 'text/javascript' : 'text/css' });
       }
       return route.fulfill({ body: html, contentType: 'text/html' });

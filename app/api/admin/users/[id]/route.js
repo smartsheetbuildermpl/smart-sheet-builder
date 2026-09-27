@@ -4,7 +4,10 @@ export const dynamic = 'force-dynamic';
 export async function GET(request, { params }) {
   try {
     const { user } = await accountActor(request, true);
-    return NextResponse.json(await rpc('ssb_admin_user', { p_actor: user.id, p_target: userId(params.id), p_offset: offset(new URL(request.url).searchParams.get('offset')) }), { headers: { 'Cache-Control': 'no-store' } });
+    const args = { p_actor: user.id, p_target: userId(params.id), p_offset: offset(new URL(request.url).searchParams.get('offset')) };
+    const detail = await rpc('ssb_admin_user', args);
+    const credits = await rpc('ssb_credit_history', args);
+    return NextResponse.json({ ...detail, credits: credits.credits, creditHistory: credits.history }, { headers: { 'Cache-Control': 'no-store' } });
   } catch (error) { return apiError(error); }
 }
 export async function PATCH(request, { params }) {
