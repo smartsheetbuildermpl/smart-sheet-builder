@@ -30,7 +30,7 @@ const html=fs.readFileSync('public/builder.html','utf8').replace(/\}\)\(\);\s*<\
       return r.fulfill({json:{configured:true,usage:usage()}});
     });
     await page.goto(base); await page.locator('.usage-card').getByText('Free Export Credits: 2 / 2',{exact:true}).waitFor();
-    await page.locator('.access-reveal-handle').hover();await page.getByRole('button',{name:'Account',exact:true}).click();
+    await page.locator('.access-reveal-handle').hover();await page.getByRole('button',{name:'Account & exports',exact:true}).click();
     assert(await page.locator('.access-modal').getByRole('button',{name:'Buy Export Credits — Coming Soon'}).isDisabled());
     await page.getByRole('button',{name:'Close account'}).click();
     const frame=page.frames().find(f=>f.url().includes('/builder.html'));await frame.evaluate(()=>creditTest.seed());

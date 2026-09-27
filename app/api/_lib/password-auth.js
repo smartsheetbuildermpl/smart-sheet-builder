@@ -2,6 +2,7 @@ import { createHash, randomBytes, createCipheriv, createDecipheriv } from 'node:
 import { NextResponse } from 'next/server';
 import { getSupabaseConfig, supabaseFetch } from './supabase';
 import { failure } from './user-management';
+import { publicAppOrigin } from './public-app-url';
 
 export const COOKIE = 'ssb-password-recovery';
 export function json(data, status = 200) { return NextResponse.json(data, { status, headers: { 'Cache-Control': 'no-store', 'Referrer-Policy': 'no-referrer' } }); }
@@ -13,12 +14,7 @@ export function resetUrl(request) {
   return appAuthUrl(request, '/reset-password');
 }
 export function appAuthUrl(request, path = '/auth/callback') {
-  const deploymentHost = process.env.VERCEL_ENV === 'preview' ? process.env.VERCEL_URL : process.env.VERCEL_PROJECT_PRODUCTION_URL;
-  const value = process.env.SMART_SHEET_SITE_URL || (deploymentHost ? `https://${deploymentHost}` : '');
-  const url = new URL(value || (process.env.NODE_ENV !== 'production' ? request.url : 'https://invalid.invalid'));
-  const local = ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
-  if ((!value && process.env.NODE_ENV === 'production') || url.username || url.password || (url.protocol !== 'https:' && !(local && process.env.NODE_ENV !== 'production' && url.protocol === 'http:'))) throw failure('The password recovery site URL is not configured. Contact support.', 503);
-  return `${url.origin}${path}`;
+  return `${publicAppOrigin(request)}${path}`;
 }
 function key() {
   const secret = process.env.SMART_SHEET_RECOVERY_SECRET || getSupabaseConfig().serviceRoleKey;

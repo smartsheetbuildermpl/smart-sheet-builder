@@ -370,8 +370,8 @@ export async function recordUsageExport({ userId = null, guestId = null, exportK
 }
 
 export async function incrementProfileUsage(profile, user, exportKind, operation) {
-  const result = await supabaseFetch('/rest/v1/rpc/ssb_credit_export', {
-    method: 'POST', service: true, body: { p_user: user.id, p_kind: exportKind, p_request: operation.requestKey, p_fingerprint: operation.fingerprint, p_action: operation.action || 'consume', p_receipt: operation.receipt || null },
+  const result = await supabaseFetch(`/rest/v1/rpc/${operation.jobId ? 'ssb_client_job_export' : 'ssb_credit_export'}`, {
+    method: 'POST', service: true, body: { p_user: user.id, ...(operation.jobId ? {p_job:operation.jobId} : {}), p_kind: exportKind, p_request: operation.requestKey, p_fingerprint: operation.fingerprint, p_action: operation.action || 'consume', p_receipt: operation.receipt || null },
   });
   return { allowed: result.allowed === true, reason: result.reason, message: result.message, receipt: result.receipt, duplicate: result.duplicate, usage: usageForProfile(result.profile, user, result.credits) };
 }

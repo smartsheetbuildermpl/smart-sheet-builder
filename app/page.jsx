@@ -9,6 +9,7 @@ import AccountProfile from './components/AccountProfile';
 import PasswordRequestForm from './components/PasswordRequestForm';
 import ChangePassword from './components/ChangePassword';
 import ExportCredits, { CreditHistory, CreditCountdown } from './components/ExportCredits';
+import ClientJobs from './components/ClientJobs';
 
 export default function HomePage() {
   const auth = useSmartSheetAuth();
@@ -238,15 +239,18 @@ export default function HomePage() {
             <small>{busy ? 'Checking...' : modeText}</small>
             <ExportCredits usage={usage} onDue={auth.refreshCredits} compact />
           </div>
-          <button className="access-button" type="button" onClick={showAccount}>
-            {auth.signedIn ? 'Account' : 'Sign in'}
-          </button>
-          {auth.signedIn && (
-            <button className="access-button ghost" type="button" onClick={signOut}>
-              Sign out
-            </button>
-          )}
           {auth.isSuperAdmin && <button className="access-button ghost" type="button" onClick={() => setUsersOpen(true)}>Users & Registrations</button>}
+          <div className="access-actions" role="group" aria-label="Account actions">
+            <ClientJobs auth={auth} builderRef={builderRef} hidden={backgroundEditorOpen || libraryOpen || paywallOpen} onSignIn={showAccount}/>
+            <button className="access-button" type="button" onClick={showAccount}>
+              {auth.signedIn ? 'Account & exports' : 'Sign in'}
+            </button>
+            {auth.signedIn && (
+              <button className="access-button ghost" type="button" onClick={signOut}>
+                Sign out
+              </button>
+            )}
+          </div>
         </div>
       </section>
 

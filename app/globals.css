@@ -109,6 +109,26 @@ body {
   padding: 12px 18px;
 }
 
+.access-actions {
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: nowrap;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+}
+.access-actions > .access-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  box-sizing: border-box;
+  height: 40px;
+  margin: 0;
+  font: 700 13px/1 Arial, sans-serif;
+}
+.access-actions > .client-portal-trigger { background: #164753; }
+
 .access-reveal-handle {
   position: absolute;
   left: 50%;
@@ -711,6 +731,11 @@ body {
   .usage-card { flex:1; min-width:120px; }
 }
 @media(prefers-reduced-motion:reduce) { .builder-workspace.is-open { animation:none; } .workspace-backdrop,.access-bar,.access-reveal-handle span:last-child { transition:none; } }
+@media (max-width: 760px) {
+  /* The existing Account & exports reveal tab opens this shared account menu. */
+  .access-actions { width: 100%; margin-left: 0; flex-direction: column; align-items: stretch; }
+  .access-actions > .access-button { width: 100%; justify-content: flex-start; }
+}
 .export-credits { display: grid; gap: 8px; margin-block: 8px; }
 .export-credits p { margin: 0; font-size: 13px; }
 .export-credits > button:not(:disabled) { padding: 10px 14px; border: 0; border-radius: 8px; color: #fff; background: #0f172a; cursor: pointer; }

@@ -14,11 +14,13 @@ export async function POST(request) {
     const guest = user ? null : await guestIdentity(request);
     const actor = user ? `user:${user.id}` : `guest:${guest.id}`;
     const profile = user ? await ensureProfile(user) : null;
+    if (body.jobId && !user) return reply({ allowed: false, message: 'Sign in to export your Client Job.' }, 401);
     if (body.action === 'prepare') {
+      if (body.jobId) await supabaseFetch('/rest/v1/rpc/ssb_client_job_export', { method:'POST', service:true, body:{p_user:user.id,p_job:body.jobId,p_kind:body.exportKind,p_request:body.requestKey,p_fingerprint:body.fingerprint,p_action:'prepare'} });
       const usage = user ? await currentProfileUsage(profile, user) : usageForGuest(await getGuestUsage(guest.id));
       if (profile?.status === 'blocked') return reply({ allowed: false, reason: 'account_blocked', message: 'This account is suspended. Contact support.', usage });
       if (!usage.unlimited && usage.remaining <= 0) return reply({ allowed: false, reason: user ? 'credits_empty' : 'limit_reached', message: user ? 'You’ve used your available free export credits.' : 'Guest trial used up. Create a free account for Free Export Credits.', usage });
-      return reply({ allowed: true, usage, authorization: authorization(actor, body.exportKind, body.requestKey, body.fingerprint) });
+      return reply({ allowed: true, usage, authorization: authorization(actor, body.exportKind, body.requestKey, body.fingerprint, body.jobId) });
     }
     // Preparation never charges. Recheck and deduct atomically when the final Blob exists.
     if ((!body.action || body.action === 'consume') && !validAuthorization(body.authorization, actor, body)) return reply({ allowed: false, reason: 'authorization_expired', message: 'Export authorization expired. Start the export again.' }, 403);

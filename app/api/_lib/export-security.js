@@ -41,16 +41,16 @@ export function attachGuest(response, identity) {
   response.headers.set('Cache-Control', 'no-store');
   return response;
 }
-export function authorization(actor, kind, requestKey, fingerprint) {
-  return seal({ type: 'export', actor, kind, requestKey, fingerprint, exp: Date.now() + 10 * 60000 });
+export function authorization(actor, kind, requestKey, fingerprint, jobId) {
+  return seal({ type: 'export', actor, kind, requestKey, fingerprint, ...(jobId ? {jobId} : {}), exp: Date.now() + 10 * 60000 });
 }
 export function validAuthorization(token, actor, body) {
   const value = unseal(token);
-  return value?.type === 'export' && value.exp > Date.now() && value.actor === actor && value.kind === body.exportKind && value.requestKey === body.requestKey && value.fingerprint === body.fingerprint;
+  return value?.type === 'export' && value.exp > Date.now() && value.actor === actor && value.kind === body.exportKind && value.requestKey === body.requestKey && value.fingerprint === body.fingerprint && (value.jobId || null) === (body.jobId || null);
 }
 export function validOperation(body) {
   const uuid = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   return body && !Array.isArray(body) && ['png','tiff'].includes(body.exportKind) && uuid.test(body.requestKey || '') && typeof body.fingerprint === 'string' && /^[a-zA-Z0-9:._-]{8,200}$/.test(body.fingerprint) &&
     ['prepare','consume','saved','refund'].includes(body.action || 'consume') && (!['saved','refund'].includes(body.action) || uuid.test(body.receipt || '')) &&
-    !Object.keys(body).some(k => !['exportKind','guestId','requestKey','fingerprint','action','receipt','authorization'].includes(k));
+    (!body.jobId || uuid.test(body.jobId)) && !Object.keys(body).some(k => !['exportKind','guestId','requestKey','fingerprint','action','receipt','authorization','jobId'].includes(k));
 }
