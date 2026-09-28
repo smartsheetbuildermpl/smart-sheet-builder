@@ -24,7 +24,7 @@ function tiff(bytes) {
     page.on('pageerror',error=>errors.push(error.message));
     await page.route('http://localhost:4187/**',route=>{
       const name=new URL(route.request().url()).pathname;
-      if(/^\/(background-editor|sheet-workspace|print-optimizer|export-delivery|sheet-packing)\.(js|css)$/.test(name))return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
+      if(/^\/(background-editor|sheet-workspace|print-optimizer|export-delivery|sheet-packing|builder-shell|workspace-theme)\.(js|css)$/.test(name))return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
       return route.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4187/builder.html');
@@ -113,7 +113,9 @@ function tiff(bytes) {
     // Final sheet size comes from physical inches × DPI. Poison every reduced
     // preview input; the real Add path and downloads must still retain 1px detail.
     await card.getByRole('spinbutton',{name:'Width',exact:true}).fill('2');
+    await page.getByRole('tab',{name:'Sheet',exact:true}).click();
     await page.locator('#sheetWidth').fill('3');await page.locator('#sheetLength').fill('3');
+    await page.getByRole('tab',{name:'Designs',exact:true}).click();
     await page.evaluate(()=>{printTest.designs[0].previewUrl='data:,';document.querySelector('.design-item img').src='data:,';});
     await card.getByRole('button',{name:'Add to layout',exact:true}).click();
     await page.waitForFunction(()=>printTest.sheets.length>0);

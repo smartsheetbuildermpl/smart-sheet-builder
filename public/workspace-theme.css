@@ -1,0 +1,121 @@
+/* Shared tokens for the React shell and the native-resolution builder iframe. */
+:root {
+  --ui-font: 'Segoe UI', -apple-system, BlinkMacSystemFont, sans-serif;
+  --ui-bg: #f5f4f0;
+  --ui-surface: #fff;
+  --ui-soft: #f1f3f4;
+  --ui-ink: #142b45;
+  --ui-muted: #596b7a;
+  --ui-primary: #122c49;
+  --ui-accent: #087e98;
+  --ui-tint: #eaf6f8;
+  --ui-line: #dce1e5;
+  --ui-success: #237252;
+  --ui-danger: #a43235;
+  --ui-radius: 8px;
+  --ui-shadow: 0 12px 36px #142b4514;
+  --ui-space-1: 4px;
+  --ui-space-2: 8px;
+  --ui-space-3: 12px;
+  --ui-space-4: 16px;
+  --ui-space-5: 24px;
+}
+body { font-family: var(--ui-font); color: var(--ui-ink); background: var(--ui-bg); }
+:where(button, input, select, textarea) { font-family: inherit; accent-color: var(--ui-accent); }
+:where(button, a, input, select, textarea, summary):focus-visible { outline: 2px solid var(--ui-accent); outline-offset: 3px; }
+:where(button):disabled { cursor: default; opacity: .5; }
+:where(dialog)::backdrop { background: #13253e66; }
+/* Presentation only: canvas pixels, alpha/checkerboards and export settings are untouched. */
+:is(.client-page,.client-jobs-dialog,.users-dialog,.access-modal-card,.workspace-library,.print-optimizer,.bg-editor) {
+  font-family: var(--ui-font);
+  color: var(--ui-ink);
+}
+:is(.client-page,.client-jobs-dialog,.users-dialog,.access-modal-card,.workspace-library) :is(input:not([type=checkbox]):not([type=range]), select, textarea) {
+  border-color: var(--ui-line); border-radius: 6px; padding: 8px 10px; font: inherit; color: var(--ui-ink); background: var(--ui-surface);
+}
+:is(.client-page,.client-jobs-dialog,.users-dialog,.access-modal-card,.workspace-library) button {
+  border-radius: 6px; font-family: var(--ui-font); font-size: 13px; font-weight: 600;
+}
+:is(.client-page,.client-jobs-dialog) button:not(.secondary), .auth-form button[type=submit], .access-button,
+.workspace-library .library-card-actions button:first-child { background: var(--ui-primary); color: white; border-color: var(--ui-primary); }
+:is(.client-page,.client-jobs-dialog) .secondary, .access-button.ghost { background: var(--ui-surface); color: var(--ui-ink); border-color: var(--ui-line); }
+.client-page { max-width: 1480px; padding: 20px 28px; background: var(--ui-bg); }
+.client-page > header { height: 44px; font-size: 13px; margin-bottom: 20px; border-color: var(--ui-line); }
+.client-page > header strong { font-size: 18px; letter-spacing: -.5px; }
+.client-page > h1 { font-size: 24px; letter-spacing: -.6px; }
+.client-page > p { color: var(--ui-muted); font-size: 13px; }
+.client-page .client-columns { grid-template-columns: minmax(360px, .85fr) minmax(0, 1.15fr); gap: 16px; }
+.client-card { padding: 16px; border-radius: var(--ui-radius); border-color: var(--ui-line); box-shadow: none; }
+.client-card h2 { font-size: 16px; margin-top: 0; }
+.client-drop { padding: 14px; border-color: #a8c6ce; background: var(--ui-tint); }
+.client-file { gap: 10px; }
+.client-file-thumbnail { width: 44px; height: 44px; flex-basis: 44px; }
+.client-file-name { font-size: 13px; }
+.client-file-copy { min-width: 0; }
+.client-jobs-dialog { width: min(1320px,96vw); padding: 0 20px 20px; background: var(--ui-bg); border-color: var(--ui-line); border-radius: 10px; box-shadow: var(--ui-shadow); }
+.client-jobs-dialog > header { padding: 12px 20px; margin: 0 -20px 16px; background: var(--ui-surface); backdrop-filter: none; gap: 12px; }
+.client-jobs-dialog > header h1 { font-size: 21px; letter-spacing: -.4px; }
+.client-jobs-dialog > header p { margin: 3px 0 0; font-size: 12px; color: var(--ui-muted); }
+.client-dialog-header-actions { flex-shrink: 0; }
+.client-dialog-header-actions button { width: 36px; height: 36px; padding: 0; }
+.client-section-heading { margin-top: 0; }
+.client-section-heading h2 { font-size: 17px; }
+.client-submission-row { border-color: var(--ui-line); border-radius: 7px; padding: 12px; gap: 12px; }
+.client-submission-row.selected { border-color: #8cbbca; box-shadow: none; background: #f8fcfd; }
+.client-status-badge { border-radius: 4px; font-size: 11px; }
+.client-empty-state { padding: 20px; border-radius: 8px; font-size: 13px; }
+.client-settings-panel { max-width: 860px; margin: 0 auto 16px; }
+.client-settings-panel form { border-top: 1px solid var(--ui-line); padding-top: 10px; margin-top: 16px; }
+.client-message, .client-error { font-size: 13px; border-radius: 6px; }
+.client-upload-actions { flex-wrap: wrap; }
+.client-upload-actions button { min-height: 40px; }
+/* Shared account, administration, library, and editing surfaces. */
+.access-modal-card, .users-dialog, .library-panel, .print-optimizer { border-color: var(--ui-line); border-radius: 10px; box-shadow: var(--ui-shadow); background: var(--ui-surface); }
+.access-modal-card h2 { font-size: 23px; letter-spacing: -.5px; }
+.auth-tabs button[role=tab].active { background: var(--ui-primary); color: white; }
+.password-page, .account-notice { font-family: var(--ui-font); color: var(--ui-ink); background: var(--ui-bg); }
+.password-card { border-color: var(--ui-line); border-radius: var(--ui-radius); box-shadow: var(--ui-shadow); }
+.password-card button, .account-security button, .auth-success-link { background: var(--ui-primary); border-radius: 6px; }
+.password-card input { border-color: var(--ui-line); border-radius: 6px; font-family: var(--ui-font); }
+.access-kicker { color: var(--ui-muted); font-size: 10px; letter-spacing: .08em; }
+.users-dialog header { padding: 12px 18px; }
+.users-list, .user-details { padding: 16px; }
+.users-dialog button { border-color: var(--ui-line); }
+.users-dialog .user-list-item[aria-pressed=true] { background: var(--ui-tint); border-color: #8cbbca; }
+.builder-workspace.is-open { border-radius: 10px; border-color: var(--ui-line); background: var(--ui-bg); box-shadow: var(--ui-shadow); animation: none; }
+.workspace-backdrop { backdrop-filter: none; }
+.workspace-header { padding: 12px 18px; background: var(--ui-primary); }
+.workspace-brand { gap: 10px; }
+.workspace-brand > span { font-size: 24px; }
+.workspace-brand p { font-size: 9px; letter-spacing: .07em; margin-bottom: 3px; }
+.workspace-brand h2 { font-size: 19px; }
+.workspace-library .library-panel { background: var(--ui-bg); }
+.workspace-library .library-header { padding: 16px 16px 8px; }
+.workspace-library .library-header h2 { font-size: 21px; }
+.workspace-library .library-toolbar { padding: 8px 16px 12px; }
+.workspace-library .library-content { padding: 12px 16px; }
+.workspace-library .library-design { border-radius: 7px; box-shadow: none; }
+.workspace-library .library-thumb { height: 135px; }
+.library-admin, .library-preview { border-radius: 7px; }
+.print-optimizer { background: var(--ui-bg); padding: 14px; }
+.print-optimizer header h2 { font-size: 19px; }
+.print-optimizer button, .bg-editor button { border-radius: 6px; font-family: var(--ui-font); color: var(--ui-ink); border-color: var(--ui-line); }
+.print-optimizer [data-apply], .bg-editor .bg-primary, .bg-editor button[aria-pressed=true] { background: var(--ui-primary); color: #fff; }
+.bg-editor { background: var(--ui-bg); }
+.bg-editor header { min-height: 58px; padding: 10px 16px; }
+.bg-editor h2 { font-size: 18px; }
+.bg-editor .bg-options { background: var(--ui-bg); }
+@media(max-width:700px) {
+  .client-page { padding: 12px; }
+  .client-page > header { gap: 8px; font-size: 11px; }
+  .client-page > header strong { font-size: 16px; }
+  .client-page .client-columns { grid-template-columns: minmax(0,1fr); }
+  .client-card { padding: 12px; }
+  .client-upload-actions { display: flex; gap: 6px; }
+  .client-upload-actions button { padding: 9px 10px; font-size: 12px; }
+  .client-jobs-dialog { width:100%; max-width:100%; height:100dvh; max-height:100dvh; border-radius:0; padding:0 12px 16px; }
+  .client-jobs-dialog > header { margin:0 -12px 12px; padding:12px; }
+  .client-jobs-dialog > header p { max-width: 220px; }
+  .users-dialog { border-radius:0; }
+}
+@media(prefers-reduced-motion:reduce) { .client-upload-indicator,.client-upload-state.active::before,.client-preview-skeleton { animation:none; } }

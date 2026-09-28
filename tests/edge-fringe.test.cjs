@@ -4,7 +4,8 @@ const os=require('node:os');
 const path=require('node:path');
 const {chromium}=require('playwright');
 const source=fs.readFileSync('public/builder.html','utf8');
-const hook='window.edgeTest={get designs(){return designs},get sheets(){return sheets},downloadPng,downloadTiff,getExportProfile};';
+// Encoder fixture only; production authorization is covered by export-enforcement-ui.test.cjs.
+const hook='window.edgeTest={get designs(){return designs},get sheets(){return sheets},downloadPng,downloadTiff,getExportProfile};exportDelivery=SmartSheetExportDelivery.create({gate:async()=>({allowed:true,authorization:"encoder-fixture-only"}),save:saveExportBlob});';
 const html=source.replace(/\}\)\(\);\s*<\/script>/,hook+'})();</script>');
 const artifacts=fs.mkdtempSync(path.join(os.tmpdir(),'edge-fringe-'));
 function parseTiff(bytes){
@@ -22,7 +23,7 @@ function parseTiff(bytes){
     page.on('pageerror',e=>errors.push(e.message));
     await page.route('http://localhost:4188/**',route=>{
       const name=new URL(route.request().url()).pathname;
-      if(/^\/(background-editor|sheet-workspace|print-optimizer|export-delivery|sheet-packing)\.(js|css)$/.test(name))return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
+      if(/^\/(background-editor|sheet-workspace|print-optimizer|export-delivery|sheet-packing|builder-shell|workspace-theme)\.(js|css)$/.test(name))return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
       return route.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4188/builder.html');
@@ -98,7 +99,9 @@ function parseTiff(bytes){
     await page.getByRole('button',{name:'Undo last optimization',exact:true}).click();
     assert.equal(await page.evaluate(()=>edgeTest.designs[0].trimmed.canvas.toDataURL()),before);
     await open();await page.getByRole('button',{name:'Apply optimization',exact:true}).click();
+    await page.getByRole('tab',{name:'Sheet',exact:true}).click();
     await page.locator('#sheetWidth').fill('1');await page.locator('#sheetLength').fill('1');
+    await page.getByRole('tab',{name:'Designs',exact:true}).click();
     await card.getByRole('button',{name:'Add to layout',exact:true}).click();
     await page.waitForFunction(()=>edgeTest.sheets.length>0);
     const expected=await page.evaluate(()=>{const d=edgeTest.designs[0],p=edgeTest.sheets[0].placements[0];if(p.inst.canvas!==d.trimmed.canvas)throw Error('Export source differs');return {x:p.x,y:p.y,w:d.trimmed.w,h:d.trimmed.h,rgba:Array.from(d.trimmed.canvas.getContext('2d').getImageData(0,0,d.trimmed.w,d.trimmed.h).data)};});

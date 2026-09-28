@@ -2,6 +2,7 @@
 const {chromium}=require('playwright'),{fixture,load}=require('./export-enforcement.test.cjs');
 const {NextRequest}=require('next/server'),assert=require('node:assert/strict'),fs=require('node:fs'),os=require('node:os'),path=require('node:path');
 const base=process.env.SMART_SHEET_TEST_URL||'http://localhost:3112';
+async function usageText(page){await page.locator('.access-reveal-handle').hover();await page.locator('.usage-card').waitFor({state:'visible'});return page.locator('.usage-card').innerText();}
 (async()=>{const browser=await chromium.launch({channel:'chrome',headless:true}),f=await fixture();try{
  process.env.SMART_SHEET_SITE_URL=base;
  for(const file of ['supabase-password-recovery-v1.sql','supabase-auth-callback-v1.sql'])await f.db.exec(fs.readFileSync(file,'utf8'));
@@ -29,7 +30,7 @@ const base=process.env.SMART_SHEET_TEST_URL||'http://localhost:3112';
   const req=new NextRequest(q.url(),{method:q.method(),headers:await q.allHeaders(),...(q.postData()?{body:q.postData()}:{})}),res=await handler[q.method()](req);
   return r.fulfill({status:res.status,headers:Object.fromEntries(res.headers),body:await res.text()});
  });
- await page.goto(base+'/?signin=1');await page.locator('.auth-form input[type=email]').fill(user.email);await page.locator('.auth-form input[type=password]').fill('test-password-123');await page.locator('.auth-form button[type=submit]').click();await page.waitForFunction(()=>!document.querySelector('.access-modal'),null,{timeout:10000}).catch(async e=>{console.log('LOGIN DEBUG',await page.locator('.access-modal').innerText(),{authCalls,sdkCalls});throw e;});assert(authCalls>0&&sdkCalls>0,'real login route and SDK adoption completed');assert.match(await page.locator('.usage-card').innerText(),/basic@test.example/);
+ await page.goto(base+'/?signin=1');await page.locator('.auth-form input[type=email]').fill(user.email);await page.locator('.auth-form input[type=password]').fill('test-password-123');await page.locator('.auth-form button[type=submit]').click();await page.waitForFunction(()=>!document.querySelector('.access-modal'),null,{timeout:10000}).catch(async e=>{console.log('LOGIN DEBUG',await page.locator('.access-modal').innerText(),{authCalls,sdkCalls});throw e;});assert(authCalls>0&&sdkCalls>0,'real login route and SDK adoption completed');assert.match(await usageText(page),/basic@test.example/);
  await page.goto(base+'/auth/callback?token_hash='+'c'.repeat(64)+'&type=signup');await page.getByRole('heading',{name:'Email confirmed',exact:true}).waitFor();assert.equal(confirmCalls,1,'StrictMode single exchange');assert.equal(new URL(page.url()).search,'');await page.getByText('Your Smart Sheet Builder account is ready.',{exact:true}).waitFor();
  const output=fs.mkdtempSync(path.join(os.tmpdir(),'ssb-callback-ui-'));await page.screenshot({path:path.join(output,'confirmed.png')});
  await page.goto(base+'/auth/callback?token_hash='+'c'.repeat(64)+'&type=signup');await page.getByRole('button',{name:'Send a new confirmation email'}).waitFor();await page.getByLabel('Email address').fill(user.email);await page.getByRole('button',{name:'Send a new confirmation email'}).click();await page.getByRole('button',{name:/Resend in/}).waitFor();assert(await page.getByRole('button',{name:/Resend in/}).isDisabled());

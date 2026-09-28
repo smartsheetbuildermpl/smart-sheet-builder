@@ -25,7 +25,7 @@ const html=fs.readFileSync('public/builder.html','utf8').replace(/\}\)\(\);\s*<\
     page.on('pageerror',e=>errors.push(e.message));
     await page.route('http://localhost:4198/**',r=>{
       const p=new URL(r.request().url()).pathname;
-      if(/^\/(sheet-workspace|print-optimizer|background-editor|export-delivery|sheet-packing)\.(js|css)$/.test(p))return r.fulfill({body:fs.readFileSync('public'+p),contentType:p.endsWith('.js')?'text/javascript':'text/css'});
+      if(/^\/(sheet-workspace|print-optimizer|background-editor|export-delivery|sheet-packing|builder-shell|workspace-theme)\.(js|css)$/.test(p))return r.fulfill({body:fs.readFileSync('public'+p),contentType:p.endsWith('.js')?'text/javascript':'text/css'});
       return r.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4198');await page.evaluate(()=>stability.seed());
@@ -64,7 +64,9 @@ const html=fs.readFileSync('public/builder.html','utf8').replace(/\}\)\(\);\s*<\
     await page.keyboard.press('Control+z');assert.equal(await page.evaluate(()=>stability.signature()),arranged);
     await page.keyboard.press('Control+Shift+z');assert.equal(await page.evaluate(()=>stability.signature()),removed);
     // Inputs retain native text Undo and cannot accidentally revert the sheet.
+    await page.getByRole('tab',{name:'Sheet',exact:true}).click();
     await page.locator('#customerName').fill('Sample');await page.keyboard.press('Control+z');assert.equal(await page.evaluate(()=>stability.signature()),removed);
+    await page.getByRole('tab',{name:'Designs',exact:true}).click();
     // Whole-sheet creation/removal is part of the same Add transaction.
     await page.evaluate(()=>{const d={...stability.designs[0],id:3,file:{name:'large.png'},widthIn:22,heightIn:38,qty:1};stability.designs.push(d);stability.add(d);});
     assert.equal(await page.evaluate(()=>stability.sheets.length),2);

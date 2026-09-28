@@ -1,5 +1,7 @@
 import "./globals.css";
 import "./client-jobs.css";
+import "../public/workspace-theme.css";
+import "./workspace-shell.css";
 
 export const metadata = {
   title: "Smart Sheet Builder by Master PrintLab",

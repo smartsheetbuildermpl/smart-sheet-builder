@@ -16,14 +16,14 @@ assert.notEqual(html, source, 'test hook inserted');
     await page.route('http://localhost:4186/**', route => {
       const pathname = new URL(route.request().url()).pathname;
       if (pathname === '/builder.html') return route.fulfill({ body: html, contentType: 'text/html' });
-      if (/^\/(sheet-workspace|background-editor|print-optimizer|export-delivery|sheet-packing)\.(js|css)$/.test(pathname)) {
+      if (/^\/(sheet-workspace|background-editor|print-optimizer|export-delivery|sheet-packing|builder-shell|workspace-theme)\.(js|css)$/.test(pathname)) {
         return route.fulfill({ body: fs.readFileSync('public' + pathname), contentType: pathname.endsWith('.js') ? 'text/javascript' : 'text/css' });
       }
       return route.fulfill({ body: '<iframe src="/builder.html"></iframe>', contentType: 'text/html' });
     });
     await page.goto('http://localhost:4186');
     const frame = page.frameLocator('iframe');
-    await frame.locator('#dpi').waitFor();
+    await frame.locator('#dpi').waitFor({state:'attached'});
     const doc = page.frames().find(item => item.url().endsWith('/builder.html'));
     await doc.evaluate(() => {
       document.getElementById('dpi').value = '10';

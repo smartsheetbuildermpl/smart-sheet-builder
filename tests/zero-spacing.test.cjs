@@ -14,11 +14,12 @@ assert.notEqual(html, source);
     await page.route('http://localhost:4179/**', route => {
       const name = new URL(route.request().url()).pathname;
       if (name === '/builder.html') return route.fulfill({ body: html, contentType: 'text/html' });
-      if (/^\/(sheet-workspace|background-editor|print-optimizer|export-delivery|sheet-packing)\.(js|css)$/.test(name)) return route.fulfill({ body: fs.readFileSync('public' + name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css' });
+      if (/^\/(sheet-workspace|background-editor|print-optimizer|export-delivery|sheet-packing|builder-shell|workspace-theme)\.(js|css)$/.test(name)) return route.fulfill({ body: fs.readFileSync('public' + name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css' });
       return route.fulfill({ body: `<iframe src="/builder.html"></iframe><script>window.exportsRequested=[];addEventListener('message',e=>{if(e.data.type==='SMART_SHEET_EXPORT_REQUEST'){if(e.data.operation.action==='consume')exportsRequested.push(e.data.exportKind);e.source.postMessage({type:'SMART_SHEET_EXPORT_RESPONSE',requestId:e.data.requestId,allowed:true,authorization:'encoder-fixture-only'},e.origin)}})</script>`, contentType: 'text/html' });
     });
     await page.goto('http://localhost:4179');
     const frame = page.frameLocator('iframe');
+    await frame.getByRole('tab',{name:'Sheet',exact:true}).click();
     await frame.locator('#gapNumber').waitFor();
     const doc = page.frames().find(f => f.url().endsWith('/builder.html'));
     assert.equal(await frame.locator('#gapNumber').inputValue(), '0');
@@ -34,7 +35,10 @@ assert.notEqual(html, source);
     // separate auto-layout inset so its established edge-touch cases remain
     // focused on spacing rather than the new margin setting.
     await frame.locator('#edgeAllowanceNumber').fill('0');
-    await frame.locator('#dpi').fill('100'); await frame.locator('#sheetWidth').fill('2'); await frame.locator('#sheetLength').fill('2.36');
+    await frame.getByRole('tab',{name:'Output',exact:true}).click();
+    await frame.locator('#dpi').fill('100');
+    await frame.getByRole('tab',{name:'Sheet',exact:true}).click();
+    await frame.locator('#sheetWidth').fill('2'); await frame.locator('#sheetLength').fill('2.36');
     await frame.locator('#autoRotate').uncheck();
     await doc.evaluate(async () => {
       const c = document.createElement('canvas'); c.width = c.height = 100;

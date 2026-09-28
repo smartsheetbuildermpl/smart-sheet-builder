@@ -7,7 +7,8 @@ const { chromium } = require('playwright'),
   os = require('node:os'),
   path = require('node:path');
 const base = process.env.SMART_SHEET_TEST_URL || 'http://localhost:3114',
-  out = fs.mkdtempSync(path.join(os.tmpdir(), 'client-jobs-ui-'));
+  out = process.env.SMART_SHEET_SCREENSHOTS || fs.mkdtempSync(path.join(os.tmpdir(), 'client-jobs-ui-'));
+fs.mkdirSync(out, { recursive: true });
 const jwt = (user) =>
   `${Buffer.from('{"alg":"HS256"}').toString('base64url')}.${Buffer.from(JSON.stringify({ sub: user.id, exp: Math.floor(Date.now() / 1000) + 3600, iat: Math.floor(Date.now() / 1000), role: 'authenticated' })).toString('base64url')}.test-signature`;
 (async () => {
@@ -239,6 +240,7 @@ const jwt = (user) =>
     assert.equal(uploadActions[1].text, 'Generate Print Preview');
     assert(Math.abs(uploadActions[0].y - uploadActions[1].y) < 1);
     assert(uploadActions[0].x < uploadActions[1].x);
+    await customer.page.screenshot({ path: path.join(out, 'client-upload-desktop.png'), fullPage: true });
     await customer.page.setViewportSize({ width: 1100, height: 520 });
     assert(
       await customer.page.locator('.client-page').evaluate((el) => {
@@ -313,6 +315,7 @@ const jwt = (user) =>
       0,
       'sharing controls stay out of the main Client Portal view'
     );
+    await owner.page.screenshot({ path: path.join(out, 'client-portal-desktop.png'), fullPage: true });
     await owner.page.getByRole('button', { name: 'Shop portal settings' }).click();
     await owner.page.getByText('Portal link active', { exact: true }).waitFor();
     const originalLink = await owner.page.getByLabel('Client upload link').inputValue();
