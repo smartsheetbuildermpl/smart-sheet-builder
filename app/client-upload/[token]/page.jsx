@@ -14,6 +14,7 @@ export default function ClientUpload({ params }) {
     [message, setMessage] = useState(''),
     [dirty, setDirty] = useState(true);
   const objects = useRef([]),
+    fileInput = useRef(null),
     base = `/api/client-upload/${params.token}`;
   useEffect(() => {
     let live = true;
@@ -108,6 +109,11 @@ export default function ClientUpload({ params }) {
       }
     });
   }
+  function changeQuantity(id, value) {
+    const next = Math.max(1, Math.min(500, Number.parseInt(value, 10) || 1));
+    setQuantities((current) => ({ ...current, [id]: next }));
+    setDirty(true);
+  }
   return (
     <main className="client-page">
       <header>
@@ -159,6 +165,7 @@ export default function ClientUpload({ params }) {
             <label className="client-drop">
               Upload designs
               <input
+                ref={fileInput}
                 type="file"
                 accept="image/png,.png"
                 multiple
@@ -175,26 +182,62 @@ export default function ClientUpload({ params }) {
             </p>
             {job?.assets.map((a) => (
               <div className="client-file" key={a.id}>
-                <span>{a.name}</span>
-                <label>
-                  Quantity
-                  <input
-                    type="number"
-                    min="1"
-                    max="500"
-                    value={quantities[a.id] ?? 1}
-                    disabled={busy}
-                    onChange={(e) => {
-                      setQuantities((q) => ({
-                        ...q,
-                        [a.id]: Number(e.target.value)
-                      }));
-                      setDirty(true);
-                    }}
+                <div className="client-file-info">
+                  {/* Browser object URLs preserve the exact uploaded PNG bytes. */}
+                  {/* eslint-disable-next-line @next/next/no-img-element */}
+                  <img
+                    className="client-file-thumbnail"
+                    src={urls[a.id]}
+                    alt=""
+                    decoding="async"
                   />
-                </label>
+                  <span className="client-file-name" title={a.name}>
+                    {a.name}
+                  </span>
+                </div>
+                <div
+                  className="client-quantity"
+                  role="group"
+                  aria-label={`Quantity for ${a.name}`}
+                >
+                  <span>Qty</span>
+                  <div className="client-stepper">
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy || (quantities[a.id] ?? 1) <= 1}
+                      aria-label={`Decrease quantity for ${a.name}`}
+                      onClick={() =>
+                        changeQuantity(a.id, (quantities[a.id] ?? 1) - 1)
+                      }
+                    >
+                      −
+                    </button>
+                    <input
+                      type="number"
+                      min="1"
+                      max="500"
+                      value={quantities[a.id] ?? 1}
+                      disabled={busy}
+                      aria-label={`Quantity for ${a.name}`}
+                      onChange={(e) => changeQuantity(a.id, e.target.value)}
+                    />
+                    <button
+                      type="button"
+                      className="secondary"
+                      disabled={busy || (quantities[a.id] ?? 1) >= 500}
+                      aria-label={`Increase quantity for ${a.name}`}
+                      onClick={() =>
+                        changeQuantity(a.id, (quantities[a.id] ?? 1) + 1)
+                      }
+                    >
+                      +
+                    </button>
+                  </div>
+                </div>
                 <button
                   type="button"
+                  className="client-file-remove secondary"
                   disabled={busy}
                   aria-label={`Remove ${a.name}`}
                   onClick={() =>
@@ -209,24 +252,36 @@ export default function ClientUpload({ params }) {
                 </button>
               </div>
             ))}
-            <button
-              disabled={busy || !job?.assets.length}
-              onClick={() =>
-                run(async () => {
-                  const d = await call('preview', {
-                    reference,
-                    quantities: job.assets.map((a) => ({
-                      id: a.id,
-                      qty: quantities[a.id] ?? 1
-                    }))
-                  });
-                  setJob(d.job);
-                  setDirty(false);
-                })
-              }
-            >
-              {busy ? 'Processing…' : 'Generate Print Preview'}
-            </button>
+            {job?.assets.length > 0 && (
+              <div className="client-upload-actions">
+                <button
+                  type="button"
+                  className="secondary"
+                  disabled={busy}
+                  onClick={() => fileInput.current?.click()}
+                >
+                  Add more design
+                </button>
+                <button
+                  disabled={busy}
+                  onClick={() =>
+                    run(async () => {
+                      const d = await call('preview', {
+                        reference,
+                        quantities: job.assets.map((a) => ({
+                          id: a.id,
+                          qty: quantities[a.id] ?? 1
+                        }))
+                      });
+                      setJob(d.job);
+                      setDirty(false);
+                    })
+                  }
+                >
+                  {busy ? 'Processing…' : 'Generate Print Preview'}
+                </button>
+              </div>
+            )}
           </section>
           <section className="client-card">
             <h2>Print layout estimate</h2>

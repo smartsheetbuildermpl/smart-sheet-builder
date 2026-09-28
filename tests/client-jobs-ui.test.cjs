@@ -116,18 +116,67 @@ const jwt = (user) =>
         .count(),
       0
     );
-    await customer.page.locator('input[type=file]').setInputFiles([
-      { name: 'soft-edge.png', mimeType: 'image/png', buffer: png() },
-      { name: 'logo.png', mimeType: 'image/png', buffer: png(80, 40) }
-    ]);
-    await customer.page.locator('.client-file').nth(1).waitFor();
+    await customer.page.locator('input[type=file]').setInputFiles({
+      name: 'soft-edge.png',
+      mimeType: 'image/png',
+      buffer: png()
+    });
+    await customer.page.locator('.client-file').waitFor();
+    assert.equal(await customer.page.locator('.client-file-thumbnail').count(), 1);
+    assert(
+      await customer.page
+        .getByRole('button', { name: 'Decrease quantity for soft-edge.png' })
+        .isDisabled()
+    );
     await customer.page
-      .getByLabel('Quantity', { exact: true })
-      .first()
+      .getByRole('button', { name: 'Increase quantity for soft-edge.png' })
+      .click();
+    assert.equal(
+      await customer.page
+        .getByRole('spinbutton', { name: 'Quantity for soft-edge.png' })
+        .inputValue(),
+      '2'
+    );
+    await customer.page
+      .getByRole('button', { name: 'Decrease quantity for soft-edge.png' })
+      .click();
+    await customer.page
+      .getByRole('spinbutton', { name: 'Quantity for soft-edge.png' })
+      .fill('0');
+    assert.equal(
+      await customer.page
+        .getByRole('spinbutton', { name: 'Quantity for soft-edge.png' })
+        .inputValue(),
+      '1',
+      'direct quantity entry is clamped to one'
+    );
+    await customer.page
+      .getByRole('spinbutton', { name: 'Quantity for soft-edge.png' })
       .fill('2');
     await customer.page
-      .getByLabel('Quantity', { exact: true })
-      .nth(1)
+      .getByRole('button', { name: 'Generate Print Preview', exact: true })
+      .click();
+    await customer.page.locator('.client-preview canvas').waitFor();
+    assert.match(
+      await customer.page.locator('.client-columns').innerText(),
+      /2 pieces/
+    );
+    const chooserReady = customer.page.waitForEvent('filechooser');
+    await customer.page
+      .getByRole('button', { name: 'Add more design', exact: true })
+      .click();
+    const chooser = await chooserReady;
+    await chooser.setFiles({
+      name: 'very-long-client-filename-that-must-truncate-without-breaking-the-upload-layout.png',
+      mimeType: 'image/png',
+      buffer: png(80, 40)
+    });
+    await customer.page.locator('.client-file').nth(1).waitFor();
+    assert.equal(await customer.page.locator('.client-file-thumbnail').count(), 2);
+    await customer.page
+      .getByRole('spinbutton', {
+        name: 'Quantity for very-long-client-filename-that-must-truncate-without-breaking-the-upload-layout.png'
+      })
       .fill('3');
     await customer.page
       .getByLabel('Client reference / order name (optional)')
@@ -135,11 +184,34 @@ const jwt = (user) =>
     await customer.page
       .getByRole('button', { name: 'Generate Print Preview', exact: true })
       .click();
-    await customer.page.locator('.client-preview canvas').waitFor();
+    await customer.page.getByText('5 pieces · 0.076 m', { exact: true }).waitFor();
     assert.match(
       await customer.page.locator('.client-columns').innerText(),
       /5 pieces · 0.076 m/
     );
+    const uploadActions = await customer.page
+      .locator('.client-upload-actions button')
+      .evaluateAll((buttons) =>
+        buttons.map((button) => {
+          const rect = button.getBoundingClientRect();
+          return { text: button.textContent, x: rect.x, y: rect.y };
+        })
+      );
+    assert.equal(uploadActions[0].text, 'Add more design');
+    assert.equal(uploadActions[1].text, 'Generate Print Preview');
+    assert(Math.abs(uploadActions[0].y - uploadActions[1].y) < 1);
+    assert(uploadActions[0].x < uploadActions[1].x);
+    await customer.page.setViewportSize({ width: 1100, height: 520 });
+    assert(
+      await customer.page.locator('.client-page').evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+        return el.scrollHeight > el.clientHeight && el.scrollTop > 0;
+      }),
+      'public portal remains vertically scrollable on a short desktop viewport'
+    );
+    await customer.page
+      .getByRole('button', { name: 'Confirm & Send to Shop' })
+      .scrollIntoViewIfNeeded();
     await customer.page.setViewportSize({ width: 375, height: 812 });
     assert(
       await customer.page.evaluate(
@@ -203,7 +275,9 @@ const jwt = (user) =>
     assert.equal(new URL(originalLink).origin, new URL(base).origin);
     assert.equal(new URL(originalLink).pathname, '/client-upload/' + token);
     await owner.page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.copiedPortalLink = text; } } }));
-    await owner.page.getByRole('button', { name: 'Copy link', exact: true }).click();
+    await owner.page
+      .getByRole('button', { name: 'Copy upload link', exact: true })
+      .click();
     assert.equal(await owner.page.evaluate(() => window.copiedPortalLink), originalLink);
     assert.equal(
       await owner.page.getByRole('button', { name: /^Client Portal/ }).count(),
@@ -213,13 +287,27 @@ const jwt = (user) =>
       path: path.join(out, 'owner-desktop.png'),
       fullPage: true
     });
+    await owner.page.getByText('Confirmed', { exact: true }).waitFor();
+    assert.match(
+      await owner.page.locator('.client-submission-row').first().innerText(),
+      /Browser jersey order[\s\S]*2[\s\S]*5[\s\S]*0\.076 m/
+    );
+    await owner.page.setViewportSize({ width: 1100, height: 520 });
+    assert(
+      await owner.page.locator('.client-jobs-dialog').evaluate((el) => {
+        el.scrollTop = el.scrollHeight;
+        return el.scrollHeight > el.clientHeight && el.scrollTop > 0;
+      }),
+      'owner modal scrolls internally on a short desktop viewport'
+    );
+    await owner.page.setViewportSize({ width: 1360, height: 900 });
     // Original builder iframe stays intact while a separate export instance rebuilds the manifest.
     const iframe = owner.page
       .frames()
       .find((fr) => fr.url().includes('clientJob=1'));
     await iframe.waitForFunction(() => window.smartSheetClientJob);
     await owner.page
-      .getByRole('button', { name: 'Download Final PNG', exact: true })
+      .getByRole('button', { name: 'Download layout PNG', exact: true })
       .click();
     await owner.page
       .getByRole('alert')
@@ -236,7 +324,7 @@ const jwt = (user) =>
     );
     const pngDownload = owner.page.waitForEvent('download');
     await owner.page
-      .getByRole('button', { name: 'Download Final PNG', exact: true })
+      .getByRole('button', { name: 'Download layout PNG', exact: true })
       .click();
     const saved = await pngDownload.catch(async (e) => {
       console.log(
@@ -271,7 +359,7 @@ const jwt = (user) =>
     );
     const tiffDownload = owner.page.waitForEvent('download');
     await owner.page
-      .getByRole('button', { name: 'Convert to TIFF', exact: true })
+      .getByRole('button', { name: 'Convert layout to TIFF', exact: true })
       .click();
     await iframe.locator('#dtfCheckConfirm').click();
     const td = await tiffDownload,
@@ -303,7 +391,7 @@ const jwt = (user) =>
       0
     );
     await owner.page
-      .getByRole('button', { name: 'Download Final PNG', exact: true })
+      .getByRole('button', { name: 'Download layout PNG', exact: true })
       .click();
     await owner.page
       .getByRole('alert')
@@ -333,13 +421,14 @@ const jwt = (user) =>
       [job.id]
     );
     await owner.page.goto(`${base}/?clientJob=${job.id}`);
-    await owner.page.getByRole('button', { name: 'Download Final PNG', exact: true }).waitFor();
-    await owner.page.getByRole('button', { name: 'Download Final PNG', exact: true }).waitFor({ state: 'hidden', timeout: 15000 });
+    await owner.page.getByRole('button', { name: 'Download layout PNG', exact: true }).waitFor();
+    await owner.page.getByRole('button', { name: 'Download layout PNG', exact: true }).waitFor({ state: 'hidden', timeout: 15000 });
     assert.equal(await owner.page.locator('dialog .client-preview canvas').count(), 0);
     await owner.page.getByRole('button', { name: 'Close Client Portal' }).click();
     await owner.page.locator('.access-reveal-handle').hover();
     await owner.page.getByRole('button', { name: /^Client Portal/ }).click();
-    await owner.page.getByText('Expired — files are no longer available. · Expired', { exact: true }).waitFor();
+    await owner.page.locator('.client-status-badge.expired').getByText('Expired', { exact: true }).waitFor();
+    await owner.page.getByText('Expired — files are no longer available.', { exact: true }).waitFor();
     assert(f.objects.size > 0, 'opening Client Portal does not invoke physical cleanup');
     const maintenance = await f.maintenance.GET(
       new NextRequest('https://shop.test/api/client-jobs/maintenance', {

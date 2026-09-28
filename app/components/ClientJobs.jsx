@@ -18,6 +18,14 @@ function countdown(j, now) {
     ? `Expires in ${Math.floor(seconds / 3600)}h ${Math.floor((seconds % 3600) / 60)}m ${seconds % 60}s`
     : 'Expired';
 }
+function statusLabel(j, now) {
+  if (new Date(j.expires_at) <= now) return 'Expired';
+  if (j.downloaded_png || j.downloaded_tiff) return 'Downloaded';
+  return j.confirmed_at ? 'Confirmed' : 'Draft';
+}
+function statusTone(j, now) {
+  return statusLabel(j, now).toLowerCase();
+}
 export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
   const [open, setOpen] = useState(false),
     [data, setData] = useState(null),
@@ -309,9 +317,9 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
           </p>
         )}
         {message && <p role="status">{message}</p>}
-        <div className="client-columns">
+        <div className="client-columns client-owner-grid">
           <section>
-            <section className="client-card">
+            <section className="client-card client-link-card">
               <h2>Share Client Upload Link</h2>
               <p role="status"><strong>{data?.portal.active ? 'Portal link active' : 'Portal link setup required'}</strong></p>
               {data?.portal.enabled === false && <p>This upload portal is currently disabled. Complete settings, then click Create/Enable link.</p>}
@@ -334,7 +342,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                       }
                     }}
                   >
-                    Copy link
+                    Copy upload link
                   </button>
                   <button
                     className="secondary"
@@ -485,68 +493,76 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                 )}
               </details>
             </section>
-            <h2>
-              Client submissions · {data?.jobs.length || 0} <small>Newest first</small>
-            </h2>
+            <div className="client-section-heading">
+              <div>
+                <h2>Client submissions</h2>
+                <p>
+                  Review confirmed layouts and monitor temporary file access.
+                </p>
+              </div>
+              <small>{data?.jobs.length || 0} total · newest first</small>
+            </div>
             {!data?.jobs.length && (
-              <p>
+              <p className="client-empty-state">
                 No client submissions yet. Share your upload link to get
                 started.
               </p>
             )}
-            {data?.jobs.map((j) => (
-              <article
-                className={`client-card ${selected === j.id ? 'selected' : ''}`}
-                key={j.id}
-              >
-                <h3>{j.reference || 'Client submission'}</h3>
-                <p>
-                  {status(j, now)} · {countdown(j, now)}
-                </p>
-                <p>
-                  {j.design_count} designs · {j.quantity} pieces ·{' '}
-                  {Number(j.meters).toFixed(3)} m
-                </p>
-                <small>
-                  Created {stamp(j.created_at)}
-                  <br />
-                  Expiry {stamp(j.expires_at)}
-                  <br />
-                  PNG saved: {j.downloaded_png ? 'Yes' : 'No'} · TIFF saved:{' '}
-                  {j.downloaded_tiff ? 'Yes' : 'No'}
-                  {j.confirmed_at && (
-                    <>
-                      <br />
-                      Notification:{' '}
-                      {j.notification_sent_at
-                        ? 'Sent'
-                        : 'Pending or expired before delivery'}
-                    </>
-                  )}
-                </small>
-                {j.purged_at && (
-                  <p>
-                    This client submission was automatically removed after{' '}
-                    {j.confirmed_at ? '24' : '2'} hours.
-                  </p>
-                )}
-                <p>
-                  <button
-                    disabled={
-                      busy ||
-                      exporting ||
-                      !j.confirmed_at ||
-                      new Date(j.expires_at) <= now
-                    }
-                    onClick={() => setSelected(j.id)}
+            <div className="client-submission-list">
+              {data?.jobs.map((j) => {
+                const expired = new Date(j.expires_at) <= now;
+                return (
+                  <article
+                    className={`client-submission-row ${selected === j.id ? 'selected' : ''}`}
+                    key={j.id}
                   >
-                    Open submission
-                  </button>
-                </p>
-              </article>
-            ))}
+                    <div className="client-submission-identity">
+                      <h3 title={j.reference || 'Client submission'}>
+                        {j.reference || 'Client submission'}
+                      </h3>
+                      <small>
+                        Submitted {stamp(j.confirmed_at || j.created_at)}
+                      </small>
+                    </div>
+                    <dl className="client-submission-metrics">
+                      <div>
+                        <dt>Designs</dt>
+                        <dd>{j.design_count}</dd>
+                      </div>
+                      <div>
+                        <dt>Quantity</dt>
+                        <dd>{j.quantity}</dd>
+                      </div>
+                      <div>
+                        <dt>Estimated</dt>
+                        <dd>{Number(j.meters).toFixed(3)} m</dd>
+                      </div>
+                    </dl>
+                    <div className="client-submission-status">
+                      <span className={`client-status-badge ${statusTone(j, now)}`}>
+                        {statusLabel(j, now)}
+                      </span>
+                      <small>
+                        {expired
+                          ? 'Expired — files are no longer available.'
+                          : countdown(j, now)}
+                      </small>
+                    </div>
+                    <div className="client-submission-actions">
+                      <button
+                        className="secondary"
+                        disabled={busy || exporting || !j.confirmed_at || expired}
+                        onClick={() => setSelected(j.id)}
+                      >
+                        View details
+                      </button>
+                    </div>
+                  </article>
+                );
+              })}
+            </div>
           </section>
-          <section className="client-card">
+          <section className="client-card client-detail-panel">
             <h2>{detail?.reference || 'Print layout'}</h2>
             {busy && <p role="status">Loading private original sources…</p>}
             {detail ? (
@@ -586,13 +602,13 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                   disabled={exporting || new Date(detail.expires_at) <= now}
                   onClick={() => download('png')}
                 >
-                  Download Final PNG
+                  Download layout PNG
                 </button>
                 <button
                   disabled={exporting || new Date(detail.expires_at) <= now}
                   onClick={() => download('tiff')}
                 >
-                  Convert to TIFF
+                  Convert layout to TIFF
                 </button>
                 <p className="client-muted">
                   Each final file uses your normal export access / credit

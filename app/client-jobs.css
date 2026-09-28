@@ -7,11 +7,15 @@
   box-sizing: border-box;
 }
 .client-page {
-  min-height: 100dvh;
+  height: 100dvh;
+  min-height: 0;
   max-width: 1400px;
   margin: auto;
   padding: 24px;
-  overflow: auto;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
 }
 .client-page header,
 .client-jobs-dialog > header {
@@ -64,6 +68,7 @@
   opacity: 0.5;
   cursor: default;
 }
+.client-page .secondary,
 .client-jobs-dialog .secondary {
   background: #fff;
   color: #164753;
@@ -110,16 +115,91 @@
 }
 .client-file {
   display: flex;
-  gap: 12px;
+  gap: 14px;
   align-items: center;
-  border-bottom: 1px solid #ddd;
+  min-width: 0;
+  padding: 10px 0;
+  border-bottom: 1px solid #e2e8ea;
 }
-.client-file span {
+.client-file-info {
+  display: flex;
+  align-items: center;
+  gap: 10px;
   flex: 1;
-  overflow-wrap: anywhere;
+  min-width: 0;
 }
-.client-file label {
-  width: 80px;
+.client-file-thumbnail {
+  box-sizing: border-box;
+  width: 48px;
+  height: 48px;
+  flex: 0 0 48px;
+  border: 1px solid #d5e0e4;
+  border-radius: 7px;
+  object-fit: contain;
+  background: conic-gradient(#d9dddf 25%, #fff 0 50%, #d9dddf 0 75%, #fff 0)
+    0 0/10px 10px;
+}
+.client-file-name {
+  min-width: 0;
+  overflow: hidden;
+  color: #173e4c;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.client-quantity {
+  display: grid;
+  gap: 4px;
+  color: #536977;
+  font-size: 12px;
+}
+.client-stepper {
+  display: grid;
+  grid-template-columns: 36px 62px 36px;
+  align-items: stretch;
+}
+.client-stepper button,
+.client-stepper input {
+  min-width: 0;
+  height: 38px;
+  margin: 0;
+  border-radius: 0;
+  text-align: center;
+}
+.client-stepper button {
+  padding: 0;
+  font-size: 20px;
+  line-height: 1;
+}
+.client-stepper button:first-child {
+  border-radius: 7px 0 0 7px;
+}
+.client-stepper button:last-child {
+  border-radius: 0 7px 7px 0;
+}
+.client-stepper input {
+  position: relative;
+  z-index: 1;
+  border-radius: 0 !important;
+}
+.client-file-remove {
+  flex: 0 0 auto;
+  margin: 18px 0 0 !important;
+  padding: 7px 11px !important;
+}
+.client-upload-actions {
+  display: flex;
+  align-items: stretch;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+.client-upload-actions button {
+  margin: 0;
+}
+.client-upload-actions button:last-child {
+  flex: 1;
+  font-weight: 700;
 }
 .client-preview canvas {
   display: block;
@@ -148,12 +228,28 @@
 }
 .client-jobs-dialog {
   width: min(1400px, 96vw);
-  max-height: 94dvh;
+  height: min(900px, calc(100dvh - 24px));
+  max-height: calc(100dvh - 24px);
   border: 1px solid #bacfd5;
   border-radius: 16px;
   background: #f7fafb;
-  padding: 24px;
-  overflow: auto;
+  padding: 0 24px 24px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  scrollbar-gutter: stable;
+}
+.client-jobs-dialog[open] {
+  display: block;
+}
+.client-jobs-dialog > header {
+  position: sticky;
+  z-index: 4;
+  top: 0;
+  margin: 0 -24px 20px;
+  padding: 18px 24px;
+  background: #f7fafbf5;
+  backdrop-filter: blur(8px);
 }
 .client-jobs-dialog::backdrop {
   background: #102e3a99;
@@ -166,6 +262,127 @@
 .client-jobs-dialog summary {
   cursor: pointer;
   padding: 10px 0;
+}
+.client-owner-grid {
+  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.85fr);
+  gap: 16px;
+}
+.client-link-card {
+  padding: 16px;
+}
+.client-link-card h2,
+.client-link-card p {
+  margin-top: 0;
+}
+.client-section-heading {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 16px;
+  margin: 18px 0 10px;
+}
+.client-section-heading h2,
+.client-section-heading p {
+  margin: 0;
+}
+.client-section-heading p {
+  color: #536977;
+  font-size: 13px;
+}
+.client-empty-state {
+  padding: 28px;
+  border: 1px dashed #b9ccd4;
+  border-radius: 12px;
+  background: #fff;
+  color: #536977;
+  text-align: center;
+}
+.client-submission-list {
+  display: grid;
+  gap: 8px;
+}
+.client-submission-row {
+  display: grid;
+  grid-template-columns: minmax(180px, 1.35fr) minmax(230px, 1fr) minmax(170px, 0.9fr) auto;
+  gap: 16px;
+  align-items: center;
+  min-width: 0;
+  padding: 13px 14px;
+  border: 1px solid #d5e0e4;
+  border-radius: 11px;
+  background: #fff;
+}
+.client-submission-row.selected {
+  border-color: #007b91;
+  box-shadow: 0 0 0 2px #007b9117;
+}
+.client-submission-identity {
+  min-width: 0;
+}
+.client-submission-identity h3 {
+  overflow: hidden;
+  margin: 0 0 3px;
+  font-size: 15px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.client-submission-metrics {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+}
+.client-submission-metrics dt {
+  color: #607582;
+  font-size: 11px;
+}
+.client-submission-metrics dd {
+  margin: 1px 0 0;
+  color: #173e4c;
+  font-weight: 700;
+  white-space: nowrap;
+}
+.client-submission-status {
+  display: grid;
+  justify-items: start;
+  gap: 5px;
+}
+.client-status-badge {
+  display: inline-flex;
+  align-items: center;
+  min-height: 24px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  background: #e8eef1;
+  color: #324d5a;
+  font-size: 11px;
+  font-weight: 700;
+}
+.client-status-badge.confirmed {
+  background: #dcf5ea;
+  color: #14603e;
+}
+.client-status-badge.downloaded {
+  background: #dff2f8;
+  color: #075d73;
+}
+.client-status-badge.expired {
+  background: #f2e8e6;
+  color: #8b342c;
+}
+.client-status-badge.draft {
+  background: #fff2cc;
+  color: #765814;
+}
+.client-submission-actions {
+  justify-self: end;
+}
+.client-submission-actions button {
+  margin: 0;
+  white-space: nowrap;
+}
+.client-detail-panel {
+  align-self: start;
 }
 .client-export-idle {
   position: absolute;
@@ -191,17 +408,67 @@
   .client-page {
     padding: 16px;
   }
+  .client-file {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+  .client-file-info {
+    grid-column: 1 / -1;
+  }
+  .client-file-remove {
+    margin-top: 18px !important;
+  }
+  .client-upload-actions {
+    display: grid;
+  }
+  .client-upload-actions button:last-child {
+    grid-row: 1;
+  }
   .client-jobs-dialog {
     width: 100%;
     max-width: 100%;
     max-height: 100dvh;
     height: 100dvh;
+    margin: 0;
     border-radius: 0;
-    padding: 16px;
+    padding: 0 16px 20px;
+  }
+  .client-jobs-dialog > header {
+    margin: 0 -16px 16px;
+    padding: 14px 16px;
+  }
+  .client-section-heading {
+    align-items: start;
+    flex-direction: column;
+    gap: 4px;
+  }
+  .client-submission-row {
+    grid-template-columns: 1fr;
+    gap: 10px;
+  }
+  .client-submission-status {
+    grid-column: auto;
+  }
+  .client-submission-actions {
+    justify-self: stretch;
+  }
+  .client-submission-actions button {
+    width: 100%;
   }
   .client-export-frame {
     inset: 5% 2%;
     width: 96%;
     height: 90%;
+  }
+}
+@media (min-width: 701px) and (max-width: 1100px) {
+  .client-owner-grid {
+    grid-template-columns: 1fr;
+  }
+  .client-submission-row {
+    grid-template-columns: minmax(180px, 1fr) minmax(230px, 1fr) auto;
+  }
+  .client-submission-status {
+    grid-column: 1 / 3;
   }
 }
