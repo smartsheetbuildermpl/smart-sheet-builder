@@ -1,5 +1,7 @@
 # Builder regression checks
 
+Export enforcement: run `node tests/export-enforcement.test.cjs` with PGlite available. For the real SDK/browser integration, run a test dev server with test-only Supabase URL/key values and run `node tests/export-enforcement-ui.test.cjs` (defaults to localhost:3112). Supabase HTTP is replaced with actual local route handlers and PostgreSQL/PGlite RPCs; no live account or quota mutations occur. Encoder-only tests use an explicit test authorization stub; enforcement is tested separately against the actual server boundary.
+
 Run from the repository root with Node.js, Playwright and an installed Chrome:
 
 ```sh
@@ -10,7 +12,7 @@ Playwright can be provided externally through `NODE_PATH`; no application depend
 
 The test serves the current builder HTML through a browser-local route and exposes internal functions only in that test page. It uploads a synthetic transparent PNG, exercises the actual image tools and Add/Arrange controls, checks responsive geometry at 1440/375/320 px, round-trips rendered PNG pixels, and validates 4,000 packed pieces across 100 seeded trials. It never calls login, usage-consumption, or download-access endpoints.
 
-`protected-builder-blocks.json` fingerprints the user's uncommitted starting implementation of the export gate, export profiles, TIFF encoder, Photoshop resources, spot channels, and color assets. These checks detect changes; they do not verify Photoshop compatibility.
+`protected-builder-blocks.json` fingerprints the committed pre-credit export profiles, TIFF encoder, Photoshop resources, spot channels, and color assets. Delivery/authorization wrappers have separate behavioral tests because they now implement Free Export Credits. These hashes detect changes; they do not verify Photoshop compatibility.
 
 Run the browser checks while the local Next app is running (default `http://localhost:3000`; override with `SMART_SHEET_TEST_URL`):
 
@@ -21,7 +23,9 @@ node tests/auth-state.test.cjs
 
 The library entry runs `workspace-ui.test.cjs`: browser-only mock auth/catalog responses, real full-resolution PNG loading, native drags at Fit and 200% with scrolling, invalid drops, repeated additions, selected size/quantity/rotation/removal, packing, reopening, mobile tabs, and admin visibility. It does not write to Supabase.
 
-The auth suite exercises restored local admin access, guest gating, sign-in and registration continuation, persistent sign-out, account summary and empty credential fields, unchanged local 2/5 export limits and owner unlimited access. Supabase login, registration and restored-session responses are mocked; no live account credentials or Supabase data are used. Auth is shared through `app/hooks/useSmartSheetAuth.js`. Local sessions open the workspace directly, while catalog management requires the existing configured server and its authorization checks.
+The auth suite exercises restored local admin access, guest gating, sign-in and registration continuation, persistent sign-out, account summary and empty credential fields, guest two-total exports, owner unlimited access, and refusal to mint server-backed credits for offline test accounts. Supabase login, registration and restored-session responses are mocked; no live account credentials or Supabase data are used. Auth is shared through `app/hooks/useSmartSheetAuth.js`. Local sessions open the workspace directly, while catalog management requires the existing configured server and its authorization checks.
+
+Free Export Credits: run `node tests/export-credits-db.test.cjs` (requires PGlite), `node tests/export-delivery.test.cjs`, and `node tests/export-credits-ui.test.cjs` (requires the local Next app). These cover the real SQL refill/deduction/idempotency rules, receipt-bound refunds, full encoded Blob delivery, server-backed countdown under a wrong browser clock, and mobile credit UI. See `FREE-EXPORT-CREDITS-SETUP.md` for rollout and browser delivery limitations.
 
 For manual testing: run `npm run dev -- --port 3000`, open localhost:3000, sign in, then use **Design Library** above the sidebar upload card. In local test mode the shared catalog is unavailable; the workspace still opens with the current sheet. Close and reopen to check state preservation. Sign out, open the library again, and sign in to check automatic continuation. No database/configuration changes are needed for this authentication fix.
 
@@ -116,6 +120,12 @@ Run `node tests/stability.test.cjs`. The 200-piece drag fixture asserts zero ful
 Main **Undo layout / Redo layout** buttons and Ctrl/Cmd+Z / Ctrl/Cmd+Shift+Z track moves, rotations, additions, full arrangement, size/quantity edits, removals, and associated sheet changes. Editor dialogs and text inputs retain their own shortcuts. Snapshots store geometry and shared design references, not cloned image buffers. History is capped at 32 states / 100,000 instance records; older entries retaining deleted-image buffers are evicted above 128 MiB, keeping the most recent action recoverable. Restored placements resolve current active image sources so layout history never reverses a separately applied image edit. New actions discard the redo branch.
 
 Automatic background removal formerly let its feather range (twice the requested color tolerance) propagate the flood fill, allowing it through faint outlines into same-colored foreground. Propagation now uses only the requested color distance and four-connected outside-border seeds. Its mask appears as a selection preview before Apply. The regression fixtures use white and black backgrounds separated from same-colored interiors by thin near-background outlines: each removes exactly 3,900 exterior pixels and preserves all 2,500 interior pixels. Manual Magic Wand (including deliberate global mode), brushes, selection-mask application, and editor history remain separate. Same-colored artwork physically connected to the exterior cannot be semantically distinguished by color connectivity; inspect the preview and use the manual tools for that case.
+
+### Export guard and authentication callbacks
+
+Run `node tests/auth-callback.test.cjs` for real Next route handlers and PGlite migrations with mocked Supabase Auth HTTP. Run `node tests/auth-callback-ui.test.cjs` and `node tests/export-enforcement-ui.test.cjs` against the dev app (`SMART_SHEET_TEST_URL`, default `http://localhost:3112`). Launch the test dev app with dummy `NEXT_PUBLIC_SUPABASE_URL=https://supabase.test/rest/v1/`, dummy anon/service keys, and no production credentials; requests are intercepted by tests. The malformed URL suffix deliberately verifies SDK normalization. Browser tests require Playwright/Chrome; SQL tests require PGlite.
+
+The export browser test clicks the real PNG/TIFF buttons at zero allowance, counts encoding and picker calls, listens for actual downloads, and checks saved file size. It covers global mixed-format duplicate clicks and authorization outage as well as quota exhaustion. Auth tests cover code/hash/implicit callbacks, expired/used links, server-validated recent email authentication, one-use recovery tickets/RLS, login and mobile screens. External email delivery and real OS folder selection are not automated. See `EXPORT-AUTH-CALLBACK-SETUP.md` for rollout and live verification.
 
 ### Background selection application
 

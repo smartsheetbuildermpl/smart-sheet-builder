@@ -3,6 +3,13 @@
 import { useEffect, useRef, useState } from 'react';
 import DesignLibraryDialog from './components/DesignLibraryDialog';
 import useSmartSheetAuth from './hooks/useSmartSheetAuth';
+import RegistrationFields, { emptyRegistration } from './components/RegistrationFields';
+import UsersDialog from './components/UsersDialog';
+import AccountProfile from './components/AccountProfile';
+import PasswordRequestForm from './components/PasswordRequestForm';
+import ChangePassword from './components/ChangePassword';
+import ExportCredits, { CreditHistory, CreditCountdown } from './components/ExportCredits';
+import ClientJobs from './components/ClientJobs';
 
 export default function HomePage() {
   const auth = useSmartSheetAuth();
@@ -12,8 +19,11 @@ export default function HomePage() {
   const [authMode, setAuthMode] = useState('login');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
+  const [registration, setRegistration] = useState(emptyRegistration);
+  const [usersOpen, setUsersOpen] = useState(false);
   const [authMessage, setAuthMessage] = useState('');
   const [paywallOpen, setPaywallOpen] = useState(false);
+  const [exportBlock, setExportBlock] = useState('');
   const [libraryOpen, setLibraryOpen] = useState(false);
   const [backgroundEditorOpen, setBackgroundEditorOpen] = useState(false);
   const [accessBarOpen, setAccessBarOpen] = useState(false);
@@ -56,6 +66,8 @@ export default function HomePage() {
   }
 
   function showAccount() {
+    setExportBlock('');
+    setRegistration(emptyRegistration);
     setEmail(''); setPassword(''); setAuthMessage(''); setAuthMode('login'); setPaywallOpen(true);
   }
   function dismissAccount() {
@@ -64,7 +76,7 @@ export default function HomePage() {
   async function handleAuth(event) {
     event.preventDefault(); setAuthMessage('');
     try {
-      const result = await authRef.current.authenticate(authMode, email, password);
+      const result = await authRef.current.authenticate(authMode, email, password, registration);
       setPassword('');
       if (result.signedIn) {
         setEmail(''); setPaywallOpen(false);
@@ -73,12 +85,25 @@ export default function HomePage() {
     } catch (error) { setPassword(''); setAuthMessage(error.message); }
   }
   function signOut() {
+    setUsersOpen(false);
     pendingAction.current = null; closeLibrary(); dismissAccount(); setLibraryMessage('');
     authRef.current.signOut();
   }
   useEffect(() => {
     if (paywallOpen) accountRef.current?.querySelector('input,button')?.focus();
   }, [paywallOpen]);
+  useEffect(() => {
+    // Older email templates may redirect to Site URL instead of a callback.
+    const hash = new URLSearchParams(location.hash.slice(1)), query = new URLSearchParams(location.search);
+    if (hash.has('access_token') || hash.has('error') || query.has('token_hash') || query.has('code')) {
+      location.replace((hash.get('type') === 'recovery' || query.get('type') === 'recovery' ? '/reset-password' : '/auth/callback') + location.search + location.hash); return;
+    }
+    if (new URLSearchParams(location.search).get('signin') === '1') {
+      const changed = new URLSearchParams(location.search).get('passwordChanged') === '1';
+      history.replaceState(null, '', '/'); showAccount();
+      if (changed) setAuthMessage('Password changed successfully. Sign in with your new password.');
+    }
+  }, []);
   useEffect(() => () => clearAccessHideTimer(), []); // Do not leave a delayed update behind after navigation.
   useEffect(() => { if (backgroundEditorOpen) { clearAccessHideTimer(); setAccessBarOpen(false); } }, [backgroundEditorOpen]);
   useEffect(() => {
@@ -174,8 +199,13 @@ export default function HomePage() {
     function handleBuilderMessage(event) {
       const payload = event.data || {};
       if (event.origin !== window.location.origin || event.source !== builderRef.current?.contentWindow || payload.type !== 'SMART_SHEET_EXPORT_REQUEST') return;
-      authRef.current.recordExport(payload.exportKind || 'download').then(result => {
-        if (!result.allowed) { closeLibrary(); showAccount(); setAuthMessage(result.message || 'Please check your export access.'); }
+      authRef.current.recordExport(payload.exportKind || 'download', payload.operation || {}).then(result => {
+        if (result.allowed !== true) {
+          closeLibrary(); showAccount();
+          const current = authRef.current.current();
+          if (['credits_empty','guest_limit_reached','limit_reached'].includes(result.reason)) setExportBlock(current.signedIn ? 'standard' : 'guest');
+          else { setExportBlock('unavailable'); setAuthMessage(['access_check_failed','transport_error'].includes(result.reason) ? 'Export access is temporarily unavailable. Please refresh and try again.' : result.message || 'Export access is temporarily unavailable. Please refresh and try again.'); }
+        }
         event.source?.postMessage({ type: 'SMART_SHEET_EXPORT_RESPONSE', requestId: payload.requestId, ...result }, event.origin);
       });
     }
@@ -183,9 +213,9 @@ export default function HomePage() {
     return () => window.removeEventListener('message', handleBuilderMessage);
   }, []);
 
-  const remainingText = usage.unlimited ? 'Unlimited' : `${usage.remaining} left`;
+  const remainingText = !auth.ready ? 'Checking access…' : auth.mode === 'local' ? 'Preview only' : auth.statusError ? 'Access check unavailable' : usage.unlimited ? 'Unlimited' : usage.creditMode ? `Free Export Credits: ${usage.remaining} / 2` : `${usage.remaining} left`;
   const modeText = !auth.ready ? 'Checking account…' : auth.mode === 'server' ? 'Server protected' : 'Local test mode';
-  const modalTitle = auth.signedIn ? 'Your account' : authMode === 'login' ? 'Welcome back' : 'Create your account';
+  const modalTitle = auth.signedIn ? 'Your account' : authMode === 'forgot' ? 'Reset your password' : authMode === 'login' ? 'Welcome back' : 'Create your account';
 
   return (
     <main className="app-shell">
@@ -198,24 +228,29 @@ export default function HomePage() {
             <p className="access-kicker">Smart Sheet Builder V5.3B</p>
             <h1>Export access</h1>
             <p>
-              Guest users get 2 free exports. Free registered accounts get 5 total exports.
+              Guest users get 2 free exports. Verified free accounts get Free Export Credits.
               PNG/TIFF download is counted as usage.
             </p>
           </div>
           <div className="usage-card">
             <span>{usage.label}</span>
             <strong>{remainingText}</strong>
-            <small>{auth.signedIn ? usage.email : 'Not signed in'}</small>
+            <small>{!auth.ready ? 'Checking session…' : auth.signedIn ? usage.email : auth.statusError || 'Not signed in'}</small>
             <small>{busy ? 'Checking...' : modeText}</small>
+            <ExportCredits usage={usage} onDue={auth.refreshCredits} compact />
           </div>
-          <button className="access-button" type="button" onClick={showAccount}>
-            {auth.signedIn ? 'Account' : 'Sign in'}
-          </button>
-          {auth.signedIn && (
-            <button className="access-button ghost" type="button" onClick={signOut}>
-              Sign out
+          {auth.isSuperAdmin && <button className="access-button ghost" type="button" onClick={() => setUsersOpen(true)}>Users & Registrations</button>}
+          <div className="access-actions" role="group" aria-label="Account actions">
+            <ClientJobs auth={auth} builderRef={builderRef} hidden={backgroundEditorOpen || libraryOpen || paywallOpen} onSignIn={showAccount}/>
+            <button className="access-button" type="button" onClick={showAccount}>
+              {auth.signedIn ? 'Account & exports' : 'Sign in'}
             </button>
-          )}
+            {auth.signedIn && (
+              <button className="access-button ghost" type="button" onClick={signOut}>
+                Sign out
+              </button>
+            )}
+          </div>
         </div>
       </section>
 
@@ -252,7 +287,7 @@ export default function HomePage() {
         <section ref={accountRef} className="access-modal" role="dialog" aria-modal="true" aria-labelledby="account-title" onKeyDown={event => {
           if (event.key === 'Escape') dismissAccount();
           if (event.key !== 'Tab') return;
-          const controls = Array.from(accountRef.current.querySelectorAll('button,input')).filter(el => !el.disabled);
+          const controls = Array.from(accountRef.current.querySelectorAll('button,input,select,summary,a[href]')).filter(el => !el.disabled && el.getClientRects().length);
           if (event.shiftKey && event.target === controls[0]) { event.preventDefault(); controls.at(-1)?.focus(); }
           if (!event.shiftKey && event.target === controls.at(-1)) { event.preventDefault(); controls[0]?.focus(); }
         }}>
@@ -261,9 +296,22 @@ export default function HomePage() {
               x
             </button>
             <p className="access-kicker">Master PrintLab access</p>
+            {exportBlock ? <>
+              <h2 id="account-title">{exportBlock === 'guest' ? 'Your guest trial is complete' : exportBlock === 'standard' ? 'No Free Export Credits available' : 'Export unavailable'}</h2>
+              {exportBlock === 'guest' ? <><p>Create a free account to receive 2 Free Export Credits and continue exporting your sheets.</p><div className="auth-form"><button onClick={() => { setExportBlock(''); setAuthMode('register'); }}>Create free account</button><button onClick={() => { setExportBlock(''); setAuthMode('login'); }}>Sign in</button></div></> : exportBlock === 'standard' ? <>
+                {usage.remaining > 0 ? <p role="status">Your free credit is available. Continue editing and retry your export.</p> : <CreditCountdown usage={usage} onDue={auth.refreshCredits} exhausted />}
+                <div className="auth-form"><button onClick={dismissAccount}>Wait for free credit</button><button className="credits-coming-soon" disabled>Buy Export Credits — Coming Soon</button></div>
+              </> : <p role="alert">{authMessage}</p>}
+              <button className="password-link" onClick={dismissAccount}>Continue editing</button>
+            </> : <>
             <h2 id="account-title">{modalTitle}</h2>
-            <p className="modal-copy">{auth.signedIn ? `${auth.email} · ${usage.label} · ${remainingText}` : 'Sign in to your workspace. New accounts include 5 trial exports.'}</p>
-            {!auth.signedIn && (
+            <p className="modal-copy">{auth.signedIn ? `${auth.email} · ${usage.label} · ${remainingText}` : authMode === 'forgot' ? 'Recover access to your existing account.' : authMode === 'register' ? 'Create a free account to save your access and receive Free Export Credits.' : 'Sign in to your workspace. Verified free accounts start with 2 Free Export Credits.'}</p>
+            {auth.signedIn && <ExportCredits usage={usage} onDue={auth.refreshCredits} onWait={dismissAccount} />}
+            {auth.signedIn && auth.accessToken && <AccountProfile key={auth.accessToken} token={auth.accessToken} />}
+            {auth.signedIn && auth.accessToken && <ChangePassword key={`security-${auth.accessToken}`} token={auth.accessToken} onChanged={warning => { signOut(); showAccount(); setAuthMessage(`Password changed successfully. Sign in with your new password.${warning ? ` ${warning}` : ''}`); }} />}
+            {auth.signedIn && auth.accessToken && usage.creditMode && <details><summary>View credit history</summary><CreditHistory token={auth.accessToken} /></details>}
+            {!auth.signedIn && authMode === 'forgot' && <PasswordRequestForm onBack={() => { setAuthMode('login'); setAuthMessage(''); }} />}
+            {!auth.signedIn && authMode !== 'forgot' && (
             <form className="auth-form" onSubmit={handleAuth}>
               <div className="auth-tabs" role="tablist" aria-label="Account mode">
                 <button
@@ -281,27 +329,30 @@ export default function HomePage() {
                   Sign in
                 </button>
               </div>
+              {authMode === 'register' && <RegistrationFields value={registration} onChange={setRegistration} />}
               <label>
                 Email
-                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="off" required />
+                <input value={email} onChange={(event) => setEmail(event.target.value)} type="email" autoComplete="email" maxLength={254} required />
               </label>
               <label>
                 Password
-                <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} required />
+                <input value={password} onChange={(event) => setPassword(event.target.value)} type="password" minLength={6} maxLength={1024} autoComplete={authMode === 'login' ? 'current-password' : 'new-password'} required />
               </label>
               <button type="submit" disabled={busy || !auth.ready}>
                 {busy ? 'Please wait...' : authMode === 'register' ? 'Create account' : 'Sign in'}
               </button>
+              {authMode === 'login' && <button className="password-link" type="button" onClick={() => { setPassword(''); setAuthMessage(''); setAuthMode('forgot'); }}>Forgot password?</button>}
             </form>
             )}
 
             {authMessage && <p className="auth-message" role="status">{authMessage}</p>}
-
+            </>}
 
           </div>
         </section>
       )}
 
+      {usersOpen && auth.isSuperAdmin && <UsersDialog token={auth.accessToken} onClose={() => setUsersOpen(false)} />}
       <noscript>
         <div className="noscript-message">
           Smart Sheet Builder needs JavaScript enabled to arrange and export sheets.

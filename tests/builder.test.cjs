@@ -1,18 +1,20 @@
 const fs = require('fs');
 const assert = require('node:assert/strict');
 const {chromium} = require('playwright');
-const source = fs.readFileSync('public/builder.html','utf8');
+const source = fs.readFileSync('public/builder.html','utf8').replace(/\r\n/g,'\n');
 const crypto = require('node:crypto');
 const os = require('node:os');
 const path = require('node:path');
 const outputDir = process.env.BUILDER_TEST_OUTPUT || fs.mkdtempSync(path.join(os.tmpdir(), 'builder-tests-'));
 fs.mkdirSync(outputDir, {recursive:true});
 const protectedHashes = require('./protected-builder-blocks.json');
-// Check protected blocks against the user's uncommitted starting implementation.
+// Frozen pre-credit encoder/color/profile blocks. Delivery/authorization now
+// has behavioral tests; it is deliberately excluded from the encoder hashes.
 for (const [a,b] of [
-  ['  var directOnlineAccess', '  var translations'],
   ['  function getExportProfile(', '  function updateUnitLabels('],
-  ['  function renderTiffCheck(', '  function computeStats(']
+  ['  var SWOP_ICC_ZLIB_BASE64', '  async function chooseExportDestination('],
+  ['  function u16le(', '  async function downloadTiff('],
+  ['      var assets = profile.baseMode', "      if (ui.progress) ui.progress.textContent = t('exportSaving');"]
 ]) {
   assert(source.includes(a) && source.includes(b));
   assert.equal(crypto.createHash('sha256').update(source.slice(source.indexOf(a),source.indexOf(b))).digest('hex'), protectedHashes[a], a);
@@ -29,7 +31,7 @@ for (const [a,b] of [
     assert.notEqual(html,testSource,'test hook inserted');
     await page.route('http://localhost:4178/**',route=> {
       const name = new URL(route.request().url()).pathname;
-      if (/^\/(sheet-workspace|background-editor|print-optimizer)\.(js|css)$/.test(name)) return route.fulfill({ body: fs.readFileSync('public' + name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css' });
+      if (/^\/(sheet-workspace|background-editor|print-optimizer|export-delivery|sheet-packing)\.(js|css)$/.test(name)) return route.fulfill({ body: fs.readFileSync('public' + name), contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css' });
       return route.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4178/builder.html');

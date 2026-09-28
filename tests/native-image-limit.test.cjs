@@ -11,7 +11,7 @@ const html = source.replace(/\}\)\(\);\s*<\/script>/,hook+'})();</script>');
     const errors=[];page.on('pageerror',e=>errors.push(e.message));
     await page.route('http://localhost:4197/**',r=>{
       const name=new URL(r.request().url()).pathname;
-      if(/^\/(background-editor|sheet-workspace|print-optimizer)\.(js|css)$/.test(name))return r.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
+      if(/^\/(background-editor|sheet-workspace|print-optimizer|export-delivery|sheet-packing)\.(js|css)$/.test(name))return r.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
       return r.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4197/builder.html');

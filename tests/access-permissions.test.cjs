@@ -11,7 +11,7 @@ function load(file) {
   const source = fs.readFileSync(file, 'utf8');
   const names = [...source.matchAll(/export (?:async )?(?:function|const) (\w+)/g)].map(m => m[1]);
   const code = source.replace(/import \{([\s\S]*?)\} from '([^']+)';/g, (_, names, spec) => `const {${names}} = imports(${JSON.stringify(spec)});`).replace(/export /g, '');
-  const result = new Function('imports', `${code}\nreturn {${names.join(',')}};`)(spec => spec === 'next/server' ? require('next/server') : load(path.resolve(path.dirname(file), spec + '.js')));
+  const result = new Function('imports', `${code}\nreturn {${names.join(',')}};`)(spec => spec === 'next/server' || spec.startsWith('node:') ? require(spec) : load(path.resolve(path.dirname(file), spec + '.js')));
   cache.set(file, result);
   return result;
 }
@@ -21,10 +21,13 @@ const basic = { id: 'basic-id', email: 'mpl.smartsheetbuilder@gmail.com' };
 const other = { id: 'other-id', email: 'other-admin@example.test' };
 const ordinary = { id: 'free-id', email: 'ordinary@example.test' };
 const users = { owner, basic, other, ordinary };
-const profiles = Object.fromEntries(Object.values(users).map(u => [u.id, { id: u.id, email: u.email, role: u === other ? 'admin' : 'customer', plan: 'free', status: 'active', exports_used: 5, exports_unlimited: u === basic }]));
+Object.values(users).forEach(u => { u.email_confirmed_at = '2026-09-01T00:00:00Z'; });
+const profiles = Object.fromEntries(Object.values(users).map(u => [u.id, { id: u.id, email: u.email, is_super_admin: u === owner, role: u === other ? 'admin' : 'customer', plan: 'free', status: 'active', exports_used: 5, exports_unlimited: u === basic }]));
 const env = { NEXT_PUBLIC_SUPABASE_URL: 'https://supabase.example.test', NEXT_PUBLIC_SUPABASE_ANON_KEY: 'test-anon', SUPABASE_SERVICE_ROLE_KEY: 'test-service', SMART_SHEET_ADMIN_EMAILS: other.email };
 Object.assign(process.env, env);
 const writes = [];
+let freeBalance = 0;
+const exportBody = (kind = 'png') => ({ exportKind: kind, requestKey: require('node:crypto').randomUUID(), fingerprint: 'tested-full-resolution-export' });
 let guestUsed = 0;
 const design = { id: 'design-id', name: 'Test design', visible: true, storage_path: 'designs/test.png', width_px: 1, height_px: 1 };
 const response = (data, status = 200) => new Response(JSON.stringify(data), { status, headers: { 'Content-Type': 'application/json' } });
@@ -33,6 +36,15 @@ global.fetch = async (url, options = {}) => {
   const u = new URL(url), method = options.method || 'GET', body = options.body && typeof options.body === 'string' ? JSON.parse(options.body) : null;
   if (u.pathname === '/auth/v1/user') return users[options.headers.Authorization?.slice(7)] ? response(users[options.headers.Authorization.slice(7)]) : response({ message: 'Invalid token' }, 401);
   if (method !== 'GET') writes.push({ path: u.pathname, method, body });
+  if (u.pathname === '/rest/v1/rpc/ssb_import_guest_usage') return response(profiles[body.p_user]);
+  if (u.pathname === '/rest/v1/rpc/ssb_credit_snapshot') return response({ balance: freeBalance, server_time: new Date().toISOString(), next_credit_at: null });
+  if (u.pathname === '/rest/v1/rpc/ssb_credit_export') {
+    const p = profiles[body.p_user];
+    const unlimited = p.is_super_admin || p.exports_unlimited || p.role === 'admin';
+    const allowed = p.status !== 'blocked' && (unlimited || freeBalance > 0);
+    if (allowed && !unlimited) { p.exports_used++; freeBalance--; }
+    return response({ allowed, profile: p, credits: {balance:freeBalance,server_time:new Date().toISOString()} });
+  }
   if (u.pathname === '/rest/v1/profiles') {
     const id = u.searchParams.get('id')?.slice(3);
     if (method === 'PATCH') Object.assign(profiles[id], body);
@@ -42,6 +54,7 @@ global.fetch = async (url, options = {}) => {
     if (method === 'PATCH') guestUsed = body.exports_used;
     return response([{ guest_id: 'test-guest', exports_used: guestUsed }]);
   }
+  if (u.pathname === '/rest/v1/rpc/ssb_guest_export') { const allowed=guestUsed<2; if(allowed) guestUsed++; return response({allowed,guest:{exports_used:guestUsed}}); }
   if (u.pathname === '/rest/v1/design_library_designs') {
     const rows = [design, { ...design, id: 'hidden-id', visible: false }];
     return response(method === 'GET' ? (u.searchParams.has('id') ? [design] : u.searchParams.get('visible') === 'eq.true' ? rows.slice(0, 1) : rows) : [design]);
@@ -51,7 +64,9 @@ global.fetch = async (url, options = {}) => {
   return response({});
 };
 function req(route, method, token, body) {
-  return new Request(`http://localhost${route}`, { method, headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: body instanceof FormData ? body : JSON.stringify(body) }) });
+  const security=load('app/api/_lib/export-security.js'),id='00000000-0000-4000-8000-000000000009';
+  if(route==='/api/export/consume'&&body?.requestKey)body={...body,authorization:security.authorization(token?`user:${users[token]?.id}`:`guest:${id}`,body.exportKind,body.requestKey,body.fingerprint)};
+  return new (require('next/server').NextRequest)(`http://localhost${route}`, { method, headers: { cookie:`ssb_guest_trial=${security.seal({type:'guest',id,exp:Date.now()+100000})}`, ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body instanceof FormData ? {} : { 'Content-Type': 'application/json' }) }, ...(body === undefined ? {} : { body: body instanceof FormData ? body : JSON.stringify(body) }) });
 }
 
 (async () => {
@@ -87,7 +102,7 @@ function req(route, method, token, body) {
       assert.equal(data.designs.length, token === 'owner' ? 2 : 1, 'non-owner cannot request hidden designs');
       const used = profiles[users[token].id].exports_used;
       for (let i = 0; i < 7; i++) {
-        const result = await (await consume.POST(req('/api/export/consume', 'POST', token, { exportKind: i % 2 ? 'png' : 'tiff' }))).json();
+        const result = await (await consume.POST(req('/api/export/consume', 'POST', token, exportBody(i % 2 ? 'png' : 'tiff')))).json();
         assert.equal(result.allowed, token !== 'ordinary', 'unlimited accounts bypass the exhausted free allowance');
       }
       assert.equal(profiles[users[token].id].exports_used, used);
@@ -96,12 +111,16 @@ function req(route, method, token, body) {
     assert.equal(lib.canManageLibrary({ email: other.email }), false, 'configured admin cannot manage');
     assert.equal(lib.canManageLibrary(null), false, 'profile data alone cannot grant management');
     profiles[basic.id].status = 'blocked';
-    assert.equal((await (await consume.POST(req('/api/export/consume', 'POST', 'basic', {}))).json()).allowed, false);
+    assert.equal((await (await consume.POST(req('/api/export/consume', 'POST', 'basic', exportBody()))).json()).allowed, false);
     assert.equal((await catalog.GET(req('/api/library', 'GET', 'basic'))).status, 403);
     profiles[basic.id].status = 'active';
     profiles[ordinary.id].exports_used = 0;
-    for (let i = 0; i < 6; i++) assert.equal((await (await consume.POST(req('/api/export/consume', 'POST', 'ordinary', {}))).json()).allowed, i < 5);
-    for (let i = 0; i < 3; i++) assert.equal((await (await consume.POST(req('/api/export/consume', 'POST', null, { guestId: 'test-guest' }))).json()).allowed, i < 2);
+    freeBalance = 2;
+    for (let i = 0; i < 3; i++) assert.equal((await (await consume.POST(req('/api/export/consume', 'POST', 'ordinary', exportBody()))).json()).allowed, i < 2);
+    for (const fields of [{}, {...exportBody(), balance:100}, {...exportBody(), userId:owner.id}, {...exportBody(), action:'purchased_credit'}, {...exportBody(), serverTime:'2099-01-01'}]) {
+      assert.equal((await consume.POST(req('/api/export/consume','POST','ordinary',fields))).status,400,'client cannot grant credits, choose user, forge time or bypass idempotency');
+    }
+    for (let i = 0; i < 3; i++) assert.equal((await (await consume.POST(req('/api/export/consume', 'POST', null, exportBody()))).json()).allowed, i < 2);
     await lib.migrateGuestUsageToProfile(basic, 'test-guest');
     assert.equal(profiles[basic.id].exports_used, 5, 'entitlement and export history survive login migration');
     for (const [file, method] of mutations) {
@@ -139,6 +158,6 @@ function req(route, method, token, body) {
     assert.deepEqual(authUpdates, [{ email_confirm: true, role: 'authenticated' }]);
     await assert.rejects(provision({ env: { ...env, SMART_SHEET_ADMIN_EMAILS: basic.email }, fetchImpl: provisionFetch }), /admin list/);
     await assert.rejects(provision({ env, password: 'synthetic-test-only', fetchImpl: async () => response({}, 400) }), /HTTP 400/);
-    console.log('Access checks passed: real route guards for all six mutations; owner vs basic unlimited vs configured admin vs ordinary vs guest; hidden catalog protection; 2/5 export limits; blocked account; repeat-safe provisioning and history/password preservation (mock Supabase).');
+    console.log('Access checks passed: real route guards for all six mutations; owner vs basic unlimited vs configured admin vs ordinary vs guest; hidden catalog protection; two guest exports and two registered credits; forged credit/time/identity rejected; blocked account; repeat-safe provisioning and history/password preservation (mock Supabase).');
   } finally { global.fetch = originalFetch; }
 })().catch(error => { console.error(error); process.exitCode = 1; });

@@ -378,6 +378,8 @@
 <script src="/sheet-workspace.js"></script>
 <script src="/background-editor.js"></script>
 <script src="/print-optimizer.js"></script>
+<script src="/sheet-packing.js"></script>
+<script src="/export-delivery.js"></script>
 <script>
 (function(){
   var directOnlineAccess = window.top === window.self &&
@@ -390,28 +392,15 @@
   }
 
   var exportRequestSeq = 0;
-  function localStandaloneExportGate(kind) {
-    try {
-      var key = 'smart-sheet-builder-standalone-guest-exports';
-      var used = Number(localStorage.getItem(key) || '0');
-      if (used >= 2) {
-        alert('Guest trial limit reached. Open the Smart Sheet Builder app page and create a free account.');
-        return Promise.resolve(false);
-      }
-      localStorage.setItem(key, String(used + 1));
-      return Promise.resolve(true);
-    } catch (err) {
-      return Promise.resolve(true);
-    }
-  }
 
-  function requestExportAccess(kind) {
+  function requestExportAccess(kind, operation) {
     if (directOnlineAccess) {
       alert('Please open the main Smart Sheet Builder app page to export.');
-      return Promise.resolve(false);
+      return Promise.resolve({ allowed: false });
     }
     if (window.parent === window || !window.parent) {
-      return localStandaloneExportGate(kind);
+      alert('Open the main Smart Sheet Builder app page to verify export access.');
+      return Promise.resolve({ allowed: false });
     }
 
     return new Promise(function(resolve){
@@ -421,27 +410,30 @@
         if (finished) return;
         finished = true;
         window.removeEventListener('message', onMessage);
-        resolve(false);
-      }, 5000);
+        resolve({ allowed: false, reason: 'transport_error' });
+      }, 15000);
 
       function onMessage(event) {
         var payload = event.data || {};
-        if (payload.type !== 'SMART_SHEET_EXPORT_RESPONSE' || payload.requestId !== requestId) return;
+        if (event.origin !== window.location.origin || event.source !== window.parent || payload.type !== 'SMART_SHEET_EXPORT_RESPONSE' || payload.requestId !== requestId) return;
         finished = true;
         clearTimeout(timeout);
         window.removeEventListener('message', onMessage);
-        if (!payload.allowed && payload.message) alert(payload.message);
-        resolve(Boolean(payload.allowed));
+        resolve(payload);
       }
 
       window.addEventListener('message', onMessage);
       window.parent.postMessage({
         type: 'SMART_SHEET_EXPORT_REQUEST',
         requestId: requestId,
-        exportKind: kind || 'download'
-      }, '*');
+        exportKind: kind || 'download',
+        operation: operation
+      }, window.location.origin);
     });
   }
+
+  var exportDelivery = SmartSheetExportDelivery.create({ gate: requestExportAccess, save: saveExportBlob, notice: function(message) { alert(message); } });
+  var exportInProgress = false;
 
   var translations = {
     tl: {
@@ -1685,115 +1677,7 @@
     return false;
   }
 
-  function pruneContained(rects) {
-    var result = [];
-    for (var i = 0; i < rects.length; i++) {
-      var r = rects[i];
-      if (r.w <= 0 || r.h <= 0) continue;
-      var contained = false;
-      for (var j = 0; j < rects.length; j++) {
-        if (i === j) continue;
-        var o = rects[j];
-        if (o.w <= 0 || o.h <= 0) continue;
-        var sameRect = (r.x === o.x && r.y === o.y && r.w === o.w && r.h === o.h);
-        if (!sameRect && r.x >= o.x && r.y >= o.y && r.x + r.w <= o.x + o.w && r.y + r.h <= o.y + o.h) {
-          contained = true; break;
-        }
-        if (sameRect && j < i) { contained = true; break; }
-      }
-      if (!contained) result.push(r);
-    }
-    return result;
-  }
-
-  function subtractOccupiedRect(rects, used) {
-    var remaining = [];
-    rects.forEach(function(fr){
-      if (!rectsOverlap(fr, used)) { remaining.push(fr); return; }
-      if (used.x > fr.x) remaining.push({ x: fr.x, y: fr.y, w: used.x - fr.x, h: fr.h });
-      if (used.x + used.w < fr.x + fr.w) remaining.push({ x: used.x + used.w, y: fr.y, w: fr.x + fr.w - used.x - used.w, h: fr.h });
-      if (used.y > fr.y) remaining.push({ x: fr.x, y: fr.y, w: fr.w, h: used.y - fr.y });
-      if (used.y + used.h < fr.y + fr.h) remaining.push({ x: fr.x, y: used.y + used.h, w: fr.w, h: fr.y + fr.h - used.y - used.h });
-    });
-    return pruneContained(remaining);
-  }
-
-  function packSheet(items, binW, binH, gapPx, allowRotation, occupied) {
-    var freeRects = [{ x: 0, y: 0, w: binW + gapPx, h: binH + gapPx }];
-    (occupied || []).forEach(function(p){
-      freeRects = subtractOccupiedRect(freeRects, { x: p.x, y: p.y, w: p.w + gapPx, h: p.h + gapPx });
-    });
-    var placements = [];
-    var unplaced = [];
-    var sorted = items.slice().sort(function(a, b){
-      var areaDifference = (b.baseW * b.baseH) - (a.baseW * a.baseH);
-      return areaDifference || (Math.max(b.baseW, b.baseH) - Math.max(a.baseW, a.baseH));
-    });
-    sorted.forEach(function(inst){
-      function isBetter(next, candidate, rowFirst) {
-        if (!candidate) return true;
-        if (rowFirst) {
-          return next.y < candidate.y || (next.y === candidate.y &&
-            (next.x < candidate.x || (next.x === candidate.x &&
-              (next.shortSide < candidate.shortSide ||
-                (next.shortSide === candidate.shortSide && next.longSide < candidate.longSide)))));
-        }
-        return next.shortSide < candidate.shortSide ||
-          (next.shortSide === candidate.shortSide &&
-            (next.longSide < candidate.longSide ||
-              (next.longSide === candidate.longSide &&
-                (next.areaWaste < candidate.areaWaste ||
-                  (next.areaWaste === candidate.areaWaste &&
-                    (next.y < candidate.y || (next.y === candidate.y && next.x < candidate.x)))))));
-      }
-      function findBest(orientations, rowFirst) {
-        var candidate = null;
-        for (var fi = 0; fi < freeRects.length; fi++) {
-          var fr = freeRects[fi];
-          orientations.forEach(function(o){
-            if (o.w > fr.w || o.h > fr.h) return;
-            var next = {
-              w: o.w, h: o.h, rot: o.rot,
-              shortSide: Math.min(fr.w - o.w, fr.h - o.h),
-              longSide: Math.max(fr.w - o.w, fr.h - o.h),
-              areaWaste: fr.w * fr.h - o.w * o.h, x: fr.x, y: fr.y
-            };
-            // The original orientation is packed in reading order: left to
-            // right on the highest available row, then the next row. This
-            // minimizes used film length for wide artwork before considering
-            // any rotation-based gap recovery.
-            if (isBetter(next, candidate, rowFirst)) candidate = next;
-          });
-        }
-        return candidate;
-      }
-      // Rotation is deliberately a fallback. A design that fits unrotated is
-      // never turned vertical merely because a BSSF score is slightly lower.
-      var best = findBest([{ w: inst.baseW + gapPx, h: inst.baseH + gapPx, rot: 0 }], true);
-      if (!best && allowRotation && inst.baseW !== inst.baseH) {
-        best = findBest([{ w: inst.baseH + gapPx, h: inst.baseW + gapPx, rot: 90 }], false);
-      }
-      if (!best) { unplaced.push(inst); return; }
-      inst.rotation = best.rot;
-      var placedRect = { x: best.x, y: best.y, w: best.w, h: best.h };
-      placements.push({
-        inst: inst,
-        x: best.x, y: best.y,
-        w: best.rot === 0 ? inst.baseW : inst.baseH,
-        h: best.rot === 0 ? inst.baseH : inst.baseW
-      });
-      var newFreeRects = [];
-      freeRects.forEach(function(fr){
-        if (!rectsOverlap(fr, placedRect)) { newFreeRects.push(fr); return; }
-        if (placedRect.x > fr.x) newFreeRects.push({ x: fr.x, y: fr.y, w: placedRect.x - fr.x, h: fr.h });
-        if (placedRect.x + placedRect.w < fr.x + fr.w) newFreeRects.push({ x: placedRect.x + placedRect.w, y: fr.y, w: (fr.x + fr.w) - (placedRect.x + placedRect.w), h: fr.h });
-        if (placedRect.y > fr.y) newFreeRects.push({ x: fr.x, y: fr.y, w: fr.w, h: placedRect.y - fr.y });
-        if (placedRect.y + placedRect.h < fr.y + fr.h) newFreeRects.push({ x: fr.x, y: placedRect.y + placedRect.h, w: fr.w, h: (fr.y + fr.h) - (placedRect.y + placedRect.h) });
-      });
-      freeRects = pruneContained(newFreeRects);
-    });
-    return { placements: placements, unplaced: unplaced };
-  }
+  var packSheet = SmartSheetPacking.packSheet, pruneContained = SmartSheetPacking.pruneContained, subtractOccupiedRect = SmartSheetPacking.subtractOccupiedRect;
 
   var lastSkipped = 0;
 
@@ -1886,6 +1770,8 @@
   }
 
   function drawSheetCanvas(canvas, sheet) {
+    canvas._ssbExportRecipe = [sheet.widthPx, sheet.heightPx, dpiGlobal, customerNameInput.value.trim(), sheet.headerHeightPx,
+      sheet.placements.map(function(p) { var i=p.inst; return [exportDelivery.sourceId(i.canvas),i.canvas.width,i.canvas.height,p.x,p.y,p.w,p.h,i.baseW,i.baseH,i.rotation,i.vibrance]; })];
     canvas.width = sheet.widthPx;
     canvas.height = sheet.heightPx;
     var ctx = canvas.getContext('2d');
@@ -2306,7 +2192,7 @@
 
       var tiffBtn = document.createElement('button');
       tiffBtn.textContent = t('downloadTiffBtn') + (sheets.length > 1 ? ' - ' + t('sheetWord') + ' ' + (idx + 1) : '');
-      tiffBtn.addEventListener('click', function(){ showDtfCheck(sheet, idx, tiffBtn); });
+      tiffBtn.addEventListener('click', function(){ downloadTiff(sheet, idx); });
       downloadRow.appendChild(tiffBtn);
 
       var pngBtn = document.createElement('button');
@@ -2367,8 +2253,8 @@
     dtfCheckList.innerHTML = lines.join('');
   }
 
-  function showDtfCheck(sheet, idx, button) {
-    pendingDownload = { sheet: sheet, idx: idx, button: button };
+  function showDtfCheck(sheet, idx, resolve) {
+    pendingDownload = { sheet: sheet, idx: idx, resolve: resolve };
     var isTarpaulin = currentMachinePreset().family === 'tarpaulin';
     modalColorModeField.style.display = isTarpaulin ? 'none' : 'block';
     modalColorModeSelect.value = 'rgb';
@@ -2381,6 +2267,7 @@
   });
 
   document.getElementById('dtfCheckCancel').addEventListener('click', function(){
+    if (pendingDownload) pendingDownload.resolve(null);
     pendingDownload = null;
     dtfCheckOverlay.style.display = 'none';
   });
@@ -2389,21 +2276,44 @@
     var profile = getExportProfile(modalColorModeSelect.value);
     pendingDownload = null;
     dtfCheckOverlay.style.display = 'none';
-    if (job) { await downloadTiff(job.sheet, job.idx, profile); }
+    if (job) job.resolve(profile);
   });
 
-  async function downloadPng(sheet, idx) {
+  // Every format enters here. No encoder or save UI runs before authorization.
+  async function startExport(kind, sheet, idx, profile) {
     var canvas = sheet.renderCanvas;
-    if (!canvas) return;
+    if (!canvas || exportInProgress) return;
+    exportInProgress = true;
+    var ui = sheet.exportUi || {};
+    var buttons = sheets.reduce(function(all, s) { var u=s.exportUi||{}; return all.concat([u.pngBtn,u.tiffBtn].filter(Boolean)); }, []);
+    buttons.forEach(function(button) { button.disabled = true; });
+    try {
+      if (ui.progress) ui.progress.textContent = 'Checking export access…';
+      var ticket = await exportDelivery.prepare(kind, canvas, kind === 'png' ? ['png',idx] : [profile || getExportProfile('rgb'),idx]);
+      if (!ticket) { if (ui.progress) ui.progress.textContent = 'Export blocked. Check Account & exports.'; return; }
+      if (kind === 'tiff' && !profile) {
+        profile = await new Promise(function(resolve) { showDtfCheck(sheet, idx, resolve); });
+        if (!profile) return;
+        // Bind the selected RGB/CMYK profile and recheck after the dialog.
+        ticket = await exportDelivery.prepare(kind, canvas, [profile,idx]);
+        if (!ticket) return;
+      }
+      if (kind === 'png') await encodePng(sheet, idx, ticket);
+      else await encodeTiff(sheet, idx, profile, ticket);
+    } catch (err) {
+      if (ui.progress) { ui.progress.style.color = '#b3261e'; ui.progress.textContent = err.message || 'Could not prepare export.'; }
+    } finally {
+      exportInProgress = false;
+      buttons.forEach(function(button) { button.disabled = false; });
+    }
+  }
+  function downloadPng(sheet, idx) { return startExport('png', sheet, idx); }
+  async function encodePng(sheet, idx, ticket) {
+    if (!ticket) return;
+    var canvas = sheet.renderCanvas, ui = sheet.exportUi || {};
     var filename = 'dtf-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '.png';
-    var picker = await chooseExportDestination(filename, 'image/png');
-    if (picker === false) return;
-    if (!(await requestExportAccess('png'))) return;
-    canvas.toBlob(async function(blob){
-      if (!blob) return;
-      try { await saveExportBlob(blob, filename, picker, 'image/png'); }
-      catch (err) { console.error('Could not save PNG export', err); }
-    }, 'image/png');
+    var blob = await new Promise(function(resolve, reject) { canvas.toBlob(function(result) { if (result) resolve(result); else reject(new Error('PNG encoding failed. No credit was used.')); }, 'image/png'); });
+    if (!(await exportDelivery.deliver(blob, filename, undefined, 'png', canvas, ['png', idx], ticket)) && ui.progress) ui.progress.textContent = 'Export blocked. Check Account & exports.';
   }
 
   /*
@@ -2673,6 +2583,22 @@
     if (navigator.webdriver) return null;
     var host = typeof window.top !== 'undefined' && window.top && window.top.showSaveFilePicker ? window.top : window;
     if (!host || !host.showSaveFilePicker) return null;
+    // Long encodes/server checks can outlive browser user activation. Obtain a
+    // fresh click instead of silently auto-downloading or opening a blank file.
+    if (host.navigator.userActivation && !host.navigator.userActivation.isActive) {
+      return new Promise(function(resolve, reject) {
+        var previous = document.activeElement;
+        var dialog = document.createElement('dialog');
+        dialog.style.cssText = 'max-width:420px;border:1px solid #ccd5dc;border-radius:12px;padding:24px';
+        dialog.innerHTML = '<h2>Export ready</h2><p>Choose where to save your completed file.</p><button type="button">Save as…</button> <button type="button">Cancel</button>';
+        var controls = dialog.querySelectorAll('button');
+        function done(value, error) { dialog.close(); dialog.remove(); if (previous) previous.focus(); error ? reject(error) : resolve(value); }
+        controls[0].onclick = function() { controls[0].disabled=true; chooseExportDestination(filename, mimeType).then(function(value){done(value);},function(error){done(null,error);}); };
+        controls[1].onclick = function() { done(false); };
+        dialog.addEventListener('cancel', function(e) { e.preventDefault(); done(false); });
+        document.body.appendChild(dialog); dialog.showModal(); controls[0].focus();
+      });
+    }
     var extension = filename.slice(filename.lastIndexOf('.') + 1);
     try {
       return await host.showSaveFilePicker({
@@ -2682,11 +2608,15 @@
     } catch (err) {
       // Closing the native picker is a normal cancellation, not a failed export.
       if (err && err.name === 'AbortError') return false;
-      return null;
+      throw new Error('The Save As dialog could not open. Please retry the export from this browser.');
     }
   }
 
   async function saveExportBlob(blob, filename, picker, mimeType) {
+    // Authorization, encoding and the final atomic quota check have succeeded.
+    // Never open a picker for an empty/failed/denied export.
+    if (!blob || !blob.size) throw new Error('The export file is empty. Nothing was saved.');
+    if (picker === undefined) picker = await chooseExportDestination(filename, mimeType);
     if (picker && picker !== false) {
       var writable = await picker.createWritable();
       await writable.write(blob);
@@ -2872,19 +2802,15 @@
   }
 
   async function downloadTiff(sheet, idx, profile) {
+    return startExport('tiff', sheet, idx, profile);
+  }
+  async function encodeTiff(sheet, idx, profile, ticket) {
+    if (!ticket) return;
     var ui = sheet.exportUi || {};
     var canvas = sheet.renderCanvas;
-    if (!canvas) return;
     profile = profile || getExportProfile('rgb');
     var filename = filenameForExport(profile, idx);
-    var picker = await chooseExportDestination(filename, 'image/tiff');
-    if (picker === false) return;
-    if (!(await requestExportAccess('tiff'))) return;
-    if (ui.tiffBtn) ui.tiffBtn.disabled = true;
-    if (ui.pngBtn) ui.pngBtn.disabled = true;
     if (ui.progress) { ui.progress.style.color = '#2457d6'; ui.progress.textContent = t('exportPreparing'); }
-
-    try {
       var assets = profile.baseMode === 'cmyk' ? await getColorAssets() : null;
       var width = canvas.width, height = canvas.height;
       var rowsPerStrip = 64;
@@ -2961,16 +2887,7 @@
       );
       var blob = new Blob([prefix].concat(pixelParts), { type: 'image/tiff' });
       if (ui.progress) ui.progress.textContent = t('exportSaving');
-      await saveExportBlob(blob, filename, picker, 'image/tiff');
-    } catch (err) {
-      if (ui.progress) {
-        ui.progress.style.color = '#b3261e';
-        ui.progress.textContent = t('exportFailed') + (err && err.message ? err.message : t('unknownError'));
-      }
-    } finally {
-      if (ui.tiffBtn) ui.tiffBtn.disabled = false;
-      if (ui.pngBtn) ui.pngBtn.disabled = false;
-    }
+      if (!(await exportDelivery.deliver(blob, filename, undefined, 'tiff', canvas, [profile, idx], ticket)) && ui.progress) ui.progress.textContent = 'Export blocked. Check Account & exports.';
   }
 
   function computeStats() {
@@ -3387,6 +3304,44 @@
     stageEl.addEventListener('pointerup', hideLens);
   }
 
+  // Owner Client Jobs use this isolated iframe instance. The main builder state
+  // is never replaced. Sources and positions come from the confirmed manifest;
+  // no packer, optimizer or trimming pass runs during reconstruction.
+  window.smartSheetClientJob = {
+    settings: function(){return {machine:machinePresetSelect.value,widthIn:getSheetWidthIn(),lengthIn:getSheetLengthIn(),dpi:parseFloat(dpiInput.value)||300,gapIn:getGapIn(),edgeIn:getAutoLayoutEdgeAllowanceIn(),rotate:document.getElementById('autoRotate').checked,autoExtend:document.getElementById('autoExtend').checked};},
+    exportJob: async function(job, blobs, index, kind){
+      if (!new URLSearchParams(location.search).has('clientJob') || exportInProgress) throw new Error('Client Job export is not ready.');
+      // Expiry is authorized with server time in prepare and consume, never
+      // trusted to this computer's clock.
+      var manifest=job.manifest, locked=manifest.sheets[index], sources={}, allocated=[];
+      var progress=document.getElementById('clientJobExportStatus');
+      try {
+        progress.textContent='Rebuilding the locked layout from original PNG files…';
+        machinePresetSelect.value=manifest.config.machine; dpiGlobal=manifest.dpi;
+        customerNameInput.value=''; // Client reference is metadata, never an added print mark.
+        for(var ai=0;ai<job.assets.length;ai++){
+          var asset=job.assets[ai];if(!locked.placements.some(function(p){return p.assetId===asset.id;}))continue;
+          var blob=blobs[asset.id];if(!blob)throw new Error('An original source is missing. Reopen the Client Job.');
+          var digest=await crypto.subtle.digest('SHA-256',await blob.arrayBuffer());
+          var checksum=Array.from(new Uint8Array(digest),function(b){return b.toString(16).padStart(2,'0');}).join('');
+          if(checksum!==asset.sha256)throw new Error('An original source failed its integrity check.');
+          var bitmap=await createImageBitmap(blob), crop=asset.crop;
+          if(bitmap.width!==asset.width||bitmap.height!==asset.height){bitmap.close();throw new Error('Source dimensions do not match the locked layout.');}
+          var native=document.createElement('canvas');native.width=crop.w;native.height=crop.h;allocated.push(native);
+          native.getContext('2d').drawImage(bitmap,crop.x,crop.y,crop.w,crop.h,0,0,crop.w,crop.h);bitmap.close();sources[asset.id]=native;
+        }
+        var sheet=Object.assign({},locked,{placements:locked.placements.map(function(p,i){return Object.assign({},p,{inst:{id:i,canvas:sources[p.assetId],baseW:p.baseW,baseH:p.baseH,rotation:p.rotation,vibrance:0}});}),exportUi:{progress:progress}});
+        sheets=[sheet];var canvas=document.createElement('canvas');allocated.push(canvas);drawSheetCanvas(canvas,sheet);sheet.renderCanvas=canvas;
+        // Rebuilding identical locked sources must retain the same retry identity.
+        canvas._ssbExportRecipe=['client-job',job.id,job.confirmed_at,index,manifest,job.assets.filter(function(a){return a.ready;}).map(function(a){return [a.id,a.sha256];})];
+        await startExport(kind,sheet,index);
+      } finally { allocated.forEach(function(c){c.width=1;c.height=1;});sheets=[]; }
+    }
+  };
+  if(new URLSearchParams(location.search).has('clientJob')){
+    var clientStyle=document.createElement('style');clientStyle.textContent='body > :not(#dtfCheckOverlay):not(dialog):not(#clientJobExportStatus):not(script):not(style){display:none!important} body{background:#fff} #clientJobExportStatus{padding:20px;font:16px Arial}';document.head.appendChild(clientStyle);
+    var clientStatus=document.createElement('p');clientStatus.id='clientJobExportStatus';clientStatus.setAttribute('role','status');clientStatus.textContent='Client Job export ready.';document.body.appendChild(clientStatus);
+  }
   applyLanguage('en');
   rotatePlacementOnSheet=layoutHistory.wrap('Rotate piece',rotatePlacementOnSheet);
   appendDesignToCurrentLayout=layoutHistory.wrap('Add to layout',appendDesignToCurrentLayout);

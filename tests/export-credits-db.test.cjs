@@ -1,0 +1,103 @@
+// Execute the real migrations/RPCs in isolated PostgreSQL; no live Supabase writes.
+const { PGlite } = require('@electric-sql/pglite');
+const fs = require('node:fs'), assert = require('node:assert/strict'), { randomUUID } = require('node:crypto');
+const owner='00000000-0000-4000-8000-000000000001', basic='00000000-0000-4000-8000-000000000002', unlimited='00000000-0000-4000-8000-000000000003', fresh='00000000-0000-4000-8000-000000000004';
+(async()=>{
+  const db=new PGlite(), q=(sql,args=[])=>db.query(sql,args), one=async(sql,args)=>(await q(sql,args)).rows[0];
+  const snapshot=async(id=basic)=>(await one('select ssb_credit_snapshot($1) d',[id])).d;
+  const send=async(id=basic,kind='png',key=randomUUID(),fingerprint='unchanged-artwork',action='consume',receipt=null)=>(await one('select ssb_credit_export($1,$2,$3,$4,$5,$6) d',[id,kind,key,fingerprint,action,receipt])).d;
+  try {
+    await db.exec(`create role anon; create role authenticated; create role service_role bypassrls;
+      create schema auth; create function auth.uid() returns uuid language sql stable as $$select nullif(current_setting('request.jwt.claim.sub',true),'')::uuid$$;
+      create table auth.users(id uuid primary key,email text unique,email_confirmed_at timestamptz,created_at timestamptz default now(),last_sign_in_at timestamptz,raw_user_meta_data jsonb);
+      create schema storage; create table storage.buckets(id text primary key,public boolean); create table storage.objects(id uuid,bucket_id text); alter table storage.objects enable row level security;
+      create table public.design_library_categories(id uuid); create table public.design_library_designs(id uuid);`);
+    await db.exec(fs.readFileSync('supabase-smart-sheet-v53b.sql','utf8').replace('create extension if not exists pgcrypto;',''));
+    await db.exec(fs.readFileSync('supabase-access-entitlements-v1.sql','utf8'));
+    for(const [id,email] of [[owner,'masterprintlabcorp@gmail.com'],[basic,'basic@test.example'],[unlimited,'unlimited@test.example']]) {
+      await q('insert into auth.users(id,email,email_confirmed_at) values($1,$2,now())',[id,email]);
+      await q("insert into profiles(id,email,exports_used,exports_unlimited) values($1,$2,99,$3)",[id,email,id===unlimited]);
+    }
+    await db.exec(fs.readFileSync('supabase-user-management-v1.sql','utf8'));
+    await q("insert into guest_usage(guest_id,exports_used) values('unchanged-guest',2)");
+    const oldProfiles=(await q('select * from profiles order by id')).rows;
+    const migration=fs.readFileSync('supabase-export-credits-v1.sql','utf8');
+    await db.exec(migration); await db.exec(migration);
+    assert.deepEqual((await q('select * from profiles order by id')).rows,oldProfiles,'migration preserves legacy profile counters, roles and access');
+    assert.equal((await snapshot()).balance,2,'legacy 99 exports does not block new credits');
+    assert.equal((await one("select count(*)::int n from credit_ledger where reason='free_refill'")).n,1,'migration rerun cannot mint more');
+    assert.equal((await one("select exports_used from guest_usage where guest_id='unchanged-guest'")).exports_used,2);
+    await q('insert into auth.users(id,email) values($1,$2)',[fresh,'fresh@test.example']);
+    assert.equal((await send(fresh)).reason,'email_unverified');
+    await q('update auth.users set email_confirmed_at=clock_timestamp() where id=$1',[fresh]);
+    assert.equal((await snapshot(fresh)).balance,2);
+    await q("select ssb_import_guest_usage($1,'unchanged-guest')",[fresh]);
+    assert.equal((await snapshot(fresh)).balance,2,'guest usage never transferred');
+    assert.equal((await one('select exports_used from profiles where id=$1',[fresh])).exports_used,0);
+    const distinct=await Promise.all(Array.from({length:8},(_,i)=>send(fresh,i%2?'png':'tiff')));
+    assert.equal(distinct.filter(r=>r.allowed).length,2,'concurrent distinct requests cannot overspend');
+    assert.equal((await snapshot(fresh)).balance,0);
+    let key=randomUUID();
+    const concurrent=await Promise.all(Array.from({length:8},()=>send(basic,'png',key)));
+    assert(concurrent.every(r=>r.allowed)); assert.equal(new Set(concurrent.map(r=>r.receipt)).size,1);
+    assert.equal((await snapshot()).balance,1,'same operation consumes once');
+    assert.equal((await one('select count(*)::int n from usage_exports where user_id=$1',[basic])).n,1);
+    assert.equal((await send(basic,'tiff',key)).allowed,false,'key cannot authorize another format');
+    assert.equal((await send(basic,'png',key,'changed-artwork')).allowed,false);
+    assert((await send(basic,'tiff')).allowed); assert.equal((await snapshot()).balance,0);
+    assert.equal((await send()).reason,'credits_empty');
+    // Database clock is the only source of earned intervals.
+    await q("update free_export_credits set refill_from=clock_timestamp()-interval '2 hours 59 minutes' where user_id=$1",[basic]);
+    assert.equal((await snapshot()).balance,0);
+    await q("update free_export_credits set refill_from=clock_timestamp()-interval '3 hours 1 second' where user_id=$1",[basic]);
+    let snap=await snapshot(); assert.equal(snap.balance,1); assert(Date.parse(snap.next_credit_at)>Date.parse(snap.server_time));
+    await q("update free_export_credits set refill_from=clock_timestamp()-interval '3 hours 1 second' where user_id=$1",[basic]);
+    assert.equal((await snapshot()).balance,2);
+    await send(); await send();
+    await q("update free_export_credits set refill_from=clock_timestamp()-interval '6 hours 1 second' where user_id=$1",[basic]);
+    assert.equal((await snapshot()).balance,2);
+    await send();
+    await q("update free_export_credits set refill_from=clock_timestamp()-interval '30 days' where user_id=$1",[basic]);
+    assert.equal((await snapshot()).balance,2); assert.equal((await snapshot()).next_credit_at,null);
+    key=randomUUID(); let r=await send(basic,'png',key);
+    const afterCharge=(await one('select exports_used from profiles where id=$1',[basic])).exports_used;
+    await send(basic,'png',key,'unchanged-artwork','refund',r.receipt);
+    await send(basic,'png',key,'unchanged-artwork','refund',r.receipt);
+    assert.equal((await snapshot()).balance,2,'save failure returns once');
+    assert.equal((await one('select exports_used from profiles where id=$1',[basic])).exports_used,afterCharge-1);
+    assert.equal((await send(basic,'png',key)).allowed,false,'refunded receipt cannot be replayed');
+    await assert.rejects(()=>send(fresh,'png',key,'unchanged-artwork','refund',r.receipt),'another user cannot refund a receipt');
+    key=randomUUID(); r=await send(basic,'png',key);
+    await send(basic,'png',key,'unchanged-artwork','saved',r.receipt);
+    await send(basic,'png',key,'unchanged-artwork','refund',r.receipt);
+    assert.equal((await snapshot()).balance,1,'saved output cannot be refunded');
+    await q("update export_credit_receipts set created_at=clock_timestamp()-interval '3 minutes' where id=$1",[r.receipt]);
+    assert.equal((await send(basic,'png',key)).reason,'retry_expired');
+    for(const id of [owner,unlimited]) {
+      for(let i=0;i<5;i++) assert((await send(id)).allowed);
+      assert.equal((await snapshot(id)).balance,null);
+      assert.equal((await one('select count(*)::int n from credit_ledger where user_id=$1',[id])).n,0,'unlimited never deducted');
+    }
+    assert.equal((await one('select role from profiles where id=$1',[unlimited])).role,'customer');
+    await q("update profiles set status='blocked' where id=$1",[basic]); assert.equal((await send()).reason,'account_blocked');
+    await q("update profiles set status='active' where id=$1",[basic]);
+    const detail=(await one('select ssb_admin_user($1,$2) d',[owner,basic])).d;
+    assert.equal(detail.user.remaining,1);
+    assert.equal(detail.user.recorded_exports,(await one('select count(*)::int n from usage_exports where user_id=$1 and voided_at is null',[basic])).n);
+    await assert.rejects(()=>one('select ssb_credit_history($1,$2)',[basic,owner]));
+    assert((await one('select ssb_credit_history($1,$2) d',[owner,basic])).d.history.length>0);
+    assert((await one('select ssb_credit_history($1,$1) d',[basic])).d.history.length>0);
+    assert.equal((await one("select ssb_consume_export($1,'png') d",[basic])).d.allowed,false,'retired lifetime endpoint cannot bypass credits');
+    await db.exec('grant usage on schema public,auth to authenticated;');
+    await q("select set_config('request.jwt.claim.sub',$1,false)",[basic]); await db.exec('set role authenticated');
+    assert((await q('select * from free_export_credits')).rows.every(r=>r.user_id===basic));
+    assert((await q('select * from credit_ledger')).rows.every(r=>r.user_id===basic));
+    await assert.rejects(()=>q('update free_export_credits set balance=2,refill_from=null'));
+    await assert.rejects(()=>q("insert into credit_ledger(user_id,delta,reason) values($1,50,'purchased_credit')",[basic]));
+    await assert.rejects(()=>snapshot()); await assert.rejects(()=>send());
+    await assert.rejects(()=>q('select * from export_credit_receipts'));
+    await db.exec('reset role');
+    await db.exec(migration); assert.equal((await snapshot()).balance,1,'repeat migration never resets consumed balance');
+    console.log('PASS: real SQL migration preservation/idempotency, initial two, 3h/6h refill/cap, concurrent duplicate and distinct PNG/TIFF, failure refunds, saved/expired/foreign receipts, owner/unlimited bypass, suspension, own RLS, owner-only history, no paid grants.');
+  } finally { await db.close(); }
+})().catch(e=>{console.error(e);process.exitCode=1;});

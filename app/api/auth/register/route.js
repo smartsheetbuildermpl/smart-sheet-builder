@@ -5,8 +5,10 @@ import {
   sessionFromAuth,
   supabaseFetch,
   unconfiguredPayload,
-  usageForProfile,
+  currentProfileUsage,
 } from '../../_lib/supabase';
+import { profileFields, apiError, failure } from '../../_lib/user-management';
+import { appAuthUrl, pkce, setCookie } from '../../_lib/password-auth';
 
 export const dynamic = 'force-dynamic';
 
@@ -16,23 +18,20 @@ export async function POST(request) {
     return NextResponse.json(unconfiguredPayload(), { status: 501 });
   }
 
-  const body = await request.json();
-  const email = String(body.email || '').trim().toLowerCase();
-  const password = String(body.password || '');
-  const guestId = String(body.guestId || '');
-
-  if (!email || !password) {
-    return NextResponse.json({ message: 'Email and password are required.' }, { status: 400 });
-  }
-
-  if (password.length < 6) {
-    return NextResponse.json({ message: 'Password must be at least 6 characters.' }, { status: 400 });
-  }
-
   try {
-    const auth = await supabaseFetch('/auth/v1/signup', {
+    const body = await request.json();
+    if (!body || typeof body !== 'object' || Array.isArray(body)) throw failure('Invalid registration.', 400);
+    const email = String(body.email || '').trim().toLowerCase();
+    const password = String(body.password || '');
+    const guestId = String(body.guestId || '');
+    if (!email || !password) throw failure('Email and password are required.', 400);
+    if (password.length < 6) throw failure('Password must be at least 6 characters.', 400);
+    const data = profileFields(body.profile || {}, { registration: true });
+    if (password.length > 1024 || email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) throw failure('Enter a valid email and password.', 400);
+    const proof = pkce();
+    const auth = await supabaseFetch(`/auth/v1/signup?redirect_to=${encodeURIComponent(appAuthUrl(request))}`, {
       method: 'POST',
-      body: { email, password },
+      body: { email, password, data, code_challenge: proof.challenge, code_challenge_method: 's256' },
     });
 
     const authUser = auth.user || auth;
@@ -41,28 +40,23 @@ export async function POST(request) {
       email: authUser?.email || email,
     };
 
-    if (!user.id) {
-      return NextResponse.json(
-        { message: 'Account created. Check your email to finish registration.' },
+    const session = sessionFromAuth(auth);
+    if (!session || !user.id) {
+      return setCookie(NextResponse.json(
+        { configured: true, message: 'Check your email to finish registration. If you already have an account, sign in or use your existing confirmation email.' },
         { status: 202 }
-      );
+      ), request, { verifier: proof.verifier, expires: Date.now() + 900000 }, 'ssb-email-confirmation');
     }
 
     const profile = await migrateGuestUsageToProfile(user, guestId);
-    const session = sessionFromAuth(auth);
 
     return NextResponse.json({
       configured: true,
-      message: session
-        ? 'Free account created. You now have 5 total trial exports.'
-        : 'Free account created. Check your email, then sign in.',
+      message: 'Free account created with 2 Free Export Credits. One credit refreshes every 3 hours, up to 2 saved credits.',
       session,
-      usage: usageForProfile(profile, user),
+      usage: await currentProfileUsage(profile, user),
     });
   } catch (error) {
-    return NextResponse.json(
-      { message: error.data?.msg || error.data?.message || error.message || 'Registration failed.' },
-      { status: error.status || 400 }
-    );
+    return apiError(error);
   }
 }

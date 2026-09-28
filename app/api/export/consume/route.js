@@ -1,50 +1,33 @@
 import { NextResponse } from 'next/server';
-import {
-  ensureProfile,
-  getSupabaseConfig,
-  getUserFromRequest,
-  incrementGuestUsage,
-  incrementProfileUsage,
-  unconfiguredPayload,
-} from '../../_lib/supabase';
+import { ensureProfile, getSupabaseConfig, getUserFromRequest, incrementProfileUsage, currentProfileUsage, getGuestUsage, usageForGuest, supabaseFetch, unconfiguredPayload } from '../../_lib/supabase';
+import { guestIdentity, authorization, validAuthorization, validOperation } from '../../_lib/export-security';
 
 export const dynamic = 'force-dynamic';
-
+const reply = (data, status = 200) => NextResponse.json(data, { status, headers: { 'Cache-Control': 'no-store' } });
 export async function POST(request) {
-  const config = getSupabaseConfig();
-  if (!config.configured) {
-    return NextResponse.json(unconfiguredPayload(), { status: 501 });
-  }
-
-  const body = await request.json();
-  const guestId = String(body.guestId || '');
-  const exportKind = String(body.exportKind || 'download');
-
+  if (!getSupabaseConfig().configured) return reply(unconfiguredPayload(), 501);
+  let body;
+  try { body = await request.json(); } catch { return reply({ allowed: false, message: 'Invalid export request.' }, 400); }
+  if (!validOperation(body)) return reply({ allowed: false, message: 'Refresh Smart Sheet Builder and start a new export.' }, 400);
   try {
     const user = await getUserFromRequest(request);
-    if (user) {
-      const profile = await ensureProfile(user);
-      const result = await incrementProfileUsage(profile, user, exportKind);
-      return NextResponse.json({ configured: true, ...result });
+    const guest = user ? null : await guestIdentity(request);
+    const actor = user ? `user:${user.id}` : `guest:${guest.id}`;
+    const profile = user ? await ensureProfile(user) : null;
+    if (body.jobId && !user) return reply({ allowed: false, message: 'Sign in to export your Client Job.' }, 401);
+    if (body.action === 'prepare') {
+      if (body.jobId) await supabaseFetch('/rest/v1/rpc/ssb_client_job_export', { method:'POST', service:true, body:{p_user:user.id,p_job:body.jobId,p_kind:body.exportKind,p_request:body.requestKey,p_fingerprint:body.fingerprint,p_action:'prepare'} });
+      const usage = user ? await currentProfileUsage(profile, user) : usageForGuest(await getGuestUsage(guest.id));
+      if (profile?.status === 'blocked') return reply({ allowed: false, reason: 'account_blocked', message: 'This account is suspended. Contact support.', usage });
+      if (!usage.unlimited && usage.remaining <= 0) return reply({ allowed: false, reason: user ? 'credits_empty' : 'limit_reached', message: user ? 'You’ve used your available free export credits.' : 'Guest trial used up. Create a free account for Free Export Credits.', usage });
+      return reply({ allowed: true, usage, authorization: authorization(actor, body.exportKind, body.requestKey, body.fingerprint, body.jobId) });
     }
+    // Preparation never charges. Recheck and deduct atomically when the final Blob exists.
+    if ((!body.action || body.action === 'consume') && !validAuthorization(body.authorization, actor, body)) return reply({ allowed: false, reason: 'authorization_expired', message: 'Export authorization expired. Start the export again.' }, 403);
+    if (user) return reply({ configured: true, ...await incrementProfileUsage(profile, user, body.exportKind, body) });
+    const result = await supabaseFetch('/rest/v1/rpc/ssb_guest_export', { method: 'POST', service: true, body: { p_guest: guest.id, p_kind: body.exportKind, p_request: body.requestKey, p_fingerprint: body.fingerprint, p_action: body.action || 'consume', p_receipt: body.receipt || null } });
+    return reply({ configured: true, allowed: result.allowed === true, reason: result.reason, message: result.message, receipt: result.receipt, duplicate: result.duplicate, usage: usageForGuest(result.guest) });
   } catch (error) {
-    if (error.code === 'invalid_session') {
-      return NextResponse.json({ code: 'invalid_session', message: 'Please sign in again.' }, { status: 401 });
-    }
-    throw error;
-  }
-
-  if (!guestId) {
-    return NextResponse.json({ message: 'Guest ID is required.' }, { status: 400 });
-  }
-
-  try {
-    const result = await incrementGuestUsage(guestId, exportKind);
-    return NextResponse.json({ configured: true, ...result });
-  } catch (error) {
-    return NextResponse.json(
-      { message: error.message || 'Export access check failed.' },
-      { status: error.status || 500 }
-    );
+    return reply({ allowed: false, code: error.code, message: error.code === 'invalid_session' ? 'Please sign in again.' : error.status === 401 ? error.message : 'Export access could not be verified. Reconnect and retry; no file was downloaded.' }, error.status || 503);
   }
 }

@@ -4,7 +4,7 @@ const path = require('node:path');
 const os = require('node:os');
 const { chromium } = require('playwright');
 const source = fs.readFileSync('public/builder.html','utf8');
-const hook = 'window.printTest={get designs(){return designs},get sheets(){return sheets},getSheetPixelSettings,drawSheetCanvas,downloadPng,downloadTiff,getExportProfile,renderAllDesigns};';
+const hook = 'window.printTest={get designs(){return designs},get sheets(){return sheets},getSheetPixelSettings,drawSheetCanvas,downloadPng,downloadTiff,getExportProfile,renderAllDesigns};exportDelivery=SmartSheetExportDelivery.create({gate:async()=>({allowed:true,authorization:"encoder-fixture-only"}),save:saveExportBlob});';
 const html = source.replace(/\}\)\(\);\s*<\/script>/,hook+'})();</script>');
 const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'print-optimizer-'));
 
@@ -24,7 +24,7 @@ function tiff(bytes) {
     page.on('pageerror',error=>errors.push(error.message));
     await page.route('http://localhost:4187/**',route=>{
       const name=new URL(route.request().url()).pathname;
-      if(/^\/(background-editor|sheet-workspace|print-optimizer)\.(js|css)$/.test(name))return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
+      if(/^\/(background-editor|sheet-workspace|print-optimizer|export-delivery|sheet-packing)\.(js|css)$/.test(name))return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
       return route.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4187/builder.html');
