@@ -15,6 +15,7 @@ const jwt = (user) =>
     browser = await chromium.launch({ channel: 'chrome', headless: true });
   const errors = [];
   let loseConsume = true;
+  let failOnePublicUpload = true;
   const consumedKeys = [];
   try {
     const token = await f.portal('basic', { widthIn: 3, lengthIn: 3 });
@@ -68,8 +69,17 @@ const jwt = (user) =>
             /^\/api\/client-jobs\/([^/]+)\/files\/([^/]+)$/
           ),
           pub = u.pathname.match(/^\/api\/client-upload\/([^/]+)$/);
-        if (pub)
+        if (pub && rr.method() === 'POST' && u.searchParams.get('action') === 'upload' && failOnePublicUpload) {
+          failOnePublicUpload = false;
+          return r.fulfill({
+            status: 503,
+            json: { message: 'Simulated upload connection failure' }
+          });
+        } else if (pub) {
+          if (rr.method() === 'POST' && u.searchParams.get('action') === 'upload')
+            await new Promise((resolve) => setTimeout(resolve, 250));
           result = await f.pub[rr.method()](req, { params: { token: pub[1] } });
+        }
         else if (match)
           result = await f.files.GET(req, {
             params: { id: match[1], file: match[2] }
@@ -122,6 +132,22 @@ const jwt = (user) =>
       buffer: png()
     });
     await customer.page.locator('.client-file').waitFor();
+    await customer.page.getByText('Failed — Retry', { exact: true }).waitFor();
+    assert.equal(
+      await customer.page.getByRole('button', { name: 'Retry', exact: true }).count(),
+      1,
+      'a failed file remains available for retry without removing other uploads'
+    );
+    await customer.page.getByRole('button', { name: 'Retry', exact: true }).click();
+    await customer.page.getByText('Uploading', { exact: true }).waitFor();
+    await customer.page.getByText('Ready', { exact: true }).waitFor();
+    assert.equal(
+      await customer.page
+        .getByRole('button', { name: 'Generate Print Preview', exact: true })
+        .isEnabled(),
+      true,
+      'preview becomes available only after the real upload reaches Ready'
+    );
     assert.equal(await customer.page.locator('.client-file-thumbnail').count(), 1);
     assert(
       await customer.page
@@ -172,6 +198,18 @@ const jwt = (user) =>
       buffer: png(80, 40)
     });
     await customer.page.locator('.client-file').nth(1).waitFor();
+    await customer.page.getByText('Uploading', { exact: true }).waitFor();
+    assert(
+      await customer.page
+        .getByRole('button', { name: /Waiting for uploads/ })
+        .isDisabled(),
+      'preview remains disabled while an additional real upload is in flight'
+    );
+    await customer.page
+      .locator('.client-file')
+      .nth(1)
+      .getByText('Ready', { exact: true })
+      .waitFor();
     assert.equal(await customer.page.locator('.client-file-thumbnail').count(), 2);
     await customer.page
       .getByRole('spinbutton', {
@@ -270,6 +308,12 @@ const jwt = (user) =>
     await owner.page.locator('.access-reveal-handle').hover();
     await owner.page.getByRole('button', { name: /^Client Portal/ }).click();
     await owner.page.locator('.client-preview canvas').waitFor();
+    assert.equal(
+      await owner.page.getByRole('button', { name: 'Copy upload link' }).count(),
+      0,
+      'sharing controls stay out of the main Client Portal view'
+    );
+    await owner.page.getByRole('button', { name: 'Shop portal settings' }).click();
     await owner.page.getByText('Portal link active', { exact: true }).waitFor();
     const originalLink = await owner.page.getByLabel('Client upload link').inputValue();
     assert.equal(new URL(originalLink).origin, new URL(base).origin);
@@ -279,6 +323,7 @@ const jwt = (user) =>
       .getByRole('button', { name: 'Copy upload link', exact: true })
       .click();
     assert.equal(await owner.page.evaluate(() => window.copiedPortalLink), originalLink);
+    await owner.page.getByText('Upload link copied.', { exact: true }).waitFor();
     assert.equal(
       await owner.page.getByRole('button', { name: /^Client Portal/ }).count(),
       1
@@ -428,6 +473,7 @@ const jwt = (user) =>
     await owner.page.locator('.access-reveal-handle').hover();
     await owner.page.getByRole('button', { name: /^Client Portal/ }).click();
     await owner.page.locator('.client-status-badge.expired').getByText('Expired', { exact: true }).waitFor();
+    await owner.page.getByRole('button', { name: 'Shop portal settings' }).click();
     await owner.page.getByText('Expired — files are no longer available.', { exact: true }).waitFor();
     assert(f.objects.size > 0, 'opening Client Portal does not invoke physical cleanup');
     const maintenance = await f.maintenance.GET(

@@ -39,7 +39,8 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     [message, setMessage] = useState(''),
     [now, setNow] = useState(Date.now()),
     [offset, setOffset] = useState(0),
-    [sheet, setSheet] = useState(0);
+    [sheet, setSheet] = useState(0),
+    [settingsOpen, setSettingsOpen] = useState(false);
   const dialog = useRef(null),
     frame = useRef(null),
     blobs = useRef({}),
@@ -55,6 +56,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     setDetail(null);
     setSelected('');
     setOpen(false);
+    setSettingsOpen(false);
     setError('');
     setMessage('');
     setUrls({});
@@ -303,13 +305,20 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
             <h1 id="client-jobs-title">Client Portal</h1>
             <p>Collect client artwork through your private upload link.</p>
           </div>
-          <button
-            aria-label="Close Client Portal"
-            disabled={exporting}
-            onClick={() => setOpen(false)}
-          >
-            ×
-          </button>
+          <div className="client-dialog-header-actions">
+            <button
+              type="button"
+              className="secondary client-icon-button"
+              aria-label="Shop portal settings"
+              title="Shop portal settings"
+              aria-expanded={settingsOpen}
+              disabled={exporting}
+              onClick={() => setSettingsOpen((value) => !value)}
+            >
+              ⚙
+            </button>
+            <button aria-label="Close Client Portal" disabled={exporting} onClick={() => setOpen(false)}>×</button>
+          </div>
         </header>
         {error && (
           <p role="alert" className="client-error">
@@ -317,72 +326,16 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
           </p>
         )}
         {message && <p role="status">{message}</p>}
-        <div className="client-columns client-owner-grid">
-          <section>
-            <section className="client-card client-link-card">
-              <h2>Share Client Upload Link</h2>
-              <p role="status"><strong>{data?.portal.active ? 'Portal link active' : 'Portal link setup required'}</strong></p>
-              {data?.portal.enabled === false && <p>This upload portal is currently disabled. Complete settings, then click Create/Enable link.</p>}
-              {data?.setupIssues?.length > 0 && <ul>{data.setupIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul>}
-              {data?.portal.url && (
-                <>
-                  <input
-                    aria-label="Client upload link"
-                    readOnly
-                    value={data.portal.url}
-                  />
-                  <button
-                    disabled={!data.portal.active}
-                    onClick={async () => {
-                      try {
-                        await navigator.clipboard.writeText(data.portal.url);
-                        setMessage('Link copied.');
-                      } catch {
-                        setError('Copy the displayed link manually.');
-                      }
-                    }}
-                  >
-                    Copy upload link
-                  </button>
-                  <button
-                    className="secondary"
-                    disabled={busy || exporting}
-                    onClick={() => {
-                      if (
-                        confirm(
-                          'Replace this link? Customers using the old link will need the new one. Existing client submissions are preserved.'
-                        )
-                      )
-                        mutate('rotate');
-                    }}
-                  >
-                    Regenerate link
-                  </button>
-                  <button
-                    className="secondary"
-                    disabled={busy || exporting || !data.portal.enabled}
-                    onClick={() => {
-                      if (
-                        confirm(
-                          'Disable new client submissions? Existing confirmed submissions remain available.'
-                        )
-                      )
-                        mutate('disable');
-                    }}
-                  >
-                    Disable link
-                  </button>
-                </>
-              )}
-              <details open={!data?.portal.active}>
-                <summary>Shop portal settings</summary>
-                {config && (
-                  <form
-                    onSubmit={(e) => {
-                      e.preventDefault();
-                      mutate('save');
-                    }}
-                  >
+        {settingsOpen && <section className="client-card client-settings-panel" aria-label="Shop portal settings">
+          <div className="client-settings-panel-heading"><div><h2>Shop portal settings</h2><p>Manage the private upload link and print layout defaults.</p></div><button type="button" className="secondary" onClick={() => setSettingsOpen(false)}>Done</button></div>
+          <section className="client-link-card">
+            <h3>Share Client Upload Link</h3>
+            <p role="status"><strong>{data?.portal.active ? 'Portal link active' : 'Portal link setup required'}</strong></p>
+            {data?.portal.enabled === false && <p>This upload portal is currently disabled. Complete settings, then click Create/Enable link.</p>}
+            {data?.setupIssues?.length > 0 && <ul>{data.setupIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul>}
+            {data?.portal.url && <><input aria-label="Client upload link" readOnly value={data.portal.url} /><div className="client-link-actions"><button disabled={!data.portal.active} onClick={async () => { try { await navigator.clipboard.writeText(data.portal.url); setMessage('Upload link copied.'); } catch { setError('Copy the displayed link manually.'); } }}>Copy upload link</button>{typeof navigator !== 'undefined' && typeof navigator.share === 'function' && <button type="button" className="secondary" disabled={!data.portal.active} onClick={async () => { try { await navigator.share({ title: 'Client Upload Portal', url: data.portal.url }); setMessage('Upload link shared.'); } catch (e) { if (e?.name !== 'AbortError') setError('The upload link could not be shared.'); } }}>Share</button>}<button className="secondary" disabled={busy || exporting} onClick={() => { if (confirm('Replace this link? Customers using the old link will need the new one. Existing client submissions are preserved.')) mutate('rotate'); }}>Regenerate link</button><button className="secondary" disabled={busy || exporting || !data.portal.enabled} onClick={() => { if (confirm('Disable new client submissions? Existing confirmed submissions remain available.')) mutate('disable'); }}>Disable link</button></div></>}
+          </section>
+          {config && <form onSubmit={(e) => { e.preventDefault(); mutate('save'); }}>
                     <label>
                       Shop display name
                       <input
@@ -489,10 +442,10 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                     <button disabled={busy || exporting}>
                       {data?.portal.active ? 'Save portal settings' : 'Create/Enable link'}
                     </button>
-                  </form>
-                )}
-              </details>
-            </section>
+          </form>}
+        </section>}
+        <div className="client-columns client-owner-grid">
+          <section>
             <div className="client-section-heading">
               <div>
                 <h2>Client submissions</h2>
