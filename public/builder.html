@@ -543,6 +543,7 @@
       imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original canvas resets all edits and restores the full upload.',
       sourceQuality: function(w, h, ppi){ return 'Active source: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
       marginsTrimmed: function(ow, oh, w, h){ return 'Transparent margins trimmed: ' + ow + ' × ' + oh + ' px → ' + w + ' × ' + h + ' px'; },
+      alreadyTightlyCropped: 'Mahigpit na ang crop ng source; walang transparent na panlabas na margin.',
       emptyTransparentImage: 'This PNG is completely transparent. Add a PNG with visible artwork instead.',
       bgRemoved: 'Natanggal ang edge background',
       bgNone: 'Walang uniform edge background na natanggal',
@@ -669,6 +670,7 @@
       imageToolsNote: 'Optional tools: background removal only handles a uniform color connected to the image edges; it can affect artwork touching those edges. Soft transitions are feathered. Speck removal can remove small details. Enhance 2× uses smooth interpolation, not AI detail restoration. Undo reverses the last edit; Restore original canvas resets all edits and restores the full upload.',
       sourceQuality: function(w, h, ppi){ return 'Active source: ' + w + ' × ' + h + ' px · effective source: ' + ppi + ' PPI at selected print size'; },
       marginsTrimmed: function(ow, oh, w, h){ return 'Transparent margins trimmed: ' + ow + ' × ' + oh + ' px → ' + w + ' × ' + h + ' px'; },
+      alreadyTightlyCropped: 'Source is already tightly cropped; no transparent outer margin found.',
       emptyTransparentImage: 'This PNG is completely transparent. Add a PNG with visible artwork instead.',
       bgRemoved: 'Edge background removed',
       bgNone: 'No uniform edge background was removed',
@@ -1012,7 +1014,7 @@
 
   function decodeImageCanvas(img) {
     var w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
-    assertImageBudget(w, h, 12, 'PNG upload');
+    assertNativeImageDimensions(w, h, 'PNG upload');
     var c = document.createElement('canvas');
     c.width = w; c.height = h;
     c.getContext('2d').drawImage(img, 0, 0);
@@ -1023,21 +1025,27 @@
   // including anti-aliased edges and soft shadows, so it is never thresholded away.
   function trimTransparentMargins(sourceCanvas, padding) {
     var w = sourceCanvas.width, h = sourceCanvas.height;
-    assertImageBudget(w, h, 12, 'Transparent-margin trimming');
-    var image = sourceCanvas.getContext('2d', { willReadFrequently: true }).getImageData(0, 0, w, h);
-    var data = image.data, left = w, top = h, right = -1, bottom = -1;
-    for (var y = 0; y < h; y++) {
-      for (var x = 0; x < w; x++) {
-        if (data[(y * w + x) * 4 + 3] === 0) continue;
-        if (x < left) left = x;
-        if (x > right) right = x;
-        if (y < top) top = y;
-        if (y > bottom) bottom = y;
+    assertNativeImageDimensions(w, h, 'Transparent-margin trimming');
+    var sourceCtx = sourceCanvas.getContext('2d', { willReadFrequently: true });
+    var stripHeight = 128, left = w, top = h, right = -1, bottom = -1;
+    // Keep readback bounded for large uploads. Alpha > 0 is always artwork,
+    // including colored anti-aliasing, soft edges and faint shadows.
+    for (var stripTop = 0; stripTop < h; stripTop += stripHeight) {
+      var rows = Math.min(stripHeight, h - stripTop);
+      var image = sourceCtx.getImageData(0, stripTop, w, rows), data = image.data;
+      for (var localY = 0; localY < rows; localY++) {
+        var rowOffset = localY * w * 4;
+        for (var x = 0; x < w; x++) {
+          if (data[rowOffset + x * 4 + 3] === 0) continue;
+          var y = stripTop + localY;
+          if (x < left) left = x;
+          if (x > right) right = x;
+          if (y < top) top = y;
+          if (y > bottom) bottom = y;
+        }
       }
+      image = null; data = null;
     }
-    // The full readback is no longer needed after bounds detection. Release
-    // it before allocating the crop readback and canvas (no resampling).
-    image = null; data = null;
     if (right < left || bottom < top) throw new Error(t('emptyTransparentImage'));
     var safePadding = padding == null ? 1 : Math.max(0, Math.floor(padding));
     left = Math.max(0, left - safePadding); top = Math.max(0, top - safePadding);
@@ -1045,21 +1053,37 @@
     var cropW = right - left + 1, cropH = bottom - top + 1;
     var cropRect = { x: left, y: top, w: cropW, h: cropH };
     if (cropW === w && cropH === h) return { canvas: sourceCanvas, w: w, h: h, cropRect: cropRect, noChange: true };
-    // Copy raw RGBA pixels one-for-one; this intentionally performs no resampling.
-    assertImageBudget(cropW, cropH, 8);
+    // Copy raw RGBA pixels one-for-one in bounded strips. drawImage is avoided
+    // intentionally so no interpolation, resampling or color conversion occurs.
+    assertNativeImageDimensions(cropW, cropH, 'Transparent-margin trimming');
     var cropped = document.createElement('canvas'); cropped.width = cropW; cropped.height = cropH;
-    cropped.getContext('2d').putImageData(sourceCanvas.getContext('2d', { willReadFrequently: true }).getImageData(left, top, cropW, cropH), 0, 0);
+    var croppedCtx = cropped.getContext('2d');
+    for (var destY = 0; destY < cropH; destY += stripHeight) {
+      var copyRows = Math.min(stripHeight, cropH - destY);
+      var cropStrip = sourceCtx.getImageData(left, top + destY, cropW, copyRows);
+      croppedCtx.putImageData(cropStrip, 0, destY);
+      cropStrip = null;
+    }
     return { canvas: cropped, w: cropW, h: cropH, cropRect: cropRect, noChange: false };
   }
 
-  // Per-operation peak, including source/readback/candidate buffers. Other
-  // cards and export canvases are not working buffers for this image operation.
-  // Decode/trim reserve up to three RGBA buffers; editor/cleanup callers pass
-  // their larger working-set estimate. Never silently reduce source resolution.
+  // Upload and native transparent-margin trimming accept the original PNG up
+  // to the established per-side browser safety limit. They intentionally do
+  // not reject based on total megapixels or a speculative memory estimate.
+  function assertNativeImageDimensions(w, h, operation) {
+    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0 || w > 8192 || h > 8192) {
+      throw new Error((operation || 'Native image processing') + ' cannot process ' + w + ' × ' + h +
+        ' px: dimensions must be valid and no side may exceed 8192 px. This operation was not applied.');
+    }
+  }
+
+  // Optional editor/cleanup operations retain their independent working-set
+  // guard. Upload and native alpha-bound trimming use bounded strips above.
+  // Never silently reduce source resolution.
   function assertImageBudget(w, h, workspaceBytesPerPixel, operation) {
+    assertNativeImageDimensions(w, h, operation);
     var bytes = w * h * Math.max(12, workspaceBytesPerPixel || 12) + 16 * 1024 * 1024;
-    if (!Number.isFinite(w) || !Number.isFinite(h) || w <= 0 || h <= 0 ||
-        w > 8192 || h > 8192 || w * h > 16 * 1024 * 1024 || bytes > 256 * 1024 * 1024) {
+    if (w * h > 16 * 1024 * 1024 || bytes > 256 * 1024 * 1024) {
       throw new Error((operation || 'Native image processing') + ' cannot process ' + w + ' × ' + h +
         ' px: estimated peak ' + Math.ceil(bytes / 1048576) +
         ' MiB; memory limit 256 MiB, 16,777,216 pixels and 8192 px per side. This operation was not applied.');
@@ -1356,6 +1380,7 @@
     resetImageBtn.style.display = design.wasEdited ? '' : 'none';
     if (design.layoutFeedback) feedbackEl.textContent = design.layoutFeedback;
     else if (design.autoTrimApplied) feedbackEl.textContent = t('marginsTrimmed')(design.originalCanvas.width, design.originalCanvas.height, design.trimmed.w, design.trimmed.h);
+    else feedbackEl.textContent = t('alreadyTightlyCropped');
     function refreshEdit() {
       thumbImg.src = design.previewUrl;
       resetImageBtn.style.display = design.wasEdited ? '' : 'none';
