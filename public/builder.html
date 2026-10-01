@@ -146,6 +146,12 @@
     overflow: hidden; pointer-events: none; z-index: 1000;
   }
   #statsOut { font-size: 13px; color: #555; margin-bottom: 12px; }
+  #sheetStatsOut { display:flex; flex-wrap:wrap; gap:6px 12px; margin:-6px 0 12px; color:#596b7a; font-size:12px; }
+  #sheetStatsOut span { padding:4px 7px; border:1px solid #dce1e5; border-radius:5px; background:#fff; }
+  .arrange-split { display:flex; width:100%; margin-top:12px; }
+  .arrange-split #packBtn { margin:0; border-radius:7px 0 0 7px; }
+  .arrange-split #arrangeMode { width:auto; min-width:108px; margin:0; border-left:1px solid #ffffff55; border-radius:0 7px 7px 0; background:#122c49; color:#fff; font-weight:700; cursor:pointer; }
+  .arrange-split #arrangeMode:focus-visible { position:relative; z-index:1; }
   #manualModeNote {
     font-size: 12px; color: #8a5a00; background: #fff6e0; border: 1px solid #f0d896;
     border-radius: 8px; padding: 8px 12px; margin-bottom: 12px; display: none;
@@ -289,7 +295,7 @@
         </div>
         <div class="field">
           <label><input type="checkbox" id="autoExtend" checked><span data-i18n="autoExtendLabel">Gumawa ng kasunod na sheet kapag puno</span></label>
-          <small id="autoExtendHelp" data-i18n="autoExtendHelp">Kapag naka-off, isang tuloy-tuloy na sheet ang gagamitin at lalawak ito kung kailangan.</small>
+          <small id="autoExtendHelp" data-i18n="autoExtendHelp">Kapag naka-off, mananatili ang kasalukuyang haba at iuulat ang mga hindi kasya.</small>
         </div>
         <div class="field">
           <label><input type="checkbox" id="autoRotate" checked><span data-i18n="autoRotateLabel">Payagan ang auto-rotate para mapuno ang mga gap</span></label>
@@ -323,7 +329,13 @@
             </select>
           </div>
         </div>
-        <button id="packBtn" data-i18n="packBtn">I-arrange sa sheet</button>
+        <div class="arrange-split">
+          <button id="packBtn">I-arrange sa sheet — Standard</button>
+          <select id="arrangeMode" aria-label="Arrange mode" title="Choose Standard or Max Fill packing">
+            <option value="standard" data-i18n="arrangeModeStandard">Standard</option>
+            <option value="max-fill" data-i18n="arrangeModeMaxFill">Max Fill</option>
+          </select>
+        </div>
         <p id="errorMsg"></p>
       </div>
     </div>
@@ -351,6 +363,7 @@
         <p id="overlapWarning" data-i18n="overlapWarning"></p>
         <p id="qualityWarning" data-i18n="qualityWarning"></p>
         <p id="statsOut"></p>
+        <div id="sheetStatsOut" aria-live="polite"></div>
         <p class="image-note">The sheet is displayed scaled to your screen. Screen zoom can look pixelated; PNG and TIFF use the full sheet pixel dimensions, rendered directly from full-resolution sources. Source PPI estimates available detail; smooth upscaling does not add original detail.</p>
       <div id="sheetsContainer"></div>
       </div>
@@ -468,7 +481,7 @@
       sheetWidthLabel: 'Width ng sheet',
       sheetLengthLabel: 'Length ng sheet',
       autoExtendLabel: 'Gumawa ng kasunod na sheet kapag puno',
-      autoExtendHelp: 'Kapag naka-off, isang tuloy-tuloy na sheet ang gagamitin at lalawak ito kung kailangan.',
+      autoExtendHelp: 'Kapag naka-off, mananatili ang kasalukuyang haba at iuulat ang mga hindi kasya.',
       autoRotateLabel: 'Payagan ang auto-rotate para mapuno ang mga gap',
       edgeAllowanceLabel: 'Allowance sa gilid para sa auto-layout',
       edgeAllowanceHelp: 'Para lang sa auto-arrange. Puwede pa ring idikit sa totoong gilid ang manual placement.',
@@ -497,6 +510,10 @@
       checkSize: 'Sheet size',
       packBtn: 'I-arrange sa sheet',
       packBtnBusy: 'Ina-arrange...',
+      arrangeModeStandard: 'Standard',
+      arrangeModeMaxFill: 'Max Fill',
+      arrangeStandardHelp: 'Original orientation muna; kaliwa-pakanan bago sumunod na row. Rotation ay fallback lang.',
+      arrangeMaxFillHelp: 'Mas agresibong MaxRects packing na puwedeng maghalo ng orientation para mas mapuno ang bawat sheet.',
       arrangeThisDesign: 'Idagdag sa layout',
       arrangeThisDesignBusy: 'Ina-arrange...',
       addToLayoutHelp: 'Punuin ang mga bakanteng espasyo nang hindi ginagalaw ang mga existing na design.',
@@ -564,6 +581,9 @@
         if (cost !== null) s += ', tinatayang gastos: \u20b1' + cost;
         return s;
       },
+      arrangeSummary: function(mode, placed, requested, sheets, eff, rotated){ return mode + ': ' + placed + ' / ' + requested + ' piraso ang nailagay sa ' + sheets + ' sheet' + (sheets > 1 ? 's' : '') + ' · ' + eff + '% average efficiency · ' + rotated + ' rotated'; },
+      sheetArrangeSummary: function(index, pieces, eff){ return 'Sheet ' + index + ': ' + pieces + ' piraso · ' + eff + '% efficiency'; },
+      unplacedExtensionOff: function(n){ return n + ' piraso ang hindi nailagay dahil naka-off ang Create another sheet when full.'; },
       skippedNote: function(n){ return n + ' piraso ang hindi kumasya kahit isa-isa (mas malaki sa sheet).'; }
     },
     en: {
@@ -595,7 +615,7 @@
       sheetWidthLabel: 'Sheet width',
       sheetLengthLabel: 'Sheet length',
       autoExtendLabel: 'Create another sheet when full',
-      autoExtendHelp: 'When off, use one continuous sheet that grows only when the requested pieces need it.',
+      autoExtendHelp: 'When off, keep the selected sheet length and report any pieces that do not fit.',
       autoRotateLabel: 'Allow auto-rotate to fill gaps',
       edgeAllowanceLabel: 'Auto-layout edge allowance',
       edgeAllowanceHelp: 'Auto-arrange only. Manual placement can still reach the real sheet edge.',
@@ -624,6 +644,10 @@
       checkSize: 'Sheet size',
       packBtn: 'Arrange on sheet',
       packBtnBusy: 'Arranging...',
+      arrangeModeStandard: 'Standard',
+      arrangeModeMaxFill: 'Max Fill',
+      arrangeStandardHelp: 'Original orientation first; fill left-to-right, then the next row. Rotation is a fallback.',
+      arrangeMaxFillHelp: 'Aggressive multi-start MaxRects packing that may mix orientations to fill each sheet.',
       arrangeThisDesign: 'Add to layout',
       arrangeThisDesignBusy: 'Arranging...',
       addToLayoutHelp: 'Fill available spaces without moving existing pieces.',
@@ -691,11 +715,25 @@
         if (cost !== null) s += ', estimated cost: \u20b1' + cost;
         return s;
       },
+      arrangeSummary: function(mode, placed, requested, sheets, eff, rotated){ return mode + ': ' + placed + ' / ' + requested + ' pieces placed across ' + sheets + ' sheet' + (sheets > 1 ? 's' : '') + ' · ' + eff + '% average efficiency · ' + rotated + ' pieces rotated'; },
+      sheetArrangeSummary: function(index, pieces, eff){ return 'Sheet ' + index + ': ' + pieces + ' pieces · ' + eff + '% efficiency'; },
+      unplacedExtensionOff: function(n){ return n + ' pieces remain unplaced because Create another sheet when full is off.'; },
       skippedNote: function(n){ return n + " piece(s) didn't fit even alone (bigger than the sheet)."; }
     }
   };
   var currentLang = 'en';
   function t(key){ return translations[currentLang][key] || key; }
+
+  function selectedArrangeMode() { return arrangeModeSelect && arrangeModeSelect.value === 'max-fill' ? 'max-fill' : 'standard'; }
+  function arrangeModeLabel(mode) { return mode === 'max-fill' ? t('arrangeModeMaxFill') : t('arrangeModeStandard'); }
+  function updateArrangeControls() {
+    var mode = selectedArrangeMode();
+    if (!packBtn.disabled) packBtn.textContent = t('packBtn') + ' — ' + arrangeModeLabel(mode);
+    var help = mode === 'max-fill' ? t('arrangeMaxFillHelp') : t('arrangeStandardHelp');
+    packBtn.setAttribute('aria-label', t('packBtn'));
+    packBtn.title = help; packBtn.setAttribute('aria-description', help);
+    arrangeModeSelect.title = help;
+  }
 
   var fileInput = document.getElementById('fileInput');
   var designList = document.getElementById('designList');
@@ -704,11 +742,13 @@
   var gapNumber = document.getElementById('gapNumber');
   var edgeAllowanceNumber = document.getElementById('edgeAllowanceNumber');
   var packBtn = document.getElementById('packBtn');
+  var arrangeModeSelect = document.getElementById('arrangeMode');
   var errorMsg = document.getElementById('errorMsg');
   var resultArea = document.getElementById('resultArea');
   var placeholderCard = document.getElementById('placeholderCard');
   var sheetsContainer = document.getElementById('sheetsContainer');
   var statsOut = document.getElementById('statsOut');
+  var sheetStatsOut = document.getElementById('sheetStatsOut');
   var manualModeNote = document.getElementById('manualModeNote');
   var overlapWarning = document.getElementById('overlapWarning');
   var qualityWarning = document.getElementById('qualityWarning');
@@ -732,6 +772,8 @@
   var sheetWidthPxGlobal = 0, dpiGlobal = 300;
   var currentMeasureUnit = 'in';
   var layoutDragActive = false;
+  var lastArrangeMode = null;
+  var lastArrangeRequested = 0;
   // Geometry-only session history: source canvases are shared, never cloned.
   // Restoring geometry resolves the latest active image of each design, so
   // layout Undo cannot accidentally undo a background/optimization edit.
@@ -741,7 +783,8 @@
       return {designs:designs.map(function(d){return {ref:d,qty:d.qty,widthIn:d.widthIn,heightIn:d.heightIn};}),
         instances:instances.map(function(i){var copy=Object.assign({},i);delete copy.canvas;return copy;}),
         sheets:sheets.map(function(s){var copy=Object.assign({},s,{placements:s.placements.map(function(p){return Object.assign({},p,{inst:p.inst.id});})});delete copy.renderCanvas;delete copy.exportUi;return copy;}),
-        selected:Array.from(selectedInstanceIds),manual:manualMode,dpi:dpiGlobal,width:sheetWidthPxGlobal};
+        selected:Array.from(selectedInstanceIds),manual:manualMode,dpi:dpiGlobal,width:sheetWidthPxGlobal,
+        arrange:{mode:lastArrangeMode,requested:lastArrangeRequested,skipped:lastSkipped||0,reason:lastSkipReason||''}};
     }
     function signature(s){return JSON.stringify([s.instances,s.sheets,s.designs.map(function(d){return [d.ref.id,d.qty,d.widthIn,d.heightIn];})]);}
     function update(){
@@ -764,6 +807,8 @@
         var byId=new Map();instances=s.instances.map(function(i){var d=designs.find(function(d){return d.id===i.designId;});var copy=Object.assign({},i,{canvas:d.trimmed.canvas});byId.set(i.id,copy);return copy;});
         sheets=s.sheets.map(function(sheet){return Object.assign({},sheet,{placements:sheet.placements.map(function(p){return Object.assign({},p,{inst:byId.get(p.inst)});})});});
         selectedInstanceIds=new Set(s.selected);manualMode=s.manual;dpiGlobal=s.dpi;sheetWidthPxGlobal=s.width;
+        lastArrangeMode=s.arrange&&s.arrange.mode||null;lastArrangeRequested=s.arrange&&s.arrange.requested||0;
+        lastSkipped=s.arrange&&s.arrange.skipped||0;lastSkipReason=s.arrange&&s.arrange.reason||'';
         renderAllDesigns();setOverlapState(computeAllOverlaps());setQualityState(computeAllLowRes());
         if(sheets.length)renderAllSheets();else renderStartupSheetPreview();computeStats();
       }finally{restoring=false;}
@@ -889,7 +934,7 @@
     updateUnitLabels();
     if (sheets.length) {
       manualMode = false;
-      repack();
+      repack(lastArrangeMode || selectedArrangeMode(), true);
     } else {
       renderStartupSheetPreview();
     }
@@ -920,7 +965,7 @@
     gapSlider.value = Math.min(1, Math.max(0, gapIn));
     updateUnitLabels();
     renderAllDesigns();
-    if (sheets.length) { repack(); }
+    if (sheets.length) { repack(lastArrangeMode || selectedArrangeMode(), true); }
     else { renderStartupSheetPreview(); }
   }
 
@@ -935,11 +980,11 @@
   document.getElementById('autoExtend').addEventListener('change', function(){
     if (!sheets.length) { renderStartupSheetPreview(); return; }
     // The checkbox changes the export layout contract, so apply it immediately
-    // as one undoable Arrange action. Nothing is silently discarded: a single
-    // DTF roll grows as required when continuation sheets are disabled.
+    // as one undoable Arrange action. Remaining copies stay explicitly unplaced
+    // when continuation is disabled.
     layoutHistory.run('Change sheet continuation', function(){
       manualMode = false;
-      repack();
+      repack(lastArrangeMode || selectedArrangeMode(), true);
     });
   });
   customerNameInput.addEventListener('input', function(){
@@ -992,9 +1037,7 @@
     updateUnitLabels();
     document.getElementById('langToggleTL').classList.toggle('active', lang === 'tl');
     document.getElementById('langToggleEN').classList.toggle('active', lang === 'en');
-    packBtn.title = t('arrangeSheetHelp');
-    packBtn.setAttribute('aria-description', t('arrangeSheetHelp'));
-    if (!packBtn.disabled) { packBtn.textContent = t('packBtn'); }
+    updateArrangeControls();
     manualModeNote.textContent = t('manualModeNote');
     qualityWarning.textContent = t('qualityWarning');
     renderAllDesigns();
@@ -1066,6 +1109,8 @@
     }
     return { canvas: cropped, w: cropW, h: cropH, cropRect: cropRect, noChange: false };
   }
+
+  arrangeModeSelect.addEventListener('change', updateArrangeControls);
 
   // Upload and native transparent-margin trimming accept the original PNG up
   // to the established per-side browser safety limit. They intentionally do
@@ -1568,13 +1613,13 @@
     addDesignFiles([file]);
   });
 
-  function createInstancesForDesign(design, dpi) {
+  function createInstancesForDesign(design, dpi, requestedCount) {
     if (!Number.isFinite(design.widthIn) || !Number.isFinite(design.heightIn) || design.widthIn <= 0 || design.heightIn <= 0 ||
         !Number.isInteger(design.qty) || design.qty < 1 || design.qty > 10000) throw new Error(t('invalidDesignSize'));
-    var newInstances = [];
+    var newInstances = [], count = requestedCount == null ? design.qty : requestedCount;
       var wPx = Math.max(1, Math.round(design.widthIn * dpi));
       var hPx = Math.max(1, Math.round(design.heightIn * dpi));
-      for (var n = 0; n < design.qty; n++) {
+      for (var n = 0; n < count; n++) {
         newInstances.push({ canvas: design.trimmed.canvas, vibrance: design.vibrance, baseW: wPx, baseH: hPx, rotation: 0, id: instanceIdCounter++, designId: design.id, manualX: 0, manualY: 0 });
       }
     return newInstances;
@@ -1640,6 +1685,7 @@
     }
     p.x = next.x; p.y = next.y; p.w = next.w; p.h = next.h;
     p.inst.manualX = p.x; p.inst.manualY = p.y;
+    p.inst.layoutLocked = true;
     return true;
   }
 
@@ -1705,9 +1751,11 @@
     return false;
   }
 
-  var packSheet = SmartSheetPacking.packSheet, pruneContained = SmartSheetPacking.pruneContained, subtractOccupiedRect = SmartSheetPacking.subtractOccupiedRect;
+  var packSheet = SmartSheetPacking.packSheet, packSheetMaxFill = SmartSheetPacking.packSheetMaxFill,
+    pruneContained = SmartSheetPacking.pruneContained, subtractOccupiedRect = SmartSheetPacking.subtractOccupiedRect;
 
   var lastSkipped = 0;
+  var lastSkipReason = '';
 
   function getSheetPixelSettings() {
     var dpi = parseFloat(dpiInput.value) || 300;
@@ -1732,10 +1780,9 @@
     var autoEdgeAllowancePx = Math.ceil(edgeAllowanceIn * dpi);
     dpiGlobal = dpi;
     sheetWidthPxGlobal = sheetWidthPx;
-    // Turning off continuation on a paged DTF roll means one continuous sheet.
-    // It starts at the selected length and grows only if all requested pieces
-    // need more space; it never cuts or drops the remaining quantity.
-    var continuousRoll = preset.family === 'dtf' && !autoExtend;
+    // Turning off continuation keeps the selected physical sheet length. Any
+    // remaining requested copies stay unplaced and are reported explicitly.
+    var continuousRoll = false;
     return { dpi: dpi, sheetWidthPx: sheetWidthPx, sheetLengthPx: sheetLengthPx, gapPx: gapPx, headerHeightPx: headerHeightPx, autoEdgeAllowancePx: autoEdgeAllowancePx, autoExtend: autoExtend, allowRotation: allowRotation, meterPaged: meterPaged, continuousRoll: continuousRoll };
   }
 
@@ -1749,7 +1796,25 @@
     });
   }
 
-  function repack() {
+  function prepareInstancesForArrange() {
+    var locked = [];
+    sheets.forEach(function(sheet){
+      sheet.placements.forEach(function(p){ if (p.inst.layoutLocked) locked.push(p.inst); });
+    });
+    var lockedIds = new Set(locked.map(function(inst){ return inst.id; }));
+    var lockedByDesign = new Map();
+    locked.forEach(function(inst){ lockedByDesign.set(inst.designId, (lockedByDesign.get(inst.designId) || 0) + 1); });
+    var next = locked.slice();
+    var dpi = parseFloat(dpiInput.value) || 300;
+    designs.forEach(function(design){
+      var needed = Math.max(0, design.qty - (lockedByDesign.get(design.id) || 0));
+      if (needed) next = next.concat(createInstancesForDesign(design, dpi, needed));
+    });
+    instances = next;
+    return lockedIds;
+  }
+
+  function repack(mode, preserveLocked) {
     var settings = getSheetPixelSettings();
     var sheetWidthPx = settings.sheetWidthPx;
     var sheetLengthPx = settings.sheetLengthPx;
@@ -1757,37 +1822,79 @@
     var edgePx = settings.autoEdgeAllowancePx;
     var autoExtend = settings.autoExtend;
 
-    lastSkipped = 0;
+    mode = mode === 'max-fill' ? 'max-fill' : 'standard';
+    var packer = mode === 'max-fill' ? packSheetMaxFill : packSheet;
+    lastSkipped = 0; lastSkipReason = '';
 
-    if (manualMode && sheets.length) {
+    if (manualMode && sheets.length && !preserveLocked) {
       renderAllSheets();
       computeStats();
       return;
     }
 
+    var previousSheets = sheets;
+    var lockedIds = new Set();
+    if (preserveLocked) {
+      previousSheets.forEach(function(sheet){
+        sheet.placements.forEach(function(p){ if (p.inst.layoutLocked) lockedIds.add(p.inst.id); });
+      });
+    }
+    var lastLockedSheet = -1;
+    previousSheets.forEach(function(sheet, index){
+      if (sheet.placements.some(function(p){ return lockedIds.has(p.inst.id); })) lastLockedSheet = index;
+    });
     sheets = [];
+    for (var lockedSheetIndex = 0; lockedSheetIndex <= lastLockedSheet; lockedSheetIndex++) {
+      var oldSheet = previousSheets[lockedSheetIndex];
+      sheets.push({
+        placements: oldSheet.placements.filter(function(p){ return lockedIds.has(p.inst.id); }),
+        widthPx: oldSheet.widthPx, heightPx: oldSheet.heightPx,
+        headerHeightPx: oldSheet.headerHeightPx, gapPx: gapPx, autoEdgeAllowancePx: edgePx
+      });
+    }
     selectedInstanceIds.clear();
     setOverlapState([]);
     setQualityState([]);
     updateSelectionControls();
-    var remaining = instances.slice();
+    var remaining = instances.filter(function(inst){ return !lockedIds.has(inst.id); });
+
+    function fillSheet(sheet, packedHeight) {
+      var contentTopPx = Math.max(sheet.headerHeightPx || 0, edgePx);
+      var contentWidth = Math.max(0, sheet.widthPx - (2 * edgePx));
+      var contentHeight = Math.max(0, packedHeight - contentTopPx - edgePx);
+      var occupied = sheet.placements.map(function(p){
+        return { x: p.x - edgePx, y: p.y - contentTopPx, w: p.w, h: p.h };
+      });
+      var result = packer(remaining, contentWidth, contentHeight, gapPx, settings.allowRotation, occupied);
+      var placed = offsetPackedPlacements(result.placements, edgePx, contentTopPx);
+      sheet.placements = sheet.placements.concat(placed);
+      remaining = result.unplaced;
+      return placed.length;
+    }
+
+    for (var existingIndex = 0; existingIndex < sheets.length && remaining.length; existingIndex++) {
+      fillSheet(sheets[existingIndex], sheets[existingIndex].heightPx);
+    }
     while (remaining.length > 0) {
       var isLongTarpaulin = !settings.meterPaged && autoExtend;
       var isContinuousSheet = isLongTarpaulin || settings.continuousRoll;
       var contentTopPx = Math.max(settings.headerHeightPx, edgePx);
       var packedSheetHeight = isContinuousSheet ? Math.max(sheetLengthPx * 50, 3000000) : sheetLengthPx;
-      var contentWidth = Math.max(0, sheetWidthPx - (2 * edgePx));
-      var contentHeight = Math.max(0, packedSheetHeight - contentTopPx - edgePx);
-      var result = packSheet(remaining, contentWidth, contentHeight, gapPx, settings.allowRotation);
-      if (result.placements.length === 0) { lastSkipped = remaining.length; break; }
-      var placed = offsetPackedPlacements(result.placements, edgePx, contentTopPx);
+      if (sheets.length && !autoExtend && !isContinuousSheet) {
+        lastSkipped = remaining.length; lastSkipReason = 'extension-disabled'; break;
+      }
+      var nextSheet = { placements: [], widthPx: sheetWidthPx, heightPx: packedSheetHeight,
+        headerHeightPx: settings.headerHeightPx, gapPx: gapPx, autoEdgeAllowancePx: edgePx };
+      var placedCount = fillSheet(nextSheet, packedSheetHeight);
+      if (placedCount === 0) { lastSkipped = remaining.length; lastSkipReason = 'oversized'; break; }
+      var placed = nextSheet.placements;
       var usedH = placed.reduce(function(m, p){ return Math.max(m, p.y + p.h); }, contentTopPx) + gapPx + edgePx;
       var sheetH = isContinuousSheet ? Math.max(sheetLengthPx, usedH) : sheetLengthPx;
-      sheets.push({ placements: placed, widthPx: sheetWidthPx, heightPx: sheetH, headerHeightPx: settings.headerHeightPx, gapPx: gapPx, autoEdgeAllowancePx: edgePx });
-      remaining = result.unplaced;
+      nextSheet.heightPx = sheetH;
+      sheets.push(nextSheet);
       if (isContinuousSheet) break;
       if (!autoExtend) {
-        lastSkipped = remaining.length;
+        lastSkipped = remaining.length; lastSkipReason = 'extension-disabled';
         break;
       }
       if (isLongTarpaulin) break;
@@ -1891,6 +1998,8 @@
         p.inst.manualX=p.x; p.inst.manualY=p.y;
         drawSheetCanvas(canvasEl,sheet);
         window.smartSheetWorkspace.showStatus('Resize cancelled: keep the configured spacing and sheet boundaries.',true);
+      } else if (p.x !== original.x || p.y !== original.y || p.w !== original.w || p.h !== original.h) {
+        p.inst.layoutLocked = true;
       }
       setOverlapState(computeAllOverlaps());
       setQualityState(computeAllLowRes());
@@ -2002,7 +2111,7 @@
           document.removeEventListener('pointercancel',onCancel);document.removeEventListener('keydown',onKey,true);
           window.removeEventListener('blur',onCancel);
           if(!cancel&&valid&&(dx||dy)) {
-            originals.forEach(function(o){o.p.x=o.x+dx;o.p.y=o.y+dy;o.p.inst.manualX=o.p.x;o.p.inst.manualY=o.p.y;});
+            originals.forEach(function(o){o.p.x=o.x+dx;o.p.y=o.y+dy;o.p.inst.manualX=o.p.x;o.p.inst.manualY=o.p.y;o.p.inst.layoutLocked=true;});
             layoutHistory.record(historyBefore,'Move pieces');
           } else {
             manualMode=historyBefore.manual;
@@ -2155,6 +2264,7 @@
     overlapWarning.style.display = 'none';
     qualityWarning.style.display = 'none';
     statsOut.textContent = t('blankPreviewLabel') + ': ' + formatMeasure(sheet.widthPx / dpiGlobal) + ' x ' + formatMeasure(sheet.heightPx / dpiGlobal) + ' ' + unitSuffix();
+    sheetStatsOut.innerHTML = '';
     resultArea.style.display = 'block';
     placeholderCard.style.display = 'none';
 
@@ -2919,16 +3029,21 @@
   }
 
   function computeStats() {
-    var totalPieces = 0, totalUsedArea = 0, totalSheetArea = 0, totalUsedLengthIn = 0;
-    sheets.forEach(function(sheet){
+    var totalPieces = 0, totalUsedArea = 0, totalSheetArea = 0, totalUsedLengthIn = 0, rotatedPieces = 0;
+    var sheetDetails = [];
+    sheets.forEach(function(sheet, sheetIndex){
       totalPieces += sheet.placements.length;
       totalSheetArea += sheet.widthPx * sheet.heightPx;
-      var usedH = 0;
+      var usedH = 0, sheetUsedArea = 0;
       sheet.placements.forEach(function(p){
         totalUsedArea += p.w * p.h;
+        sheetUsedArea += p.w * p.h;
+        if (Math.abs(p.inst.rotation || 0) % 180 === 90) rotatedPieces++;
         usedH = Math.max(usedH, p.y + p.h);
       });
       totalUsedLengthIn += usedH / dpiGlobal;
+      sheetDetails.push(t('sheetArrangeSummary')(sheetIndex + 1, sheet.placements.length,
+        sheet.widthPx * sheet.heightPx > 0 ? Math.round(sheetUsedArea / (sheet.widthPx * sheet.heightPx) * 100) : 0));
     });
     var efficiency = totalSheetArea > 0 ? Math.round((totalUsedArea / totalSheetArea) * 100) : 0;
     var price = parseFloat(priceInput.value) || 0;
@@ -2942,9 +3057,14 @@
       }
       cost = (unitLength * price).toFixed(2);
     }
-    var text = t('overallSummary')(totalPieces, sheets.length, efficiency, cost);
-    if (lastSkipped > 0) { text += ' ' + t('skippedNote')(lastSkipped); }
+    var text = lastArrangeMode ? t('arrangeSummary')(arrangeModeLabel(lastArrangeMode), totalPieces,
+      Math.max(lastArrangeRequested, totalPieces + lastSkipped), sheets.length, efficiency, rotatedPieces) :
+      t('overallSummary')(totalPieces, sheets.length, efficiency, cost);
+    if (cost !== null && lastArrangeMode) text += ' · \u20b1' + cost + ' estimated cost';
+    if (lastSkipped > 0) text += ' ' + (lastSkipReason === 'extension-disabled' ? t('unplacedExtensionOff')(lastSkipped) : t('skippedNote')(lastSkipped));
     statsOut.textContent = text;
+    sheetStatsOut.innerHTML = '';
+    if (lastArrangeMode) sheetDetails.forEach(function(detail){ var item=document.createElement('span');item.textContent=detail;sheetStatsOut.appendChild(item); });
   }
 
   function copySheetsForIncrementalLayout() {
@@ -3236,6 +3356,7 @@
     instances = instances.map(function(inst){ return addedById.get(inst.id) || inst; });
     sheets = result.sheets;
     lastSkipped = result.skipped;
+    lastArrangeMode = null; lastArrangeRequested = 0;
     design.layoutFeedback = incrementalLayoutMessage(result, design, settings);
     setOverlapState(computeAllOverlaps());
     setQualityState(computeAllLowRes());
@@ -3277,15 +3398,18 @@
       errorMsg.style.display = 'block';
       return;
     }
+    var arrangeMode = selectedArrangeMode();
     packBtn.disabled = true;
-    packBtn.textContent = t('packBtnBusy');
+    packBtn.textContent = t('packBtnBusy') + ' — ' + arrangeModeLabel(arrangeMode);
     setTimeout(function(){
       try {
-        layoutHistory.run('Arrange on sheet',function(){
+        layoutHistory.run('Arrange on sheet — ' + arrangeModeLabel(arrangeMode),function(){
+        prepareInstancesForArrange();
+        lastArrangeMode = arrangeMode;
+        lastArrangeRequested = designs.reduce(function(total, design){ return total + design.qty; }, 0);
         manualMode = false;
         manualModeNote.style.display = 'none';
-        buildInstances();
-        repack();
+        repack(arrangeMode, true);
         });
         resultArea.style.display = 'block';
         placeholderCard.style.display = 'none';
@@ -3294,7 +3418,7 @@
         errorMsg.style.display = 'block';
       } finally {
         packBtn.disabled = false;
-        packBtn.textContent = t('packBtn');
+        updateArrangeControls();
       }
     }, 20);
   });
@@ -3386,9 +3510,10 @@
     manual:enterManualModeIfNeeded, renderDesigns:renderAllDesigns, renderSheets:renderAllSheets, stats:computeStats,
     qualityRefresh:function(){setOverlapState(computeAllOverlaps());setQualityState(computeAllLowRes());},
     autoArrange:function(){
-      layoutHistory.run('Arrange on sheet',function(){
-      designs.forEach(function(d){if(!instances.some(function(i){return i.designId===d.id;}))instances=instances.concat(createInstancesForDesign(d,dpiGlobal));});
-      manualMode=false;repack();
+      var mode=selectedArrangeMode();
+      layoutHistory.run('Arrange on sheet — '+arrangeModeLabel(mode),function(){
+      prepareInstancesForArrange();lastArrangeMode=mode;lastArrangeRequested=designs.reduce(function(n,d){return n+d.qty;},0);
+      manualMode=false;repack(mode,true);
       });
     }
   });

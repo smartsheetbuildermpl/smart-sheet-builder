@@ -48,7 +48,8 @@
     info.append(summary, note); panels.output.appendChild(info);
   }
   var footer = document.createElement('footer'); footer.className = 'dock-footer';
-  footer.append(byId('packBtn'), byId('errorMsg')); dock.appendChild(footer);
+  var arrangeControl = byId('packBtn').closest('.arrange-split') || byId('packBtn');
+  footer.append(arrangeControl, byId('errorMsg')); dock.appendChild(footer);
   function select(name) {
     names.forEach(function(key) {
       var active = key === name, tab = byId('dock-tab-' + key);

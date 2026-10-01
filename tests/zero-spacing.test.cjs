@@ -72,11 +72,13 @@ assert.notEqual(html, source);
     }), 'manual placements can touch the physical edge; one-pixel overlap or overflow is invalid');
     assert(await rejected());
     await frame.locator('#autoExtend').uncheck();
-    // A disabled continuation checkbox now means one continuous DTF roll, not
-    // "drop the next copy". The fifth piece grows the working sheet.
-    await doc.evaluate(() => smartSheetWorkspace.addFile(zeroFile()));
-    assert(await doc.evaluate(() => { const s = smartSheetWorkspace.snapshot(); return s.sheets.length === 1 && s.sheets[0].placements.length === 5 && s.sheets[0].height > 236; }));
+    // With additional sheets disabled, an interactive Add must reject the
+    // fifth copy without mutating the existing fixed-length sheet.
+    const fullState = await doc.evaluate(() => JSON.stringify(smartSheetWorkspace.snapshot()));
+    await assert.rejects(() => doc.evaluate(() => smartSheetWorkspace.addFile(zeroFile())), /No space at this print size/);
+    assert.equal(await doc.evaluate(() => JSON.stringify(smartSheetWorkspace.snapshot())), fullState);
     await frame.locator('#autoExtend').check();
+    await doc.evaluate(() => smartSheetWorkspace.addFile(zeroFile()));
     await doc.evaluate(() => smartSheetWorkspace.setOpen(true));
     await frame.locator('#sw-arrange').click();
     const arranged = await doc.evaluate(() => smartSheetWorkspace.snapshot());

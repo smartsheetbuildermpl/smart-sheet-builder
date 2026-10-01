@@ -3,7 +3,7 @@ const fs = require('node:fs');
 const { chromium } = require('playwright');
 
 const source = fs.readFileSync('public/builder.html', 'utf8');
-const hook = "window.incrementalTest={get designs(){return designs},get instances(){return instances},get sheets(){return sheets},add:appendDesignToCurrentLayout,repack:repack,settings:getSheetPixelSettings,plan:planIncrementalBatch,pack:packIncrementalBatch,setState:function(next){designs=next.designs;instances=next.instances;sheets=next.sheets;manualMode=!!next.manualMode;instanceIdCounter=100000;},draw:drawSheetCanvas};";
+const hook = "window.incrementalTest={get designs(){return designs},get instances(){return instances},get sheets(){return sheets},get skipped(){return lastSkipped},get skipReason(){return lastSkipReason},add:appendDesignToCurrentLayout,repack:repack,settings:getSheetPixelSettings,plan:planIncrementalBatch,pack:packIncrementalBatch,setState:function(next){designs=next.designs;instances=next.instances;sheets=next.sheets;manualMode=!!next.manualMode;instanceIdCounter=100000;},draw:drawSheetCanvas};";
 const html = source.replace(/\}\)\(\);\s*<\/script>/, hook + '})();</script>');
 assert.notEqual(html, source, 'test hook inserted');
 
@@ -248,14 +248,13 @@ assert.notEqual(html, source, 'test hook inserted');
       continuation.checked = true;
       t.repack();
       if (t.sheets.length !== 2 || t.sheets.reduce((count, sheet) => count + sheet.placements.length, 0) !== 60) throw Error('39-inch continuation did not retain all 60 copies: sheets=' + t.sheets.length + ' copies=' + t.sheets.reduce((count, sheet) => count + sheet.placements.length, 0));
-      document.getElementById('sheetLength').value = '60';
       continuation.checked = false;
       continuation.dispatchEvent(new Event('change', { bubbles: true }));
       const settings = t.settings(), placed = t.sheets.reduce((count, sheet) => count + sheet.placements.length, 0);
-      if (settings.sheetLengthPx !== 6000 || !settings.continuousRoll) throw Error('DTF length was still capped at 39 inches');
-      if (t.sheets.length !== 1 || placed !== 60 || t.sheets[0].heightPx < 6000) throw Error('continuous roll cut or dropped copies after disabling continuation');
-      for (const p of t.sheets[0].placements) if (p.x < 30 || p.y < 30 || p.x + p.w > 2270 || p.y + p.h > t.sheets[0].heightPx - 30) throw Error('continuous roll violated automatic safe margin');
-      return { sheets: t.sheets.length, copies: placed, heightPx: t.sheets[0].heightPx, requestedLengthPx: settings.sheetLengthPx };
+      if (settings.sheetLengthPx !== 3900 || settings.continuousRoll) throw Error('disabled continuation changed the physical 39-inch sheet');
+      if (t.sheets.length !== 1 || placed !== 45 || t.skipped !== 15 || t.skipReason !== 'extension-disabled') throw Error('disabled continuation did not report the exact 15-copy shortfall');
+      for (const p of t.sheets[0].placements) if (p.x < 30 || p.y < 30 || p.x + p.w > 2270 || p.y + p.h > t.sheets[0].heightPx - 30) throw Error('single sheet violated automatic safe margin');
+      return { sheets: t.sheets.length, copies: placed, unplaced:t.skipped, heightPx: t.sheets[0].heightPx, requestedLengthPx: settings.sheetLengthPx };
     });
     const extraCases = await doc.evaluate(() => {
       const t=incrementalTest, c=t.designs[0].trimmed.canvas;
@@ -292,7 +291,7 @@ assert.notEqual(html, source, 'test hook inserted');
     assert.deepEqual(errors, []);
     console.log('Incremental layout passed: locked pieces, grouping, spacing, rotation, margins, exact quantities, UI feedback, and full-sheet rendering.', batchReport);
     console.log('Orientation priority passed:', orientationReport);
-    console.log('DTF continuation mode passed:', continuationReport);
+    console.log('DTF continuation and explicit unplaced reporting passed:', continuationReport);
     console.log(extraCases);
   } finally {
     await browser.close();
