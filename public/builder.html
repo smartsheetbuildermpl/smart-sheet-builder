@@ -2446,11 +2446,83 @@
     }
   }
   function downloadPng(sheet, idx) { return startExport('png', sheet, idx); }
+
+  function readPngUint32(bytes, offset) {
+    return ((bytes[offset] * 0x1000000) + (bytes[offset + 1] << 16) +
+      (bytes[offset + 2] << 8) + bytes[offset + 3]) >>> 0;
+  }
+
+  function writePngUint32(bytes, offset, value) {
+    bytes[offset] = (value >>> 24) & 255;
+    bytes[offset + 1] = (value >>> 16) & 255;
+    bytes[offset + 2] = (value >>> 8) & 255;
+    bytes[offset + 3] = value & 255;
+  }
+
+  function pngCrc32(bytes, start, end) {
+    var table = pngCrc32.table;
+    if (!table) {
+      table = pngCrc32.table = new Uint32Array(256);
+      for (var n = 0; n < 256; n++) {
+        var c = n;
+        for (var k = 0; k < 8; k++) c = (c & 1) ? (0xedb88320 ^ (c >>> 1)) : (c >>> 1);
+        table[n] = c >>> 0;
+      }
+    }
+    var crc = 0xffffffff;
+    for (var i = start; i < end; i++) crc = table[(crc ^ bytes[i]) & 255] ^ (crc >>> 8);
+    return (crc ^ 0xffffffff) >>> 0;
+  }
+
+  function makePngPhysicalResolutionChunk(dpi) {
+    var pixelsPerMeter = Math.round(Number(dpi) / 0.0254);
+    if (!Number.isFinite(pixelsPerMeter) || pixelsPerMeter < 1 || pixelsPerMeter > 0xffffffff) {
+      throw new Error('PNG resolution metadata could not be written. No credit was used.');
+    }
+    var chunk = new Uint8Array(21);
+    writePngUint32(chunk, 0, 9);
+    chunk.set([112, 72, 89, 115], 4); // pHYs
+    writePngUint32(chunk, 8, pixelsPerMeter);
+    writePngUint32(chunk, 12, pixelsPerMeter);
+    chunk[16] = 1; // pixels per metre
+    writePngUint32(chunk, 17, pngCrc32(chunk, 4, 17));
+    return chunk;
+  }
+
+  async function addPngPhysicalResolution(blob, dpi) {
+    var bytes = new Uint8Array(await blob.arrayBuffer());
+    var signature = [137, 80, 78, 71, 13, 10, 26, 10];
+    if (bytes.length < 33 || !signature.every(function(value, index){ return bytes[index] === value; })) {
+      throw new Error('PNG encoding produced invalid data. No credit was used.');
+    }
+    var physicalResolution = makePngPhysicalResolutionChunk(dpi);
+    var parts = [bytes.subarray(0, 8)], offset = 8, sawHeader = false, sawEnd = false;
+    while (offset < bytes.length) {
+      if (offset + 12 > bytes.length) throw new Error('PNG encoding produced invalid data. No credit was used.');
+      var length = readPngUint32(bytes, offset);
+      var chunkEnd = offset + 12 + length;
+      if (chunkEnd > bytes.length) throw new Error('PNG encoding produced invalid data. No credit was used.');
+      var type = String.fromCharCode(bytes[offset + 4], bytes[offset + 5], bytes[offset + 6], bytes[offset + 7]);
+      if (type === 'IHDR') {
+        if (sawHeader || offset !== 8 || length !== 13) throw new Error('PNG encoding produced invalid data. No credit was used.');
+        sawHeader = true;
+        parts.push(bytes.subarray(offset, chunkEnd), physicalResolution);
+      } else if (type !== 'pHYs') {
+        parts.push(bytes.subarray(offset, chunkEnd));
+      }
+      if (type === 'IEND') { sawEnd = true; if (chunkEnd !== bytes.length) throw new Error('PNG encoding produced invalid data. No credit was used.'); }
+      offset = chunkEnd;
+    }
+    if (!sawHeader || !sawEnd) throw new Error('PNG encoding produced invalid data. No credit was used.');
+    return new Blob(parts, { type: 'image/png' });
+  }
+
   async function encodePng(sheet, idx, ticket) {
     if (!ticket) return;
     var canvas = sheet.renderCanvas, ui = sheet.exportUi || {};
     var filename = 'dtf-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '.png';
-    var blob = await new Promise(function(resolve, reject) { canvas.toBlob(function(result) { if (result) resolve(result); else reject(new Error('PNG encoding failed. No credit was used.')); }, 'image/png'); });
+    var encoded = await new Promise(function(resolve, reject) { canvas.toBlob(function(result) { if (result) resolve(result); else reject(new Error('PNG encoding failed. No credit was used.')); }, 'image/png'); });
+    var blob = await addPngPhysicalResolution(encoded, dpiGlobal);
     if (!(await exportDelivery.deliver(blob, filename, undefined, 'png', canvas, ['png', idx], ticket)) && ui.progress) ui.progress.textContent = 'Export blocked. Check Account & exports.';
   }
 
