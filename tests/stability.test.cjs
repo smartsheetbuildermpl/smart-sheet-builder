@@ -13,8 +13,8 @@ const hook = `
       sheets=[{widthPx:690,heightPx:1170,headerHeightPx:11,gapPx:3,autoEdgeAllowancePx:9,placements:instances.map((inst,i)=>({inst,x:9+(i%10)*30,y:18+Math.floor(i/10)*18,w:24,h:12}))}];
       instanceIdCounter=201;manualMode=false;selectedInstanceIds.clear();renderAllDesigns();renderAllSheets();
     }};
-  const drawOriginal=drawSheetCanvas,overlayOriginal=renderOverlayFor;window.draws=0;window.overlays=0;
-  drawSheetCanvas=function(){window.draws++;return drawOriginal.apply(this,arguments)};
+  const drawOriginal=drawSheetPreview,overlayOriginal=renderOverlayFor;window.draws=0;window.overlays=0;
+  drawSheetPreview=function(){window.draws++;return drawOriginal.apply(this,arguments)};
   renderOverlayFor=function(){window.overlays++;return overlayOriginal.apply(this,arguments)};
 `;
 const html=fs.readFileSync('public/builder.html','utf8').replace(/\}\)\(\);\s*<\/script>/,hook+'})();</script>');
@@ -95,7 +95,7 @@ const html=fs.readFileSync('public/builder.html','utf8').replace(/\}\)\(\);\s*<\
     await page.evaluate(()=>{draws=overlays=0;frames=[];frameStart=performance.now();frameId=requestAnimationFrame(frameLoop);});
     await page.mouse.move(fullBox.x+450,fullBox.y+180,{steps:100});
     const fullDuring=await page.evaluate(()=>{cancelAnimationFrame(frameId);return {draws,overlays,frames,signature:stability.signature(),width:stability.sheets[0].renderCanvas.width,height:stability.sheets[0].renderCanvas.height};});
-    assert.deepEqual([fullDuring.width,fullDuring.height],[6900,11700]);
+    assert.deepEqual([fullDuring.width,fullDuring.height],[1415,2400], 'screen canvas is bounded independently of print dimensions');
     assert.equal(fullDuring.signature,fullBefore);assert.equal(fullDuring.draws,0);assert.equal(fullDuring.overlays,0);
     await page.keyboard.press('Escape');await page.mouse.up();
     assert.equal(await page.evaluate(()=>stability.signature()),fullBefore,'Escape cancels a full-resolution drag');

@@ -5,10 +5,11 @@ const { chromium } = require('playwright');
 const source = fs.readFileSync('public/builder.html', 'utf8');
 const hook = `window.pngResolutionTest={
   seedFull:function(){
-    var canvas=document.createElement('canvas');canvas.width=6900;canvas.height=11700;
-    var context=canvas.getContext('2d');context.fillStyle='rgba(18,92,166,.75)';context.fillRect(300,300,1500,600);
-    var sheet={widthPx:6900,heightPx:11700,headerHeightPx:0,placements:[{x:300,y:300,w:1500,h:600}],renderCanvas:canvas,exportUi:{progress:document.createElement('p')}};
-    canvas._ssbExportRecipe=['png-resolution',6900,11700,300];sheets=[sheet];dpiGlobal=300;
+    var source=document.createElement('canvas');source.width=1500;source.height=600;
+    var context=source.getContext('2d');context.fillStyle='rgba(18,92,166,.75)';context.fillRect(0,0,1500,600);
+    var canvas=document.createElement('canvas');
+    var sheet={widthPx:6900,heightPx:11700,headerHeightPx:0,placements:[{x:300,y:300,w:1500,h:600,inst:{canvas:source,baseW:1500,baseH:600,rotation:0,vibrance:0}}],renderCanvas:canvas,exportUi:{progress:document.createElement('p')}};
+    sheets=[sheet];dpiGlobal=300;drawSheetPreview(canvas,sheet);
     return {sheet:function(){return sheet},designPixels:1500};
   },
   download:function(){return downloadPng(sheets[0],0)},

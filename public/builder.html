@@ -364,7 +364,7 @@
         <p id="qualityWarning" data-i18n="qualityWarning"></p>
         <p id="statsOut"></p>
         <div id="sheetStatsOut" aria-live="polite"></div>
-        <p class="image-note">The sheet is displayed scaled to your screen. Screen zoom can look pixelated; PNG and TIFF use the full sheet pixel dimensions, rendered directly from full-resolution sources. Source PPI estimates available detail; smooth upscaling does not add original detail.</p>
+        <p class="image-note">Fast screen preview — final PNG/TIFF uses the original full-resolution artwork. Source PPI estimates available detail; smooth upscaling does not add original detail.</p>
       <div id="sheetsContainer"></div>
       </div>
     </div>
@@ -770,6 +770,8 @@
   var lowResInstanceIds = new Set();
   var manualMode = false;
   var sheetWidthPxGlobal = 0, dpiGlobal = 300;
+  var previewSources = new WeakMap();
+  var previewBitmaps = new WeakSet();
   var currentMeasureUnit = 'in';
   var layoutDragActive = false;
   var lastArrangeMode = null;
@@ -989,7 +991,7 @@
   });
   customerNameInput.addEventListener('input', function(){
     if (sheets.length) {
-      sheets.forEach(function(sheet){ if (sheet.renderCanvas) drawSheetCanvas(sheet.renderCanvas, sheet); });
+      sheets.forEach(function(sheet){ if (sheet.renderCanvas) drawSheetPreview(sheet.renderCanvas, sheet); });
     } else {
       renderStartupSheetPreview();
     }
@@ -1135,7 +1137,29 @@
     }
   }
 
+  // Derived display assets never replace inst.canvas or design.trimmed.canvas.
+  // Native canvas identity is the active-source version; edits create a new one.
+  function previewSource(source) {
+    var cached = previewSources.get(source);
+    if (cached) return cached;
+    var proxy = document.createElement('canvas');
+    var scale = Math.min(1, 1600 / Math.max(source.width, source.height));
+    proxy.width = Math.max(1, Math.round(source.width * scale));
+    proxy.height = Math.max(1, Math.round(source.height * scale));
+    var ctx = proxy.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(source, 0, 0, proxy.width, proxy.height);
+    previewBitmaps.add(proxy);
+    previewSources.set(source, proxy);
+    return proxy;
+  }
+  function requireFullResolution(source) {
+    if (previewBitmaps.has(source)) throw new Error('Screen previews cannot be used for print export.');
+    return source;
+  }
+
   function thumbnailUrl(canvas) {
+    canvas = previewSource(canvas);
     var c = document.createElement('canvas');
     var scale = Math.min(1, 160 / Math.max(canvas.width, canvas.height));
     c.width = Math.max(1, Math.round(canvas.width * scale));
@@ -1904,17 +1928,30 @@
     computeStats();
   }
 
-  function drawSheetCanvas(canvas, sheet) {
-    canvas._ssbExportRecipe = [sheet.widthPx, sheet.heightPx, dpiGlobal, customerNameInput.value.trim(), sheet.headerHeightPx,
+  function sheetExportRecipe(sheet) {
+    return [sheet.widthPx, sheet.heightPx, dpiGlobal, customerNameInput.value.trim(), sheet.headerHeightPx,
       sheet.placements.map(function(p) { var i=p.inst; return [exportDelivery.sourceId(i.canvas),i.canvas.width,i.canvas.height,p.x,p.y,p.w,p.h,i.baseW,i.baseH,i.rotation,i.vibrance]; })];
-    canvas.width = sheet.widthPx;
-    canvas.height = sheet.heightPx;
+  }
+  function drawSheetPreview(canvas, sheet) {
+    previewBitmaps.add(canvas);
+    paintSheet(canvas, sheet, true);
+  }
+  function drawSheetCanvas(canvas, sheet) {
+    requireFullResolution(canvas);
+    paintSheet(canvas, sheet, false);
+  }
+  function paintSheet(canvas, sheet, screenOnly) {
+    canvas._ssbExportRecipe = sheetExportRecipe(sheet);
+    var scale = screenOnly ? Math.min(1, 2400 / Math.max(sheet.widthPx, sheet.heightPx)) : 1;
+    canvas.width = Math.max(1, Math.round(sheet.widthPx * scale));
+    canvas.height = Math.max(1, Math.round(sheet.heightPx * scale));
     var ctx = canvas.getContext('2d');
+    ctx.scale(canvas.width / sheet.widthPx, canvas.height / sheet.heightPx);
     ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.clearRect(0, 0, sheet.widthPx, sheet.heightPx);
     var customerName = customerNameInput.value.trim();
-    if (customerName) {
+    if (customerName && !sheet.hideCustomerName) {
       ctx.save();
       ctx.fillStyle = '#111111';
       ctx.textAlign = 'center';
@@ -1928,14 +1965,15 @@
       ctx.save();
       ctx.translate(p.x + p.w / 2, p.y + p.h / 2);
       ctx.rotate(inst.rotation * Math.PI / 180);
-      // Always sample the full-resolution source once at the final print size.
+      // Export samples native pixels once. Only screen rendering uses proxies.
       ctx.filter = 'saturate(' + Math.max(0, 100 + (inst.vibrance || 0)) + '%)';
-      ctx.drawImage(inst.canvas, -inst.baseW / 2, -inst.baseH / 2, inst.baseW, inst.baseH);
+      ctx.drawImage(screenOnly ? previewSource(inst.canvas) : requireFullResolution(inst.canvas), -inst.baseW / 2, -inst.baseH / 2, inst.baseW, inst.baseH);
       ctx.restore();
     });
   }
 
   function resizePlacementOnSheet(p, sheet, canvasEl, overlayEl, corner, e) {
+    if (e.button !== 0 || layoutDragActive) return;
     var historyBefore=layoutHistory.capture();
     e.preventDefault();
     e.stopPropagation();
@@ -1948,8 +1986,8 @@
     enterManualModeIfNeeded();
 
     var rect = canvasEl.getBoundingClientRect();
-    var scaleX = canvasEl.width / rect.width;
-    var scaleY = canvasEl.height / rect.height;
+    var scaleX = sheet.widthPx / rect.width;
+    var scaleY = sheet.heightPx / rect.height;
     var startX = e.clientX;
     var startY = e.clientY;
     var original = {
@@ -1966,50 +2004,65 @@
     var minScale = Math.max(minSize / original.w, minSize / original.h);
     var maxScale = Math.max(minScale, Math.min(maxW / original.w, maxH / original.h));
 
-    function onMove(ev) {
-      var dx = (ev.clientX - startX) * scaleX;
-      var dy = (ev.clientY - startY) * scaleY;
+    var stationary = sheet.placements.filter(function(item){return item !== p;});
+    var preview = document.createElement('canvas');
+    preview.className = 'layout-drag-preview';
+    drawSheetPreview(preview, {widthPx:original.w,heightPx:original.h,placements:[Object.assign({},p,{x:0,y:0})],headerHeightPx:0,hideCustomerName:true});
+    overlayEl.appendChild(preview);
+    overlayEl.querySelectorAll('[data-instance-id]').forEach(function(node){if(Number(node.dataset.instanceId)===p.inst.id)node.style.visibility='hidden';});
+    drawSheetPreview(canvasEl,Object.assign({},sheet,{placements:stationary}));
+    layoutDragActive=true;layoutHistory.update();if(lens)lens.style.display='none';
+    var latest=e, raf=0, finished=false, candidate=Object.assign({},original), valid=true;
+    function paint() {
+      raf=0;
+      var dx = (latest.clientX - startX) * scaleX;
+      var dy = (latest.clientY - startY) * scaleY;
       var wDelta = growsRight ? dx : -dx;
       var hDelta = growsDown ? dy : -dy;
       var scale = Math.max((original.w + wDelta) / original.w, (original.h + hDelta) / original.h);
       scale = Math.max(minScale, Math.min(maxScale, scale));
       var newW = Math.max(minSize, original.w * scale);
       var newH = Math.max(minSize, original.h * scale);
-      p.w = newW;
-      p.h = newH;
-      p.x = growsRight ? anchorX : anchorX - newW;
-      p.y = growsDown ? anchorY : anchorY - newH;
-      p.inst.baseW = Math.max(1, original.baseW * scale);
-      p.inst.baseH = Math.max(1, original.baseH * scale);
-      p.inst.manualX = p.x;
-      p.inst.manualY = p.y;
-      setOverlapState(computeAllOverlaps());
-      setQualityState(computeAllLowRes());
-      drawSheetCanvas(canvasEl, sheet);
-      renderOverlayFor(overlayEl, sheet, canvasEl, true);
+      candidate={w:newW,h:newH,x:growsRight?anchorX:anchorX-newW,y:growsDown?anchorY:anchorY-newH,
+        baseW:Math.max(1,original.baseW*scale),baseH:Math.max(1,original.baseH*scale)};
+      var gap=sheet.gapPx||0,c=candidate;
+      valid=c.x>=0&&c.y>=0&&c.x+c.w<=sheet.widthPx+1e-7&&c.y+c.h<=sheet.heightPx+1e-7&&stationary.every(function(q){return c.x+c.w+gap<=q.x+1e-7||q.x+q.w+gap<=c.x+1e-7||c.y+c.h+gap<=q.y+1e-7||q.y+q.h+gap<=c.y+1e-7;});
+      preview.style.left=c.x/sheet.widthPx*100+'%';preview.style.top=c.y/sheet.heightPx*100+'%';
+      preview.style.width=c.w/sheet.widthPx*100+'%';preview.style.height=c.h/sheet.heightPx*100+'%';
+      preview.classList.toggle('invalid',!valid);
     }
-
-    function onUp() {
+    paint();
+    function onMove(ev) { if(ev.pointerId!==e.pointerId)return;latest=ev;if(!raf)raf=requestAnimationFrame(paint); }
+    function finish(cancel) {
+      if(finished)return;finished=true;cancelAnimationFrame(raf);paint();
       document.removeEventListener('pointermove', onMove);
       document.removeEventListener('pointerup', onUp);
-      if (window.smartSheetWorkspace && window.smartSheetWorkspace.opened && !window.smartSheetWorkspace.validate(p, sheet, p)) {
-        p.x=original.x; p.y=original.y; p.w=original.w; p.h=original.h;
-        p.inst.baseW=original.baseW; p.inst.baseH=original.baseH;
-        p.inst.manualX=p.x; p.inst.manualY=p.y;
-        drawSheetCanvas(canvasEl,sheet);
-        window.smartSheetWorkspace.showStatus('Resize cancelled: keep the configured spacing and sheet boundaries.',true);
-      } else if (p.x !== original.x || p.y !== original.y || p.w !== original.w || p.h !== original.h) {
+      document.removeEventListener('pointercancel',onCancel);document.removeEventListener('keydown',onKey,true);window.removeEventListener('blur',onCancel);
+      if (!cancel && valid && (candidate.x!==original.x||candidate.y!==original.y||candidate.w!==original.w||candidate.h!==original.h)) {
+        p.x=candidate.x;p.y=candidate.y;p.w=candidate.w;p.h=candidate.h;
+        p.inst.baseW=candidate.baseW;p.inst.baseH=candidate.baseH;p.inst.manualX=p.x;p.inst.manualY=p.y;
         p.inst.layoutLocked = true;
+        layoutHistory.record(historyBefore,'Resize piece');
+      } else {
+        manualMode=historyBefore.manual;
+        document.getElementById('layoutHistoryStatus').textContent=cancel?'Resize cancelled.':!valid?'Resize cancelled: keep the configured spacing and sheet boundaries.':'';
       }
+      preview.remove();preview.width=preview.height=0;layoutDragActive=false;layoutHistory.update();
+      if(overlayEl.hasPointerCapture(e.pointerId))overlayEl.releasePointerCapture(e.pointerId);
       setOverlapState(computeAllOverlaps());
       setQualityState(computeAllLowRes());
+      drawSheetPreview(canvasEl,sheet);
       renderOverlayFor(overlayEl, sheet, canvasEl, true);
+      manualModeNote.style.display=manualMode?'block':'none';
       computeStats();
-      layoutHistory.record(historyBefore,'Resize piece');
     }
-
+    function onUp(ev) { if(ev.pointerId===e.pointerId){latest=ev;finish(false);} }
+    function onCancel(){finish(true);}
+    function onKey(ev){if(ev.key==='Escape'){ev.preventDefault();ev.stopPropagation();finish(true);}}
+    overlayEl.setPointerCapture(e.pointerId);
     document.addEventListener('pointermove', onMove);
     document.addEventListener('pointerup', onUp);
+    document.addEventListener('pointercancel',onCancel);document.addEventListener('keydown',onKey,true);window.addEventListener('blur',onCancel);
   }
 
   function renderOverlayFor(overlayEl, sheet, canvasEl, interactive) {
@@ -2068,8 +2121,8 @@
         var historyBefore=layoutHistory.capture();
         enterManualModeIfNeeded();
         var rect = canvasEl.getBoundingClientRect();
-        var scaleX = canvasEl.width / rect.width;
-        var scaleY = canvasEl.height / rect.height;
+        var scaleX = sheet.widthPx / rect.width;
+        var scaleY = sheet.heightPx / rect.height;
         var startX = e.clientX, startY = e.clientY;
         var moving = sheet.placements.filter(function(item){ return selectedInstanceIds.has(item.inst.id); });
         var originals = moving.map(function(item){ return { p: item, x: item.x, y: item.y }; });
@@ -2085,12 +2138,12 @@
         preview.className='layout-drag-preview';preview.style.left=minX/sheet.widthPx*100+'%';preview.style.top=minY/sheet.heightPx*100+'%';
         preview.style.width=(maxRight-minX)/sheet.widthPx*100+'%';preview.style.height=(maxBottom-minY)/sheet.heightPx*100+'%';
         var previewCtx=preview.getContext('2d');previewCtx.scale(previewScale,previewScale);
-        moving.forEach(function(p){var i=p.inst;previewCtx.save();previewCtx.translate(p.x-minX+p.w/2,p.y-minY+p.h/2);previewCtx.rotate(i.rotation*Math.PI/180);previewCtx.filter='saturate('+Math.max(0,100+(i.vibrance||0))+'%)';previewCtx.drawImage(i.canvas,-i.baseW/2,-i.baseH/2,i.baseW,i.baseH);previewCtx.restore();});
+        moving.forEach(function(p){var i=p.inst;previewCtx.save();previewCtx.translate(p.x-minX+p.w/2,p.y-minY+p.h/2);previewCtx.rotate(i.rotation*Math.PI/180);previewCtx.filter='saturate('+Math.max(0,100+(i.vibrance||0))+'%)';previewCtx.drawImage(previewSource(i.canvas),-i.baseW/2,-i.baseH/2,i.baseW,i.baseH);previewCtx.restore();});
         overlayEl.appendChild(preview);
         overlayEl.querySelectorAll('[data-instance-id]').forEach(function(node){if(movingIds.has(Number(node.dataset.instanceId)))node.style.visibility='hidden';});
         // Bake stationary artwork once, then translate only the bounded drag
         // preview. The committed full-resolution source is never altered.
-        drawSheetCanvas(canvasEl,Object.assign({},sheet,{placements:stationary}));
+        drawSheetPreview(canvasEl,Object.assign({},sheet,{placements:stationary}));
         layoutDragActive=true;layoutHistory.update();if(lens)lens.style.display='none';
         var latest=e,raf=0,dx=0,dy=0,valid=true,finished=false;
         function paint(){
@@ -2120,7 +2173,7 @@
           preview.remove();preview.width=preview.height=0;layoutDragActive=false;layoutHistory.update();
           if(overlayEl.hasPointerCapture(e.pointerId))overlayEl.releasePointerCapture(e.pointerId);
           setOverlapState(computeAllOverlaps());
-          drawSheetCanvas(canvasEl,sheet);
+          drawSheetPreview(canvasEl,sheet);
           renderOverlayFor(overlayEl, sheet, canvasEl, true);
           manualModeNote.style.display=manualMode?'block':'none';computeStats();
         }
@@ -2148,7 +2201,7 @@
         rotatePlacementOnSheet(p, sheet);
         setOverlapState(computeAllOverlaps());
         setQualityState(computeAllLowRes());
-        drawSheetCanvas(canvasEl, sheet);
+        drawSheetPreview(canvasEl, sheet);
         renderOverlayFor(overlayEl, sheet, canvasEl, true);
       });
       overlayEl.appendChild(rotateBtn);
@@ -2159,8 +2212,8 @@
       e.preventDefault();
       enterManualModeIfNeeded();
       var rect = canvasEl.getBoundingClientRect();
-      var scaleX = canvasEl.width / rect.width;
-      var scaleY = canvasEl.height / rect.height;
+      var scaleX = sheet.widthPx / rect.width;
+      var scaleY = sheet.heightPx / rect.height;
       var startX = Math.max(0, Math.min(sheet.widthPx, (e.clientX - rect.left) * scaleX));
       var startY = Math.max(0, Math.min(sheet.heightPx, (e.clientY - rect.top) * scaleY));
       var baseSelection = e.shiftKey ? new Set(selectedInstanceIds) : new Set();
@@ -2287,7 +2340,7 @@
     wrap.appendChild(rulerFrame);
     block.appendChild(wrap);
     sheetsContainer.appendChild(block);
-    drawSheetCanvas(canvas, sheet);
+    drawSheetPreview(canvas, sheet);
     renderOverlayFor(overlay, sheet, canvas, false);
     attachMagnifier(stage, canvas);
     if (window.smartSheetWorkspace) window.smartSheetWorkspace.refresh();
@@ -2352,7 +2405,7 @@
 
       sheetsContainer.appendChild(block);
 
-      drawSheetCanvas(canvas, sheet);
+      drawSheetPreview(canvas, sheet);
       sheet.renderCanvas = canvas;
       renderOverlayFor(overlay, sheet, canvas, interactive);
       attachMagnifier(stage, canvas);
@@ -2421,6 +2474,13 @@
   async function startExport(kind, sheet, idx, profile) {
     var canvas = sheet.renderCanvas;
     if (!canvas || exportInProgress) return;
+    // Snapshot transforms before authorization/dialogs. The preview raster is
+    // never an encoder input. Client Job reconstruction already supplies native.
+    var editorExport = previewBitmaps.has(canvas), fullCanvas = null;
+    if (editorExport) {
+      sheet = Object.assign({}, sheet, {placements:sheet.placements.map(function(p){return Object.assign({},p,{inst:Object.assign({},p.inst)});})});
+      canvas = {width:sheet.widthPx,height:sheet.heightPx,_ssbExportRecipe:sheetExportRecipe(sheet)};
+    }
     exportInProgress = true;
     var ui = sheet.exportUi || {};
     var buttons = sheets.reduce(function(all, s) { var u=s.exportUi||{}; return all.concat([u.pngBtn,u.tiffBtn].filter(Boolean)); }, []);
@@ -2436,11 +2496,19 @@
         ticket = await exportDelivery.prepare(kind, canvas, [profile,idx]);
         if (!ticket) return;
       }
+      if (editorExport) {
+        if (ui.progress) ui.progress.textContent = 'Preparing full-resolution export…';
+        await new Promise(function(resolve){requestAnimationFrame(function(){setTimeout(resolve,0);});});
+        fullCanvas = document.createElement('canvas');
+        drawSheetCanvas(fullCanvas, sheet);
+        sheet.renderCanvas = fullCanvas;
+      }
       if (kind === 'png') await encodePng(sheet, idx, ticket);
       else await encodeTiff(sheet, idx, profile, ticket);
     } catch (err) {
       if (ui.progress) { ui.progress.style.color = '#b3261e'; ui.progress.textContent = err.message || 'Could not prepare export.'; }
     } finally {
+      if (fullCanvas) { fullCanvas.width = fullCanvas.height = 0; }
       exportInProgress = false;
       buttons.forEach(function(button) { button.disabled = false; });
     }
@@ -2519,11 +2587,12 @@
 
   async function encodePng(sheet, idx, ticket) {
     if (!ticket) return;
-    var canvas = sheet.renderCanvas, ui = sheet.exportUi || {};
+    var canvas = requireFullResolution(sheet.renderCanvas), ui = sheet.exportUi || {};
     var filename = 'dtf-gang-sheet' + (sheets.length > 1 ? '-' + (idx + 1) : '') + '.png';
     var encoded = await new Promise(function(resolve, reject) { canvas.toBlob(function(result) { if (result) resolve(result); else reject(new Error('PNG encoding failed. No credit was used.')); }, 'image/png'); });
     var blob = await addPngPhysicalResolution(encoded, dpiGlobal);
-    if (!(await exportDelivery.deliver(blob, filename, undefined, 'png', canvas, ['png', idx], ticket)) && ui.progress) ui.progress.textContent = 'Export blocked. Check Account & exports.';
+    var delivered = await exportDelivery.deliver(blob, filename, undefined, 'png', canvas, ['png', idx], ticket);
+    if (ui.progress) ui.progress.textContent = delivered ? 'PNG export ready.' : 'Export blocked. Check Account & exports.';
   }
 
   /*
@@ -3017,7 +3086,7 @@
   async function encodeTiff(sheet, idx, profile, ticket) {
     if (!ticket) return;
     var ui = sheet.exportUi || {};
-    var canvas = sheet.renderCanvas;
+    var canvas = requireFullResolution(sheet.renderCanvas);
     profile = profile || getExportProfile('rgb');
     var filename = filenameForExport(profile, idx);
     if (ui.progress) { ui.progress.style.color = '#2457d6'; ui.progress.textContent = t('exportPreparing'); }
