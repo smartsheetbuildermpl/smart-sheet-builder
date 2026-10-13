@@ -786,9 +786,10 @@
         instances:instances.map(function(i){var copy=Object.assign({},i);delete copy.canvas;return copy;}),
         sheets:sheets.map(function(s){var copy=Object.assign({},s,{placements:s.placements.map(function(p){return Object.assign({},p,{inst:p.inst.id});})});delete copy.renderCanvas;delete copy.exportUi;return copy;}),
         selected:Array.from(selectedInstanceIds),manual:manualMode,dpi:dpiGlobal,width:sheetWidthPxGlobal,
+        tarpaulinSize:currentMachinePreset().family === 'tarpaulin' ? [getSheetWidthIn(),getSheetLengthIn()] : null,
         arrange:{mode:lastArrangeMode,requested:lastArrangeRequested,skipped:lastSkipped||0,reason:lastSkipReason||''}};
     }
-    function signature(s){return JSON.stringify([s.instances,s.sheets,s.designs.map(function(d){return [d.ref.id,d.qty,d.widthIn,d.heightIn];})]);}
+    function signature(s){return JSON.stringify([s.instances,s.sheets,s.designs.map(function(d){return [d.ref.id,d.qty,d.widthIn,d.heightIn];}),s.tarpaulinSize]);}
     function update(){
       document.getElementById('layoutUndo').disabled=!past.length||layoutDragActive;
       document.getElementById('layoutRedo').disabled=!future.length||layoutDragActive;
@@ -809,6 +810,7 @@
         var byId=new Map();instances=s.instances.map(function(i){var d=designs.find(function(d){return d.id===i.designId;});var copy=Object.assign({},i,{canvas:d.trimmed.canvas});byId.set(i.id,copy);return copy;});
         sheets=s.sheets.map(function(sheet){return Object.assign({},sheet,{placements:sheet.placements.map(function(p){return Object.assign({},p,{inst:byId.get(p.inst)});})});});
         selectedInstanceIds=new Set(s.selected);manualMode=s.manual;dpiGlobal=s.dpi;sheetWidthPxGlobal=s.width;
+        if (s.tarpaulinSize && currentMachinePreset().family === 'tarpaulin') setSheetSize(s.tarpaulinSize[0],s.tarpaulinSize[1]);
         lastArrangeMode=s.arrange&&s.arrange.mode||null;lastArrangeRequested=s.arrange&&s.arrange.requested||0;
         lastSkipped=s.arrange&&s.arrange.skipped||0;lastSkipReason=s.arrange&&s.arrange.reason||'';
         renderAllDesigns();setOverlapState(computeAllOverlaps());setQualityState(computeAllLowRes());
@@ -834,7 +836,7 @@
     dtf: { widthIn: 23, lengthIn: 39, maxWidthIn: null, maxLengthIn: null, paged: true, family: 'dtf' },
     uvdtf24: { widthIn: 23, lengthIn: 39, maxWidthIn: null, maxLengthIn: 39, paged: true, family: 'uvdtf' },
     uvdtf12: { widthIn: 11, lengthIn: 39, maxWidthIn: null, maxLengthIn: 39, paged: true, family: 'uvdtf' },
-    tarpaulin: { widthIn: 63, lengthIn: 39, maxWidthIn: 63, maxLengthIn: 39, paged: true, family: 'tarpaulin' }
+    tarpaulin: { widthIn: 63, lengthIn: 39, paged: true, family: 'tarpaulin' }
   };
 
   function unitSuffix() {
@@ -979,6 +981,31 @@
   });
   measureUnitSelect.addEventListener('change', function(){ preserveMeasuresForUnitChange(measureUnitSelect.value); });
   machinePresetSelect.addEventListener('change', applyMachinePreset);
+  // Tarpaulin fields are the canonical physical size. Sheet geometry and
+  // preview recipes are derived from them, never from the preset defaults.
+  function syncTarpaulinSheetSize() {
+    if (currentMachinePreset().family !== 'tarpaulin' || layoutDragActive) return;
+    var widthIn = getSheetWidthIn(), lengthIn = getSheetLengthIn();
+    if (!Number.isFinite(widthIn) || !Number.isFinite(lengthIn) || widthIn <= 0 || lengthIn <= 0) return;
+    var before = layoutHistory.capture();
+    var preview = sheetsContainer.querySelector('.sheet-canvas');
+    var previousSize = sheets.length ? [sheets[0].widthPx,sheets[0].heightPx,dpiGlobal] : preview && preview._ssbExportRecipe;
+    // Input events arrive after the field changes; history uses the last
+    // rendered physical size so Undo restores both the fields and the sheet.
+    if (previousSize) before.tarpaulinSize = [previousSize[0]/previousSize[2],previousSize[1]/previousSize[2]];
+    var settings = getSheetPixelSettings();
+    sheets.forEach(function(sheet){
+      sheet.widthPx = settings.sheetWidthPx;
+      sheet.heightPx = settings.sheetLengthPx;
+    });
+    if (sheets.length) { renderAllSheets(); computeStats(); }
+    else renderStartupSheetPreview();
+    layoutHistory.record(before,'Change Tarpaulin sheet size');
+  }
+  ['sheetWidth','sheetLength'].forEach(function(id){
+    document.getElementById(id).addEventListener('input',syncTarpaulinSheetSize);
+    document.getElementById(id).addEventListener('change',syncTarpaulinSheetSize);
+  });
   document.getElementById('autoExtend').addEventListener('change', function(){
     if (!sheets.length) { renderStartupSheetPreview(); return; }
     // The checkbox changes the export layout contract, so apply it immediately
