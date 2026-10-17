@@ -52,6 +52,8 @@ async function fixture() {
   const sql = fs.readFileSync('supabase-client-jobs-v1.sql', 'utf8');
   await f.db.exec(sql);
   await f.db.exec(sql);
+  const profilesSql = fs.readFileSync('supabase-client-upload-profiles-v1.sql','utf8');
+  await f.db.exec(profilesSql); await f.db.exec(profilesSql);
   Object.assign(process.env, {
     RESEND_API_KEY: 'test-provider',
     CLIENT_JOBS_EMAIL_FROM: 'print@test.example',
@@ -129,6 +131,7 @@ async function fixture() {
         : { body: Buffer.isBuffer(body) ? body : JSON.stringify(body) })
     });
   const call = async (action, token, session, body = {}) => {
+    if (action === 'preview') body = { reference:'Test client project', ...body };
     const r = await pub.POST(
       req(`/api/client-upload/${token}?action=${action}`, body, null, {
         'x-client-submission': session || '',

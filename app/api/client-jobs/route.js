@@ -1,4 +1,5 @@
 import { accountActor, failure } from '../_lib/user-management';
+import { uploadProfileTemplates } from '../../lib/client-upload-profiles';
 import {
   jobs,
   reply,
@@ -13,6 +14,7 @@ import {
   uuid,
   rate
 } from '../_lib/client-jobs';
+import { text } from '../_lib/client-jobs';
 export const dynamic = 'force-dynamic';
 export async function GET(request) {
   try {
@@ -26,41 +28,26 @@ export async function GET(request) {
         job: { ...job, notification: undefined, link_hash: undefined }
       });
     }
-    let portal = await jobs('portal', { p_owner: user.id });
-    if (!portal)
-      portal = await jobs('portal-create', {
+    const profiles = await jobs('profiles-init', {
         p_owner: user.id,
         p_data: {
-          ...newLink(),
-          settings: {
-            ...defaults,
-            shopName:
-              profile.business_name || profile.full_name || 'Print shop',
-            email: user.email
-          }
+          templates: uploadProfileTemplates.map(template => ({ ...newLink(), key: template.key, name: template.name,
+            settings: settings({ ...defaults, dpi:template.dpi || defaults.dpi, machine: template.machine, widthIn: template.widthIn, lengthIn: template.lengthIn,
+              shopName: profile.business_name || profile.full_name || 'Print shop', email: user.email }) }))
         }
       });
     const list = await jobs('list', { p_owner: user.id });
-    const token = linkToken(portal);
     const setupIssues = portalSetup(request);
-    if (!token) setupIssues.push('The saved link cannot be recovered with the current signing key. Click Create/Enable link to replace it.');
-    const active = Boolean(portal?.enabled && token && setupIssues.length === 0);
     let origin = '';
     try { origin = publicOrigin(request); } catch { /* Report in setupIssues, do not fabricate a link. */ }
+    const visibleProfiles = profiles.map(p => {
+      const token = linkToken(p), active = Boolean(p.enabled && token && setupIssues.length === 0);
+      return { id: p.id, name: p.name, template: p.template_key, settings: p.settings, enabled: p.enabled, active,
+        status: active ? 'active' : 'setup_required', url: token && origin ? `${origin}/client-upload/${token}` : '' };
+    });
     return reply({
-      portal: portal
-        ? {
-            settings: portal.settings,
-            enabled: portal.enabled,
-            active,
-            status: active ? 'active' : 'setup_required',
-            url: token && origin ? `${origin}/client-upload/${token}` : ''
-          }
-        : {
-            settings: { ...defaults, email: user.email },
-            enabled: false,
-            url: ''
-          },
+      profiles: visibleProfiles,
+      portal: visibleProfiles[0], // Compatibility for existing owner clients; no secret fields.
       jobs: list,
       setupIssues,
       emailConfigured: emailReady(),
@@ -72,9 +59,7 @@ export async function GET(request) {
 }
 export async function POST(request) {
   try {
-    const { user } = await accountActor(request),
-      body = await request.json(),
-      old = await jobs('portal', { p_owner: user.id });
+    const { user } = await accountActor(request), body = await request.json();
     await rate(request, `portal-settings:${user.id}`, 30);
     if (body.action !== 'disable') publicOrigin(request);
     if (body.action !== 'disable' && !process.env.CRON_SECRET)
@@ -82,20 +67,36 @@ export async function POST(request) {
         'Configure Vercel CRON_SECRET before enabling uploads.',
         503
       );
-    if (!['save', 'rotate', 'disable'].includes(body.action))
+    if (!['save', 'rotate', 'disable', 'enable', 'create', 'duplicate'].includes(body.action))
       throw failure('Invalid portal action.', 400);
     if (body.action !== 'disable' && !emailReady())
       throw failure(
         'Configure Client Jobs email delivery and SMART_SHEET_SITE_URL before enabling the upload link.',
         503
       );
+    const profileId = body.profileId ? uuid(body.profileId) : null;
+    const old = profileId
+      ? await jobs('profile-get', { p_owner: user.id, p_data: { id: profileId } })
+      : await jobs('portal', { p_owner: user.id });
+    if (['duplicate','enable'].includes(body.action) && !profileId) throw failure('Choose an upload profile.',400);
     const link =
       !old || !linkToken(old) || body.action === 'rotate'
         ? newLink()
         : { hash: old.link_hash, secret: old.link_secret };
-    const config = settings(
-      body.action === 'save' ? body.settings : old?.settings
-    );
+    const config = settings(['save','create'].includes(body.action) ? body.settings : old?.settings);
+    if (profileId || body.action === 'create') {
+      const name = text(['save','create'].includes(body.action) ? body.name : body.action === 'duplicate' ? `${old.name.slice(0,110)} (copy)` : old.name);
+      if (!name || /[\u0000-\u001f\u007f]/.test(name)) throw failure('Enter a profile name.',400);
+      const created = ['create','duplicate'].includes(body.action);
+      const saved = await jobs(created ? 'profile-create' : 'profile-save', {
+        p_owner: user.id, p_data: { id: profileId, ...(created ? newLink() : link), name, settings:config,
+          enabled: body.action === 'disable' ? false : body.action === 'rotate' ? old.enabled : true }
+      });
+      const response = await GET(request), data = await response.json();
+      if (!response.ok) return reply(data,response.status);
+      return reply({ ...data, selectedProfileId:saved.id });
+    }
+    // Preserve the pre-profile owner API for legacy integrations and old links.
     await jobs('portal-save', {
       p_owner: user.id,
       p_data: { ...link, settings: config, enabled: body.action !== 'disable' }

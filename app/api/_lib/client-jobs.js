@@ -52,7 +52,7 @@ export function errorReply(e) {
   if (mapped) return reply({ code: mapped[1], message: mapped[2] }, mapped[0]);
   const legacyLookup = e.data?.code === 'P0002' && e.message === 'Upload link unavailable. Ask the shop for a new link.';
   if (legacyLookup || (e.data?.code === '42501' && /^permission denied/i.test(e.message)) || ['PGRST202', 'PGRST205', '42P01', '42883', '42703'].includes(e.data?.code)) {
-    console.error('[client-portal-schema]', e.data?.code, 'Apply/re-run supabase-client-jobs-v1.sql in the same project as NEXT_PUBLIC_SUPABASE_URL; reload PostgREST schema.');
+    console.error('[client-portal-schema]', e.data?.code, 'Apply supabase-client-jobs-v1.sql then supabase-client-upload-profiles-v1.sql in the same project as NEXT_PUBLIC_SUPABASE_URL; reload PostgREST schema.');
     return reply({ code: 'portal_setup_required', message: 'The upload portal needs a server database update. Please contact the shop; replacing the link will not fix this.' }, 503);
   }
   const code = e.data?.code,
@@ -196,6 +196,8 @@ export function publicJob(job) {
   return {
     id: job.id,
     reference: job.reference,
+    profile_name: job.profile_name,
+    machine: job.machine,
     revision: job.revision,
     confirmed_at: job.confirmed_at,
     expires_at: job.expires_at,
@@ -213,7 +215,7 @@ export function publicJob(job) {
         widthIn,
         heightIn
       })),
-    manifest: job.manifest ? { ...job.manifest, config: undefined } : null
+    manifest: job.manifest ? { ...job.manifest, config: undefined, profile: undefined } : null
   };
 }
 export function decodePng(bytes) {
@@ -468,9 +470,9 @@ export async function notifications() {
       body: JSON.stringify({
         from: process.env.CLIENT_JOBS_EMAIL_FROM,
         to: [n.email],
-        subject: `New client job — ${n.shopName}`,
-        text: `${n.shopName}\n${n.reference || 'Client submission'}\n${summary}\nExpires exactly ${expires} (UTC), 24 hours after confirmation.\nOpen Client Job (sign in required): ${n.url}\nThe job page shows the live countdown. Files are temporary and access ends at expiry.`,
-        html: `<h1>${escape(n.shopName)}</h1><p>${escape(n.reference || 'Client submission')}</p><p>${escape(summary)}</p><p>Expires exactly ${escape(expires)} (UTC), 24 hours after confirmation.</p><p><a style="display:inline-block;background:#164753;color:white;padding:12px 20px;border-radius:8px" href="${escape(n.url)}">Open Client Job</a></p><p>Sign in to see the live countdown. Files are temporary and access ends at expiry.</p>`
+        subject: n.profileName ? `New client job — ${n.reference} · ${n.profileName}` : `New client job — ${n.shopName}`,
+        text: `${n.shopName}\n${n.reference || 'Client submission'}${n.profileName ? `\n${n.profileName} (${n.machine})` : ''}\n${summary}\nExpires exactly ${expires} (UTC), 24 hours after confirmation.\nOpen Client Job (sign in required): ${n.url}\nThe job page shows the live countdown. Files are temporary and access ends at expiry.`,
+        html: `<h1>${escape(n.shopName)}</h1><p>${escape(n.reference || 'Client submission')}</p>${n.profileName ? `<p>${escape(n.profileName)} (${escape(n.machine)})</p>` : ''}<p>${escape(summary)}</p><p>Expires exactly ${escape(expires)} (UTC), 24 hours after confirmation.</p><p><a style="display:inline-block;background:#164753;color:white;padding:12px 20px;border-radius:8px" href="${escape(n.url)}">Open Client Job</a></p><p>Sign in to see the live countdown. Files are temporary and access ends at expiry.</p>`
       }),
       signal: AbortSignal.timeout(10000)
     });

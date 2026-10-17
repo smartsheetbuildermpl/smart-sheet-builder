@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react';
 import ClientJobPreview from '../../components/ClientJobPreview';
 import PrintLayoutLoading from '../../components/PrintLayoutLoading';
+import { machineLabel } from '../../lib/client-upload-profiles';
 import { defaultDesignSize, validDesignSize, MAX_REQUESTED_SIZE_IN } from '../../lib/client-design-size';
 
 const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
@@ -9,6 +10,8 @@ const activeUploadStates = new Set(['Preparing upload', 'Uploading', 'Processing
 
 export default function ClientUpload({ params }) {
   const [shop, setShop] = useState(''),
+    [uploadProfile, setUploadProfile] = useState(null),
+    [finished, setFinished] = useState(false),
     [job, setJob] = useState(null),
     [session, setSession] = useState(''),
     [urls, setUrls] = useState({}),
@@ -44,7 +47,7 @@ export default function ClientUpload({ params }) {
       .then(async (r) => {
         const d = await r.json().catch(() => ({ code: 'portal_configuration_error', message: 'The upload portal is not deployed or could not be reached. Please contact the shop.' }));
         if (!r.ok) throw Object.assign(Error(d.message), { code: d.code });
-        if (live) setShop(d.shopName);
+        if (live) { setShop(d.shopName); setUploadProfile({name:d.profileName || 'Legacy / Default Profile',machine:d.machine}); }
       })
       .catch((e) => {
         if (live) { setError(e.message); setErrorCode(e.code || 'portal_configuration_error'); }
@@ -89,7 +92,7 @@ export default function ClientUpload({ params }) {
   }
 
   function generatePreview() {
-    if (previewBusy || hasUploadsInFlight || invalidSizes || !job?.assets.length) return;
+    if (previewBusy || hasUploadsInFlight || invalidSizes || invalidReference || !job?.assets.length) return;
     run(async () => {
       const d = await call('preview', { reference, quantities: job.assets.map(asset => ({ id: asset.id, qty: quantities[asset.id] ?? 1, widthIn: Number(designSize(asset).widthIn), heightIn: Number(designSize(asset).heightIn) })) });
       setPreviewBusy(true); setJob(d.job); setDirty(false);
@@ -169,8 +172,16 @@ export default function ClientUpload({ params }) {
     const next = Math.max(1, Math.min(500, Number.parseInt(value, 10) || 1));
     setQuantities((current) => ({ ...current, [id]: next })); setDirty(true);
   }
+  function startAnother() {
+    if (actionController.current || hasUploadsInFlight) return;
+    objects.current.forEach(URL.revokeObjectURL); objects.current = [];
+    setJob(null); setSession(''); sessionRef.current = ''; setUrls({}); setUploads({}); uploadsRef.current = {};
+    setQuantities({}); setSizes({}); setReference(''); setDirty(true); setPreviewBusy(false); setPreviewReady(false);
+    setRetryPreview(false); setError(''); setErrorCode(''); setMessage(''); setFinished(false); allReadyNotice.current = '';
+  }
 
   const hasUploadsInFlight = Object.values(uploads).some((entry) => activeUploadStates.has(entry.state));
+  const invalidReference = !reference.trim() || /[\u0000-\u001f\u007f]/.test(reference);
   function designSize(asset) { return sizes[asset.id] || { ...defaultDesignSize(asset), lockAspect: true }; }
   function changeSize(asset, field, value) {
     setSizes(current => {
@@ -193,21 +204,26 @@ export default function ClientUpload({ params }) {
 
   return <main className="client-page">
     <header><strong>Smart Sheet Builder</strong><span>Client Upload Portal</span></header>
-    <h1>{shop || 'Client Upload Portal'}</h1>
+    <h1>{job?.profile_name || uploadProfile?.name || 'Client Upload Portal'}</h1>
+    {shop && <p>Upload artwork for <strong>{shop}</strong><span className="client-profile-badge">{machineLabel(job?.machine || uploadProfile?.machine)}</span></p>}
     <p>Upload your PNG artwork, request sizes and quantities, then review and send your print layout to the shop.</p>
     {error && <p role="alert" className="client-error">{error}</p>}
     {retryPreview && <button type="button" className="secondary" disabled={busy || previewBusy} onClick={generatePreview}>Retry preview</button>}
     {message && <p role="status" className="client-message">{message}</p>}
-    {['submission_expired', 'submission_invalid'].includes(errorCode) && <button onClick={() => {
-      objects.current.forEach(URL.revokeObjectURL); objects.current = [];
-      setJob(null); setSession(''); sessionRef.current = ''; setUrls({}); setUploads({}); setQuantities({}); setSizes({}); setDirty(true); setError(''); setErrorCode('');
-    }}>Start a new submission</button>}
+    {['submission_expired', 'submission_invalid'].includes(errorCode) && <button onClick={startAnother}>Start a new submission</button>}
     {['portal_configuration_error', 'portal_setup_required'].includes(errorCode) && <button onClick={() => location.reload()}>Retry portal</button>}
-    {!shop ? (!error && <p role="status">Checking upload portal…</p>) : job?.confirmed_at ? <section className="client-card">
-      <h2>Submission confirmed</h2><p>The shop can now open your locked layout. Your files expire at {new Date(job.expires_at).toLocaleString()}.</p><p>{job.quantity} pieces · {Number(job.meters).toFixed(3)} m</p>
+    {!shop ? (errorCode === 'portal_disabled' ? <h2>Upload link unavailable</h2> : !error && <p role="status">Checking upload portal…</p>) : job?.confirmed_at ? <section className="client-card" aria-label="Submission received">
+      <div className="client-success-heading"><span className="client-success-mark" aria-hidden="true">✓</span><h2>Gang sheet submitted</h2></div>
+      <h3>{job.reference}</h3><p className="client-profile-badge">{job.profile_name || uploadProfile?.name} · {machineLabel(job.machine || uploadProfile?.machine)}</p>
+      <p>The shop received your print layout. Your confirmed sizes and quantities are locked.</p>
+      <p>Preview summary: {job.assets.length} {job.assets.length === 1 ? 'design' : 'designs'} · {job.quantity} {job.quantity === 1 ? 'piece' : 'pieces'} · {Number(job.meters).toFixed(3)} m</p>
+      <p className="client-muted">Files expire at {new Date(job.expires_at).toLocaleString()}.</p>
+      {finished ? <p role="status">All done. You can close this page.</p> : <button type="button" className="secondary" onClick={() => setFinished(true)}>Done</button>}
+      <button type="button" onClick={startAnother}>Create another gang sheet</button>
     </section> : <div className="client-columns">
       <section className="client-card">
-        <label>Client reference / order name (optional)<input value={reference} maxLength={120} disabled={busy} onChange={(e) => { setReference(e.target.value); setDirty(true); }} /></label>
+        <label>Project / Client Name *<input required placeholder="Example: Mikael – Company Uniform" value={reference} maxLength={120} disabled={busy} aria-invalid={invalidReference} aria-describedby={invalidReference ? 'client-project-error' : undefined} onChange={(e) => { setReference(e.target.value); setDirty(true); }} /></label>
+        {invalidReference && <span id="client-project-error" className="client-project-error">Enter a Project / Client Name to preview and submit your gang sheet.</span>}
         <label className="client-drop">Upload designs<input ref={fileInput} type="file" accept="image/png,.png" multiple disabled={busy || !shop} onChange={(e) => { upload(Array.from(e.target.files)); e.target.value = ''; }} /></label>
         <p className="client-muted">Static 8-bit PNG · up to 4 MiB each · 10 files / 32 MiB total · 500 pieces. Unconfirmed uploads expire after 2 hours.</p>
         {[...(job?.assets || []).map((asset) => ({ asset, entry: uploadByAsset[asset.id] })), ...pendingEntries.map((entry) => ({ entry }))].map(({ asset, entry }) => {
@@ -228,11 +244,11 @@ export default function ClientUpload({ params }) {
           </div>;
         })}
         {invalidSizes && <p role="alert" className="client-error">Enter a positive width and height up to 120 inches for each design.</p>}
-        {(job?.assets.length > 0 || pendingEntries.length > 0) && <div className="client-upload-actions"><button type="button" className="secondary" disabled={busy} onClick={() => fileInput.current?.click()}>Add more design</button><button disabled={busy || previewBusy || hasUploadsInFlight || invalidSizes || !(job?.assets.length)} onClick={generatePreview}>{hasUploadsInFlight ? 'Waiting for uploads…' : operation === 'preview' || previewBusy ? 'Preparing print layout…' : 'Generate Print Preview'}</button></div>}
+        {(job?.assets.length > 0 || pendingEntries.length > 0) && <div className="client-upload-actions"><button type="button" className="secondary" disabled={busy} onClick={() => fileInput.current?.click()}>Add more design</button><button disabled={busy || previewBusy || hasUploadsInFlight || invalidSizes || invalidReference || !(job?.assets.length)} onClick={generatePreview}>{hasUploadsInFlight ? 'Waiting for uploads…' : operation === 'preview' || previewBusy ? 'Preparing print layout…' : 'Generate Print Preview'}</button></div>}
       </section>
       <section className="client-card client-preview-card" aria-busy={busy || previewBusy}>
         <h2>Print layout estimate</h2><p>This preview is read-only. The shop’s printing preset determines the layout.</p>{operation === 'preview' && <PrintLayoutLoading stage="Calculating print layout…" />}{busy && operation !== 'preview' && <div className="client-preview-skeleton" role="status">{operation === 'confirm' ? 'Sending your submission…' : 'Updating designs…'}</div>}
-        {job?.manifest && !dirty && operation !== 'preview' ? <><p><strong>{job.quantity} pieces · {Number(job.meters).toFixed(3)} m</strong></p><ClientJobPreview manifest={job.manifest} assets={job.assets} urls={urls} onBusyChange={setPreviewBusy} onReadyChange={setPreviewReady} /><button disabled={busy || !previewReady || hasUploadsInFlight} onClick={() => run(async () => { const d = await call('confirm', { revision: job.revision }); setJob(d.job); setMessage(d.message); }, 'confirm')}>{busy ? 'Submitting…' : 'Confirm & Send to Shop'}</button></> : operation !== 'preview' && <p>{hasUploadsInFlight ? 'Your files are being prepared. Preview will be available when they are ready.' : 'Generate a preview after uploading or changing sizes or quantities.'}</p>}
+        {job?.manifest && !dirty && operation !== 'preview' ? <><p><strong>{job.quantity} pieces · {Number(job.meters).toFixed(3)} m</strong></p><ClientJobPreview manifest={job.manifest} assets={job.assets} urls={urls} onBusyChange={setPreviewBusy} onReadyChange={setPreviewReady} /><button disabled={busy || !previewReady || hasUploadsInFlight || invalidReference} onClick={() => { if (invalidReference) return; run(async () => { const d = await call('confirm', { revision: job.revision }); setJob(d.job); setMessage(d.message); }, 'confirm'); }}>{busy ? 'Submitting…' : 'Confirm & Send to Shop'}</button></> : operation !== 'preview' && <p>{hasUploadsInFlight ? 'Your files are being prepared. Preview will be available when they are ready.' : 'Generate a preview after uploading or changing sizes or quantities.'}</p>}
       </section>
     </div>}
   </main>;

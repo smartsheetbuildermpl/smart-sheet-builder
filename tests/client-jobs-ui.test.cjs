@@ -128,7 +128,7 @@ const jwt = (user) =>
     }
     const customer = await pageFor();
     await customer.page.goto(`${base}/client-upload/${token}`);
-    await customer.page.getByRole('heading', { name: 'Test shop' }).waitFor();
+    await customer.page.getByRole('heading', { name: 'Legacy / Default Profile' }).waitFor();
     assert.equal(
       await customer.page
         .getByRole('button', {
@@ -152,6 +152,9 @@ const jwt = (user) =>
     await customer.page.getByRole('button', { name: 'Retry', exact: true }).click();
     await customer.page.getByText('Uploading', { exact: true }).waitFor();
     await customer.page.getByText('Ready', { exact: true }).waitFor();
+    assert(await customer.page.getByRole('button',{name:'Generate Print Preview',exact:true}).isDisabled(),'project name required before preview');
+    await customer.page.screenshot({path:path.join(out,'required-project-name.png'),fullPage:true});
+    await customer.page.getByLabel('Project / Client Name *',{exact:true}).fill('Browser jersey order');
     assert.equal(
       await customer.page
         .getByRole('button', { name: 'Generate Print Preview', exact: true })
@@ -274,7 +277,7 @@ const jwt = (user) =>
       })
       .fill('3');
     await customer.page
-      .getByLabel('Client reference / order name (optional)')
+      .getByLabel('Project / Client Name *', {exact:true})
       .fill('Browser jersey order');
     await customer.page
       .getByRole('button', { name: 'Generate Print Preview', exact: true })
@@ -322,7 +325,7 @@ const jwt = (user) =>
       .getByRole('button', { name: 'Confirm & Send to Shop' })
       .click();
     await customer.page
-      .getByRole('heading', { name: 'Submission confirmed' })
+      .getByRole('heading', { name: 'Gang sheet submitted' })
       .waitFor();
     assert.equal(f.emails.length, 1);
     const job = await f.one('select * from client_jobs where reference=$1', [
@@ -571,7 +574,7 @@ const jwt = (user) =>
     assert.equal(maintenance.status, 200);
     assert.equal(f.objects.size, 0, 'daily cron purges expired private files');
     owner.page.once('dialog', d => d.accept());
-    await owner.page.getByRole('button', { name: 'Disable link', exact: true }).click();
+    await owner.page.getByRole('article',{name:'Legacy / Default Profile',exact:true}).getByRole('button', { name: 'Disable', exact: true }).click();
     await owner.page.getByText('Portal link setup required', { exact: true }).waitFor();
     await customer.page.goto(`${base}/client-upload/${token}`);
     await customer.page.getByRole('alert').filter({ hasText: 'This upload portal is currently disabled.' }).waitFor();
@@ -579,13 +582,57 @@ const jwt = (user) =>
     await owner.page.getByRole('button', { name: 'Create/Enable link', exact: true }).click();
     await owner.page.getByText('Portal link active', { exact: true }).waitFor();
     owner.page.once('dialog', d => d.accept());
-    await owner.page.getByRole('button', { name: 'Regenerate link', exact: true }).click();
+    await owner.page.getByRole('article',{name:'Legacy / Default Profile',exact:true}).getByRole('button', { name: 'Regenerate link', exact: true }).click();
     await owner.page.waitForFunction(old => document.querySelector('input[aria-label="Client upload link"]').value !== old, originalLink);
     const nextToken = (await owner.page.getByLabel('Client upload link').inputValue()).split('/').at(-1);
     await customer.page.reload();
     await customer.page.getByRole('alert').filter({ hasText: 'invalid or has been replaced' }).waitFor();
     await customer.page.goto(`${base}/client-upload/${nextToken}`);
-    await customer.page.getByRole('heading', { name: 'Test shop' }).waitFor();
+    await customer.page.getByRole('heading', { name: 'Legacy / Default Profile' }).waitFor();
+    // Exercise real machine-specific links, required names, and a clean next draft.
+    const profiles = (await (await f.owner.GET(f.req('/api/client-jobs',undefined,'basic'))).json()).profiles;
+    for (const machine of ['dtf','tarpaulin']) {
+      const profile=profiles.find(p=>p.template===machine);
+      assert.equal((await f.owner.POST(f.req('/api/client-jobs',{action:'enable',profileId:profile.id},'basic'))).status,200);
+      const client=await pageFor();await client.page.setViewportSize({width:1400,height:1100});await client.page.goto(`${base}/client-upload/${profile.url.split('/').at(-1)}`);
+      await client.page.getByRole('heading',{name:profile.name,exact:true}).waitFor();
+      await client.page.locator('input[type=file]').setInputFiles({name:'Uniform artwork.png',mimeType:'image/png',buffer:png(600,300)});
+      await client.page.getByText('Ready',{exact:true}).waitFor();
+      assert(await client.page.getByRole('button',{name:'Generate Print Preview',exact:true}).isDisabled());
+      assert.equal(await client.page.getByRole('combobox').count(),0,'client cannot choose machine or sheet settings');
+      await client.page.screenshot({path:path.join(out,`public-profile-${machine}.png`),fullPage:true});
+      await client.page.getByLabel('Project / Client Name *',{exact:true}).fill('Mikael – Company Uniform');
+      await client.page.getByRole('button',{name:'Generate Print Preview',exact:true}).click();await client.page.locator('.client-preview canvas').waitFor();
+      await client.page.getByRole('button',{name:'Confirm & Send to Shop',exact:true}).click();await client.page.getByRole('heading',{name:'Gang sheet submitted',exact:true}).waitFor();
+      assert.equal(await client.page.getByRole('button',{name:/Download|TIFF|PNG backup/}).count(),0);
+      await client.page.screenshot({path:path.join(out,`submitted-profile-${machine}.png`),fullPage:true});
+      const totalBefore=(await f.one('select count(*)::int n from client_jobs')).n;
+      const lockedBefore=(await f.one('select count(*)::int n from client_jobs where confirmed_at is not null')).n;
+      await client.page.getByRole('button',{name:'Create another gang sheet',exact:true}).click();
+      assert.equal(await client.page.getByLabel('Project / Client Name *',{exact:true}).inputValue(),'');
+      assert.equal(await client.page.locator('.client-file').count(),0);assert.equal(await client.page.locator('.client-preview canvas').count(),0);
+      assert.equal((await f.one('select count(*)::int n from client_jobs')).n,totalBefore,'clearing success does not create or re-submit a job');
+      await client.page.screenshot({path:path.join(out,`new-draft-${machine}.png`),fullPage:true});
+      await client.page.locator('input[type=file]').setInputFiles({name:'Next artwork.png',mimeType:'image/png',buffer:png(60,40)});await client.page.getByText('Ready',{exact:true}).waitFor();
+      assert.equal((await f.one('select count(*)::int n from client_jobs')).n,totalBefore+1);
+      await client.page.reload();await client.page.getByRole('heading',{name:profile.name,exact:true}).waitFor();
+      assert.equal((await f.one('select count(*)::int n from client_jobs where confirmed_at is not null')).n,lockedBefore,'refresh cannot resubmit the prior confirmation');
+      await client.context.close();
+    }
+    await owner.page.getByRole('button', { name: 'Close Client Portal' }).click();
+    await owner.page.locator('.access-reveal-handle').hover();await owner.page.getByRole('button',{name:/^Client Portal/}).click();
+    if (!await owner.page.locator('.client-upload-profiles').isVisible()) await owner.page.getByRole('button',{name:'Shop portal settings',exact:true}).click();
+    await owner.page.getByRole('article',{name:'DTF 24″ Gang Sheet',exact:true}).waitFor();
+    await owner.page.getByRole('article',{name:'DTF 24″ Gang Sheet',exact:true}).getByText('Active',{exact:true}).waitFor();
+    await owner.page.setViewportSize({width:1440,height:1100});await owner.page.locator('dialog').evaluate(el=>{el.scrollTop=0;});
+    await owner.page.screenshot({path:path.join(out,'upload-profiles-management.png'),fullPage:true});
+    await owner.page.getByRole('article',{name:'DTF 24″ Gang Sheet',exact:true}).getByRole('button',{name:'Edit',exact:true}).click();
+    assert.equal(await owner.page.getByLabel('Printing machine',{exact:true}).inputValue(),'dtf');
+    await owner.page.getByRole('article',{name:'DTF 24″ Gang Sheet',exact:true}).getByRole('button',{name:'Duplicate profile',exact:true}).click();
+    await owner.page.getByRole('article',{name:'DTF 24″ Gang Sheet (copy)',exact:true}).waitFor();
+    await owner.page.getByRole('button',{name:'Create new profile',exact:true}).click();
+    await owner.page.getByLabel('Profile name',{exact:true}).fill('Custom test profile');await owner.page.getByRole('button',{name:'Create profile',exact:true}).click();
+    await owner.page.getByRole('article',{name:'Custom test profile',exact:true}).waitFor();
     await owner.page.getByRole('button', { name: 'Close Client Portal' }).click();
     await customer.context.close();
     await owner.context.close();

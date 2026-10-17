@@ -45,7 +45,7 @@ export async function GET(request, { params }) {
     await rate(request, 'public-view', 240);
     const { portal } = await publicActor(request, params.token, false);
     if (portalSetup(request).length) throw failure('Portal service configuration is incomplete.', 503);
-    return reply({ shopName: portal.settings.shopName });
+    return reply({ shopName: portal.settings.shopName, profileName: portal.name, machine: portal.settings.machine });
   } catch (e) {
     return errorReply(e);
   }
@@ -105,6 +105,8 @@ export async function POST(request, { params }) {
         )
       });
     if (action === 'preview') {
+      const reference = text(body.reference || '');
+      if (!reference || /[\u0000-\u001f\u007f]/.test(reference)) throw failure('Enter a Project / Client Name before generating the preview.',400);
       if (
         !Array.isArray(body.quantities) ||
         body.quantities.length !== job.assets.filter((a) => a.ready).length ||
@@ -124,13 +126,15 @@ export async function POST(request, { params }) {
           assets.filter((a) => a.ready),
           portal.settings
         );
+      manifest.profile = { id:portal.id, name:portal.name, machine:portal.settings.machine, reference };
       const updated = await jobs('preview', {
         ...args,
         p_data: {
           revision: job.revision,
+          profileVersion: portal.updated_at,
           assets,
           manifest,
-          reference: text(body.reference || ''),
+          reference,
           quantity: manifest.totalPieces,
           meters: manifest.meters
         }
@@ -138,6 +142,7 @@ export async function POST(request, { params }) {
       return reply({ job: publicJob(updated) });
     }
     if (action === 'confirm') {
+      if (!job.confirmed_at && !job.reference?.trim()) throw failure('Enter a Project / Client Name and generate the preview before confirming.',400);
       if (!emailReady())
         throw failure(
           'Shop email notifications are not configured. Contact the shop.',
@@ -148,9 +153,11 @@ export async function POST(request, { params }) {
         p_data: {
           revision: body.revision,
           notification: {
-            email: portal.settings.email,
-            shopName: portal.settings.shopName,
+            email: job.manifest?.config?.email || portal.settings.email,
+            shopName: job.manifest?.config?.shopName || portal.settings.shopName,
             reference: job.reference,
+            profileName: job.profile_name || portal.name,
+            machine: job.machine || job.manifest?.config?.machine,
             designCount: job.design_count,
             quantity: job.quantity,
             meters: job.meters,
@@ -162,7 +169,7 @@ export async function POST(request, { params }) {
       return reply({
         job: publicJob(updated),
         message:
-          'Confirmed and sent to the shop’s Client Jobs. Email notification is queued for delivery.'
+          'Your gang sheet was submitted to the shop. Email notification is queued for delivery.'
       });
     }
     throw failure('Invalid submission action.', 400);

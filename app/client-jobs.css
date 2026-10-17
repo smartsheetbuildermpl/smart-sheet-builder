@@ -358,6 +358,16 @@
   margin-top: 0;
 }
 .client-settings-panel { margin-bottom: 18px; }
+.client-profile-list { display:grid; gap:8px; margin:12px 0 20px; }
+.client-profile-row { display:grid; grid-template-columns:minmax(0,1fr) auto; align-items:center; gap:8px 12px; padding:12px; border:1px solid #d5e0e4; border-radius:8px; background:#fff; }
+.client-profile-row.selected { border-color:#00849b; background:#f2f9fb; }
+.client-profile-row h3 { margin:0 0 3px; }
+.client-profile-actions { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:6px; }
+.client-profile-actions button { margin:0; padding:6px 10px; font-size:12px; }
+.client-profile-badge { display:block; width:fit-content; margin-top:5px; padding:2px 7px; border-radius:5px; background:#edf3f8; color:#29475d; font-size:11px; }
+.client-project-error { color:#a32121; display:block; font-size:12px; margin-top:5px; }
+.client-success-heading { display:flex; align-items:center; gap:10px; }
+.client-success-mark { display:grid; place-items:center; width:36px; height:36px; background:#dcf5ea; color:#14603e; border-radius:50%; font-size:22px; }
 .client-settings-panel-heading { justify-content: space-between; margin-bottom: 12px; }
 .client-settings-panel-heading h2,
 .client-settings-panel-heading p { margin: 0; }
