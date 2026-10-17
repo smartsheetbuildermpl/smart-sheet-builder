@@ -191,14 +191,16 @@ for (const [a,b] of [
       check(t.sheets.map(sheet=>sheet.placements.filter(p=>p.inst.designId===d.id).map(p=>({id:p.inst.id,x:p.x,y:p.y,w:p.w,h:p.h,rotation:p.inst.rotation}))).every((list,index)=>JSON.stringify(list)===JSON.stringify(beforeIncremental[index])),'incremental Add preserves every prior placement exactly');
       check(t.instances.filter(i=>i.designId===999).every(i=>i.baseW===100&&i.baseH===100),'new incremental pieces use the current requested dimensions');
       t.appendDesignToCurrentLayout(d);
-      check(t.instances.length===6,'repeated Add does not duplicate quantities');
+      check(t.instances.length===9,'a changed card size adds a separate batch without removing the original copies');
+      t.appendDesignToCurrentLayout(d);
+      check(t.instances.length===9,'repeated Add of the unchanged batch does not duplicate quantities');
       for(const sheet of t.sheets)validate(sheet.placements,sheet.widthPx,sheet.heightPx,sheet.gapPx);
       t.renderAllDesigns();
       return results;
     });
     await page.getByRole('button',{name:'Arrange on sheet',exact:true}).click();
-    await page.waitForFunction(()=>window.testBuilder.instances.length===5 && !document.getElementById('packBtn').disabled);
-    assert.equal(await page.evaluate(()=>window.testBuilder.sheets.reduce((n,s)=>n+s.placements.length,0)),5);
+    await page.waitForFunction(()=>window.testBuilder.instances.length===9 && !document.getElementById('packBtn').disabled);
+    assert.equal(await page.evaluate(()=>window.testBuilder.sheets.reduce((n,s)=>n+s.placements.length,0)),9);
     const imported = await page.evaluate(async(pngBase64) => {
       const bytes = Uint8Array.from(atob(pngBase64), char => char.charCodeAt(0));
       const blob = new Blob([bytes], { type: 'image/png' });

@@ -150,6 +150,19 @@ const jwt = (user) =>
       'preview becomes available only after the real upload reaches Ready'
     );
     assert.equal(await customer.page.locator('.client-file-thumbnail').count(), 1);
+    const width = customer.page.getByRole('spinbutton', { name: 'Width (in) for soft-edge.png' });
+    const height = customer.page.getByRole('spinbutton', { name: 'Height (in) for soft-edge.png' });
+    const lock = customer.page.getByRole('checkbox', { name: 'Lock aspect ratio for soft-edge.png' });
+    assert(await lock.isChecked());
+    const aspect = Number(await width.inputValue()) / Number(await height.inputValue());
+    await width.fill('0.8');
+    assert(Math.abs(Number(await height.inputValue())-0.8/aspect)<0.000001);
+    await height.fill('0.5');
+    assert(Math.abs(Number(await width.inputValue())-0.5*aspect)<0.000001);
+    await lock.uncheck();await width.fill('0.8');await height.fill('0.6');
+    assert.equal(await width.inputValue(), '0.8');assert.equal(await height.inputValue(), '0.6');
+    await width.fill('0');assert(await customer.page.getByRole('button',{name:'Generate Print Preview',exact:true}).isDisabled());await width.fill('0.8');
+    await customer.page.screenshot({ path: path.join(out, 'client-requested-size.png') });
     assert(
       await customer.page
         .getByRole('button', { name: 'Decrease quantity for soft-edge.png' })
@@ -184,6 +197,13 @@ const jwt = (user) =>
       .getByRole('button', { name: 'Generate Print Preview', exact: true })
       .click();
     await customer.page.locator('.client-preview canvas').waitFor();
+    await width.fill('0.9');
+    assert.equal(await customer.page.getByRole('button',{name:'Confirm & Send to Shop',exact:true}).count(),0,'size edit invalidates preview');
+    await customer.page.getByRole('button',{name:'Generate Print Preview',exact:true}).click();await customer.page.locator('.client-preview canvas').waitFor();
+    await customer.page.getByRole('button',{name:'Increase quantity for soft-edge.png'}).click();
+    assert.equal(await customer.page.getByRole('button',{name:'Confirm & Send to Shop',exact:true}).count(),0,'quantity edit invalidates preview');
+    await customer.page.getByRole('button',{name:'Decrease quantity for soft-edge.png'}).click();
+    await customer.page.getByRole('button',{name:'Generate Print Preview',exact:true}).click();await customer.page.locator('.client-preview canvas').waitFor();
     assert.match(
       await customer.page.locator('.client-columns').innerText(),
       /2 pieces/
@@ -273,6 +293,8 @@ const jwt = (user) =>
       'Browser jersey order'
     ]);
     assert.equal(job.quantity, 5);
+    assert.equal(job.assets[0].widthIn, 0.9);assert.equal(job.assets[0].heightIn, 0.6);
+    assert(job.manifest.sheets.flatMap(s=>s.placements).filter(p=>p.assetId===job.assets[0].id).every(p=>p.baseW===270&&p.baseH===180));
     const owner = await pageFor('basic');
     await owner.page.goto(`${base}/?clientJob=${job.id}`);
     await owner.page.getByRole('dialog', { name: 'Client Portal' }).waitFor();
@@ -393,11 +415,19 @@ const jwt = (user) =>
     assert.equal(output.height, 900);
     const p = job.manifest.sheets[0].placements.find(
         (p) => p.assetId === job.assets[0].id
-      ),
-      a = (x, y) => output.data[((p.y + y) * 900 + p.x + x) * 4 + 3];
-    assert.equal(a(0, 0), 0);
-    assert.equal(a(1, 2), 4);
-    assert.equal(a(3, 2), 255);
+      );
+    const pixelComparison = await owner.page.evaluate(async ({ source, exported, placement, crop }) => {
+      const img = new Image(); img.src = 'data:image/png;base64,' + source; await img.decode();
+      const native = document.createElement('canvas');native.width=crop.w;native.height=crop.h;native.getContext('2d').drawImage(img,crop.x,crop.y,crop.w,crop.h,0,0,crop.w,crop.h);
+      const c = document.createElement('canvas'); c.width = 900; c.height = 900;
+      const ctx = c.getContext('2d');ctx.imageSmoothingQuality='high';ctx.translate(placement.x+placement.w/2,placement.y+placement.h/2);ctx.rotate(placement.rotation*Math.PI/180);ctx.filter='saturate(100%)';
+      ctx.drawImage(native,-placement.baseW/2,-placement.baseH/2,placement.baseW,placement.baseH);
+      const digest = async context => Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',context.getImageData(placement.x,placement.y,placement.w,placement.h).data))).map(b=>b.toString(16).padStart(2,'0')).join('');
+      const result = new Image();result.src='data:image/png;base64,'+exported;await result.decode();
+      const actual=document.createElement('canvas');actual.width=900;actual.height=900;const actualCtx=actual.getContext('2d');actualCtx.drawImage(result,0,0);
+      return {expected:await digest(ctx),actual:await digest(actualCtx)};
+    }, { source: png().toString('base64'), exported: fs.readFileSync(await saved.path()).toString('base64'), placement: p, crop: job.assets[0].crop });
+    assert.equal(pixelComparison.actual,pixelComparison.expected,'decoded requested-size export RGBA matches a reference drawn from the original full-resolution PNG');
     assert(
       (
         await f.one('select downloaded_png from client_jobs where id=$1', [

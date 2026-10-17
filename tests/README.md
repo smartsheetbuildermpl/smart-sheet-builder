@@ -1,5 +1,9 @@
 # Builder regression checks
 
+Current layout defaults are 0.10-inch spacing and 0.10-inch automatic edge allowance for every machine. Existing selected values and saved shop portal settings remain overrides. Run `node tests/layout-size-batches.test.cjs` for defaults, custom settings, mixed-size Add batches, settings that preserve existing positions, explicit Standard/Max Fill reflow, DPI-independent placed sizes, and exact Undo/Redo. An unchanged Add batch is not duplicated; changing the card size creates a new batch on the next Add. Arrange preserves the sizes of current pieces rather than rebuilding them from the latest card size.
+
+Run `node tests/client-requested-size.test.cjs` and `node tests/client-jobs-ui.test.cjs` (local app default localhost:3114) for client width/height requests, aspect locking, stale-preview handling, server validation, saved owner manifests, original-source exports, and unchanged expiry. Initial requested size remains active alpha bounds / 300. Requests must be positive finite numbers up to 120 inches, span at least one output pixel, and satisfy the existing private shop fit/rotation and output budgets. Requested dimensions are stored in existing asset JSON; no schema migration is needed. Browser/API fixtures use isolated test data and do not write live submissions.
+
 Export enforcement: run `node tests/export-enforcement.test.cjs` with PGlite available. For the real SDK/browser integration, run a test dev server with test-only Supabase URL/key values and run `node tests/export-enforcement-ui.test.cjs` (defaults to localhost:3112). Supabase HTTP is replaced with actual local route handlers and PostgreSQL/PGlite RPCs; no live account or quota mutations occur. Encoder-only tests use an explicit test authorization stub; enforcement is tested separately against the actual server boundary.
 
 Run from the repository root with Node.js, Playwright and an installed Chrome:

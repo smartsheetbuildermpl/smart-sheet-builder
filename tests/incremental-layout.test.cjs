@@ -250,6 +250,8 @@ assert.notEqual(html, source, 'test hook inserted');
       if (t.sheets.length !== 2 || t.sheets.reduce((count, sheet) => count + sheet.placements.length, 0) !== 60) throw Error('39-inch continuation did not retain all 60 copies: sheets=' + t.sheets.length + ' copies=' + t.sheets.reduce((count, sheet) => count + sheet.placements.length, 0));
       continuation.checked = false;
       continuation.dispatchEvent(new Event('change', { bubbles: true }));
+      if (t.sheets.length !== 2 || t.sheets.reduce((n,s)=>n+s.placements.length,0)!==60) throw Error('continuation setting reflowed existing pieces without Arrange');
+      t.repack(); // Explicit arrangement applies the new continuation setting.
       const settings = t.settings(), placed = t.sheets.reduce((count, sheet) => count + sheet.placements.length, 0);
       if (settings.sheetLengthPx !== 3900 || settings.continuousRoll) throw Error('disabled continuation changed the physical 39-inch sheet');
       if (t.sheets.length !== 1 || placed !== 45 || t.skipped !== 15 || t.skipReason !== 'extension-disabled') throw Error('disabled continuation did not report the exact 15-copy shortfall');

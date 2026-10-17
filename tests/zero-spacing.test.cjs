@@ -22,10 +22,11 @@ assert.notEqual(html, source);
     await frame.getByRole('tab',{name:'Sheet',exact:true}).click();
     await frame.locator('#gapNumber').waitFor();
     const doc = page.frames().find(f => f.url().endsWith('/builder.html'));
-    assert.equal(await frame.locator('#gapNumber').inputValue(), '0');
-    assert.equal(await frame.locator('#gap').inputValue(), '0');
-    assert.equal(await frame.locator('#edgeAllowanceNumber').inputValue(), '0.30');
-    assert.equal(await doc.evaluate(() => zeroTest.settings().autoEdgeAllowancePx), 90, 'default edge allowance is 0.30 in at 300 DPI');
+    assert.equal(await frame.locator('#gapNumber').inputValue(), '0.1');
+    assert.equal(await frame.locator('#gap').inputValue(), '0.1');
+    assert.equal(await frame.locator('#edgeAllowanceNumber').inputValue(), '0.10');
+    assert.equal(await doc.evaluate(() => zeroTest.settings().autoEdgeAllowancePx), 30, 'default edge allowance is 0.10 in at 300 DPI');
+    await frame.locator('#gapNumber').fill('0');
     for (const unit of ['cm', 'ft', 'in']) {
       await frame.locator('#measureUnit').selectOption(unit);
       assert(await frame.locator('#gapNumber').evaluate(e => e.checkValidity() && Number(e.value) === 0 && e.min === '0'));

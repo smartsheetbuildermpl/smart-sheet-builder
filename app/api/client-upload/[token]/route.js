@@ -1,4 +1,5 @@
 import { failure } from '../../_lib/user-management';
+import { defaultDesignSize, validDesignSize } from '../../../lib/client-design-size';
 import {
   jobs,
   reply,
@@ -106,14 +107,19 @@ export async function POST(request, { params }) {
     if (action === 'preview') {
       if (
         !Array.isArray(body.quantities) ||
-        body.quantities.length !== job.assets.filter((a) => a.ready).length
+        body.quantities.length !== job.assets.filter((a) => a.ready).length ||
+        new Set(body.quantities.map(q => q?.id)).size !== body.quantities.length ||
+        body.quantities.some(q => !job.assets.some(a => a.ready && a.id === q?.id))
       )
         throw failure('Upload files, then set each quantity.', 400);
-      const assets = job.assets.map((a) =>
-          a.ready
-            ? { ...a, qty: body.quantities.find((q) => q.id === a.id)?.qty }
-            : a
-        ),
+      const assets = job.assets.map((a) => {
+          if (!a.ready) return a;
+          const requested = body.quantities.find(q => q.id === a.id);
+          const size = requested.widthIn === undefined && requested.heightIn === undefined
+            ? defaultDesignSize(a) : { widthIn: requested.widthIn, heightIn: requested.heightIn };
+          if (!validDesignSize(size)) throw failure('Enter a positive width and height up to 120 inches for each design.', 400);
+          return { ...a, qty: requested.qty, ...size };
+        }),
         manifest = layout(
           assets.filter((a) => a.ready),
           portal.settings

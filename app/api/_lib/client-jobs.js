@@ -8,6 +8,7 @@ import { getSupabaseConfig } from './supabase';
 import { rpc, failure } from './user-management';
 import { seal, unseal } from './export-security';
 import { publicAppOrigin } from './public-app-url';
+import { defaultDesignSize, validDesignSize } from '../../lib/client-design-size';
 
 export const BUCKET = 'client-job-sources';
 export const defaults = {
@@ -17,8 +18,8 @@ export const defaults = {
   widthIn: 23,
   lengthIn: 39,
   dpi: 300,
-  gapIn: 0,
-  edgeIn: 0.3,
+  gapIn: 0.1,
+  edgeIn: 0.1,
   rotate: true,
   autoExtend: true
 };
@@ -202,13 +203,15 @@ export function publicJob(job) {
     meters: job.meters,
     assets: job.assets
       .filter((a) => a.ready)
-      .map(({ id, name, width, height, crop, qty }) => ({
+      .map(({ id, name, width, height, crop, qty, widthIn, heightIn }) => ({
         id,
         name,
         width,
         height,
         crop,
-        qty
+        qty,
+        widthIn,
+        heightIn
       })),
     manifest: job.manifest ? { ...job.manifest, config: undefined } : null
   };
@@ -314,12 +317,15 @@ export function layout(assets, config) {
   for (const a of assets) {
     if (!a.ready || !Number.isInteger(a.qty) || a.qty < 1 || a.qty > 500)
       throw failure('Use 1–500 copies per design.', 400);
+    const size = defaultDesignSize(a);
+    if (!validDesignSize(size)) throw failure('Enter a positive width and height up to 120 inches for each design.', 400);
+    if (size.widthIn * dpi < 1 || size.heightIn * dpi < 1) throw failure('Requested dimensions must span at least one output pixel.', 400);
     for (let i = 0; i < a.qty; i++)
       items.push({
         id: `${a.id}:${i}`,
         assetId: a.id,
-        baseW: Math.max(1, Math.round((a.crop.w / 300) * dpi)),
-        baseH: Math.max(1, Math.round((a.crop.h / 300) * dpi))
+        baseW: Math.max(1, Math.round(size.widthIn * dpi)),
+        baseH: Math.max(1, Math.round(size.heightIn * dpi))
       });
   }
   if (!items.length || items.length > 500)
@@ -342,7 +348,7 @@ export function layout(assets, config) {
     );
     if (!packed.placements.length)
       throw failure(
-        'A design cannot fit the shop’s sheet preset at 300 PPI. Ask the shop to adjust its preset.',
+        'A design cannot fit the shop’s sheet preset at the requested size. Request a smaller size or contact the shop.',
         400
       );
     const placements = packed.placements.map((p) => ({

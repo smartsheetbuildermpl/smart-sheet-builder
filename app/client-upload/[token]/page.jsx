@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import ClientJobPreview from '../../components/ClientJobPreview';
+import { defaultDesignSize, validDesignSize, MAX_REQUESTED_SIZE_IN } from '../../lib/client-design-size';
 
 const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
 const activeUploadStates = new Set(['Preparing upload', 'Uploading', 'Processing']);
@@ -13,6 +14,7 @@ export default function ClientUpload({ params }) {
     [uploads, setUploads] = useState({}),
     [reference, setReference] = useState(''),
     [quantities, setQuantities] = useState({}),
+    [sizes, setSizes] = useState({}),
     [busy, setBusy] = useState(false),
     [error, setError] = useState(''),
     [errorCode, setErrorCode] = useState(''),
@@ -116,6 +118,7 @@ export default function ClientUpload({ params }) {
       await Promise.resolve();
       setUrls((current) => ({ ...current, [asset.id]: entry.url }));
       setQuantities((current) => ({ ...current, [asset.id]: current[asset.id] ?? 1 }));
+      setSizes((current) => ({ ...current, [asset.id]: { ...defaultDesignSize(asset), lockAspect: true } }));
       setJob(d.job);
       setDirty(true);
       patchUpload(id, { state: 'Ready', assetId: asset.id });
@@ -149,6 +152,20 @@ export default function ClientUpload({ params }) {
   }
 
   const hasUploadsInFlight = Object.values(uploads).some((entry) => activeUploadStates.has(entry.state));
+  function designSize(asset) { return sizes[asset.id] || { ...defaultDesignSize(asset), lockAspect: true }; }
+  function changeSize(asset, field, value) {
+    setSizes(current => {
+      const next = { ...(current[asset.id] || { ...defaultDesignSize(asset), lockAspect: true }), [field]: value };
+      const aspect = asset.crop.w / asset.crop.h;
+      if (field === 'lockAspect' && value && Number(next.widthIn) > 0) next.heightIn = Number((Number(next.widthIn) / aspect).toFixed(6));
+      else if (next.lockAspect && field !== 'lockAspect' && Number(value) > 0) {
+        next[field === 'widthIn' ? 'heightIn' : 'widthIn'] = Number((field === 'widthIn' ? Number(value) / aspect : Number(value) * aspect).toFixed(6));
+      }
+      return { ...current, [asset.id]: next };
+    });
+    setDirty(true);
+  }
+  const invalidSizes = (job?.assets || []).some(a => !validDesignSize({ widthIn: Number(designSize(a).widthIn), heightIn: Number(designSize(a).heightIn) }));
   const uploadByAsset = Object.values(uploads).reduce((index, entry) => {
     if (entry.assetId) index[entry.assetId] = entry;
     return index;
@@ -158,12 +175,12 @@ export default function ClientUpload({ params }) {
   return <main className="client-page">
     <header><strong>Smart Sheet Builder</strong><span>Client Upload Portal</span></header>
     <h1>{shop || 'Client Upload Portal'}</h1>
-    <p>Upload your PNG artwork, set quantities, then review and send your print layout to the shop.</p>
+    <p>Upload your PNG artwork, request sizes and quantities, then review and send your print layout to the shop.</p>
     {error && <p role="alert" className="client-error">{error}</p>}
     {message && <p role="status" className="client-message">{message}</p>}
     {['submission_expired', 'submission_invalid'].includes(errorCode) && <button onClick={() => {
       objects.current.forEach(URL.revokeObjectURL); objects.current = [];
-      setJob(null); setSession(''); sessionRef.current = ''; setUrls({}); setUploads({}); setQuantities({}); setDirty(true); setError(''); setErrorCode('');
+      setJob(null); setSession(''); sessionRef.current = ''; setUrls({}); setUploads({}); setQuantities({}); setSizes({}); setDirty(true); setError(''); setErrorCode('');
     }}>Start a new submission</button>}
     {['portal_configuration_error', 'portal_setup_required'].includes(errorCode) && <button onClick={() => location.reload()}>Retry portal</button>}
     {!shop ? (!error && <p role="status">Checking upload portal…</p>) : job?.confirmed_at ? <section className="client-card">
@@ -175,6 +192,7 @@ export default function ClientUpload({ params }) {
         <p className="client-muted">Static 8-bit PNG · up to 4 MiB each · 10 files / 32 MiB total · 500 pieces. Unconfirmed uploads expire after 2 hours.</p>
         {[...(job?.assets || []).map((asset) => ({ asset, entry: uploadByAsset[asset.id] })), ...pendingEntries.map((entry) => ({ entry }))].map(({ asset, entry }) => {
           const id = asset?.id || entry.id, name = asset?.name || entry.name, state = entry?.state || 'Ready', ready = Boolean(asset) && state === 'Ready';
+          const size = asset ? designSize(asset) : null;
           return <div className="client-file" key={id} data-upload-state={state.toLowerCase().replaceAll(' ', '-')}>
             <div className="client-file-info">
               {/* Browser object URLs preserve the exact uploaded PNG bytes. */}
@@ -182,14 +200,19 @@ export default function ClientUpload({ params }) {
               <img className="client-file-thumbnail" src={urls[asset?.id] || entry?.url} alt="" decoding="async" />
               <div className="client-file-copy"><span className="client-file-name" title={name}>{name}</span><span className={`client-upload-state ${state === 'Failed' ? 'failed' : ready ? 'ready' : 'active'}`} role="status">{state === 'Failed' ? 'Failed — Retry' : state}</span>{entry?.error && <small className="client-file-error">{entry.error}</small>}</div>
             </div>
-            {ready ? <><div className="client-quantity" role="group" aria-label={`Quantity for ${name}`}><span>Qty</span><div className="client-stepper"><button type="button" className="secondary" disabled={busy || (quantities[asset.id] ?? 1) <= 1} aria-label={`Decrease quantity for ${name}`} onClick={() => changeQuantity(asset.id, (quantities[asset.id] ?? 1) - 1)}>−</button><input type="number" min="1" max="500" value={quantities[asset.id] ?? 1} disabled={busy} aria-label={`Quantity for ${name}`} onChange={(e) => changeQuantity(asset.id, e.target.value)} /><button type="button" className="secondary" disabled={busy || (quantities[asset.id] ?? 1) >= 500} aria-label={`Increase quantity for ${name}`} onClick={() => changeQuantity(asset.id, (quantities[asset.id] ?? 1) + 1)}>+</button></div></div><button type="button" className="client-file-remove secondary" disabled={busy} aria-label={`Remove ${name}`} onClick={() => run(async () => { const d = await call('remove', { id: asset.id }); setJob(d.job); setDirty(true); setUploads((current) => Object.fromEntries(Object.entries(current).filter(([, item]) => item.assetId !== asset.id))); })}>×</button></> : state === 'Failed' ? <div className="client-file-actions"><button type="button" className="secondary" disabled={busy} onClick={() => retryUpload(entry.id)}>Retry</button><button type="button" className="client-file-remove secondary" disabled={busy} aria-label={`Remove ${name}`} onClick={() => removeLocalUpload(entry.id)}>×</button></div> : <span className="client-upload-indicator" aria-label={`${name}: ${state}`} />}
+            {ready ? <><div className="client-design-controls"><div className="client-size-controls">
+              <label>Width (in)<input type="number" min="0.001" max={MAX_REQUESTED_SIZE_IN} step="any" value={size.widthIn} disabled={busy} aria-label={`Width (in) for ${name}`} onChange={e => changeSize(asset, 'widthIn', e.target.value)} /></label>
+              <label>Height (in)<input type="number" min="0.001" max={MAX_REQUESTED_SIZE_IN} step="any" value={size.heightIn} disabled={busy} aria-label={`Height (in) for ${name}`} onChange={e => changeSize(asset, 'heightIn', e.target.value)} /></label>
+              <label className="client-aspect-lock"><input type="checkbox" checked={size.lockAspect} disabled={busy} aria-label={`Lock aspect ratio for ${name}`} onChange={e => changeSize(asset, 'lockAspect', e.target.checked)} />Lock aspect ratio</label>
+            </div><div className="client-quantity" role="group" aria-label={`Quantity for ${name}`}><span>Qty</span><div className="client-stepper"><button type="button" className="secondary" disabled={busy || (quantities[asset.id] ?? 1) <= 1} aria-label={`Decrease quantity for ${name}`} onClick={() => changeQuantity(asset.id, (quantities[asset.id] ?? 1) - 1)}>−</button><input type="number" min="1" max="500" value={quantities[asset.id] ?? 1} disabled={busy} aria-label={`Quantity for ${name}`} onChange={(e) => changeQuantity(asset.id, e.target.value)} /><button type="button" className="secondary" disabled={busy || (quantities[asset.id] ?? 1) >= 500} aria-label={`Increase quantity for ${name}`} onClick={() => changeQuantity(asset.id, (quantities[asset.id] ?? 1) + 1)}>+</button></div></div></div><button type="button" className="client-file-remove secondary" disabled={busy} aria-label={`Remove ${name}`} onClick={() => run(async () => { const d = await call('remove', { id: asset.id }); setJob(d.job); setDirty(true); setUploads((current) => Object.fromEntries(Object.entries(current).filter(([, item]) => item.assetId !== asset.id))); })}>×</button></> : state === 'Failed' ? <div className="client-file-actions"><button type="button" className="secondary" disabled={busy} onClick={() => retryUpload(entry.id)}>Retry</button><button type="button" className="client-file-remove secondary" disabled={busy} aria-label={`Remove ${name}`} onClick={() => removeLocalUpload(entry.id)}>×</button></div> : <span className="client-upload-indicator" aria-label={`${name}: ${state}`} />}
           </div>;
         })}
-        {(job?.assets.length > 0 || pendingEntries.length > 0) && <div className="client-upload-actions"><button type="button" className="secondary" disabled={busy} onClick={() => fileInput.current?.click()}>Add more design</button><button disabled={busy || hasUploadsInFlight || !(job?.assets.length)} onClick={() => run(async () => { const d = await call('preview', { reference, quantities: job.assets.map((asset) => ({ id: asset.id, qty: quantities[asset.id] ?? 1 })) }); setJob(d.job); setDirty(false); })}>{hasUploadsInFlight ? 'Waiting for uploads…' : busy ? 'Generating preview…' : 'Generate Print Preview'}</button></div>}
+        {invalidSizes && <p role="alert" className="client-error">Enter a positive width and height up to 120 inches for each design.</p>}
+        {(job?.assets.length > 0 || pendingEntries.length > 0) && <div className="client-upload-actions"><button type="button" className="secondary" disabled={busy} onClick={() => fileInput.current?.click()}>Add more design</button><button disabled={busy || hasUploadsInFlight || invalidSizes || !(job?.assets.length)} onClick={() => run(async () => { const d = await call('preview', { reference, quantities: job.assets.map((asset) => ({ id: asset.id, qty: quantities[asset.id] ?? 1, widthIn: Number(designSize(asset).widthIn), heightIn: Number(designSize(asset).heightIn) })) }); setJob(d.job); setDirty(false); })}>{hasUploadsInFlight ? 'Waiting for uploads…' : busy ? 'Generating preview…' : 'Generate Print Preview'}</button></div>}
       </section>
       <section className="client-card client-preview-card" aria-busy={busy}>
         <h2>Print layout estimate</h2><p>This preview is read-only. The shop’s printing preset determines the layout.</p>{busy && <div className="client-preview-skeleton" role="status">Preparing your print layout…</div>}
-        {job?.manifest && !dirty ? <><p><strong>{job.quantity} pieces · {Number(job.meters).toFixed(3)} m</strong></p><ClientJobPreview manifest={job.manifest} assets={job.assets} urls={urls} /><button disabled={busy || hasUploadsInFlight} onClick={() => run(async () => { const d = await call('confirm', { revision: job.revision }); setJob(d.job); setMessage(d.message); })}>{busy ? 'Submitting…' : 'Confirm & Send to Shop'}</button></> : <p>{hasUploadsInFlight ? 'Your files are being prepared. Preview will be available when they are ready.' : 'Generate a preview after uploading or changing quantities.'}</p>}
+        {job?.manifest && !dirty ? <><p><strong>{job.quantity} pieces · {Number(job.meters).toFixed(3)} m</strong></p><ClientJobPreview manifest={job.manifest} assets={job.assets} urls={urls} /><button disabled={busy || hasUploadsInFlight} onClick={() => run(async () => { const d = await call('confirm', { revision: job.revision }); setJob(d.job); setMessage(d.message); })}>{busy ? 'Submitting…' : 'Confirm & Send to Shop'}</button></> : <p>{hasUploadsInFlight ? 'Your files are being prepared. Preview will be available when they are ready.' : 'Generate a preview after uploading or changing sizes or quantities.'}</p>}
       </section>
     </div>}
   </main>;

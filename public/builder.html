@@ -302,7 +302,7 @@
         </div>
         <div class="field">
           <label for="edgeAllowanceNumber" data-i18n="edgeAllowanceLabel">Auto-layout edge allowance (in)</label>
-          <input type="number" id="edgeAllowanceNumber" min="0" step="0.05" value="0.30" class="small-input" aria-describedby="edgeAllowanceHelp">
+          <input type="number" id="edgeAllowanceNumber" min="0" step="0.05" value="0.10" class="small-input" aria-describedby="edgeAllowanceHelp">
           <small id="edgeAllowanceHelp" data-i18n="edgeAllowanceHelp">Auto-arrange only. Manual placement can still reach the real sheet edge.</small>
         </div>
         <div class="row">
@@ -312,8 +312,8 @@
           </div>
           <div class="field">
             <label for="gapNumber" data-i18n="gapLabel">Gap sa pagitan (in)</label>
-            <input type="number" id="gapNumber" min="0" max="5" step="0.05" value="0" class="small-input" style="margin-bottom:8px;">
-            <input type="range" id="gap" min="0" max="1" step="0.05" value="0">
+            <input type="number" id="gapNumber" min="0" max="5" step="0.05" value="0.10" class="small-input" style="margin-bottom:8px;">
+            <input type="range" id="gap" min="0" max="1" step="0.05" value="0.10">
           </div>
         </div>
         <div class="row">
@@ -651,7 +651,7 @@
       arrangeThisDesign: 'Add to layout',
       arrangeThisDesignBusy: 'Arranging...',
       addToLayoutHelp: 'Fill available spaces without moving existing pieces.',
-      arrangeSheetHelp: 'Rearrange all pieces for a new layout.',
+      arrangeSheetHelp: 'Rearrange the current layout. Existing pieces keep their placed sizes.',
       rotateSelected: 'Rotate selected',
       overlapWarning: 'Warning: some designs are overlapping. Move them before print/export.',
       qualityWarning: 'Low-res warning: a design is too enlarged for the original PNG. Shrink it or use a higher-resolution file.',
@@ -782,7 +782,7 @@
   var layoutHistory = (function(){
     var past=[],future=[],depth=0,restoring=false;
     function capture(){
-      return {designs:designs.map(function(d){return {ref:d,qty:d.qty,widthIn:d.widthIn,heightIn:d.heightIn};}),
+      return {designs:designs.map(function(d){return {ref:d,qty:d.qty,widthIn:d.widthIn,heightIn:d.heightIn,addSizeKey:d.addSizeKey,addBatch:d.addBatch};}),
         instances:instances.map(function(i){var copy=Object.assign({},i);delete copy.canvas;return copy;}),
         sheets:sheets.map(function(s){var copy=Object.assign({},s,{placements:s.placements.map(function(p){return Object.assign({},p,{inst:p.inst.id});})});delete copy.renderCanvas;delete copy.exportUi;return copy;}),
         selected:Array.from(selectedInstanceIds),manual:manualMode,dpi:dpiGlobal,width:sheetWidthPxGlobal,
@@ -806,7 +806,7 @@
       try {
         // Keep newly uploaded, unplaced cards when undoing earlier geometry.
         var extras=designs.filter(function(d){return !s.designs.some(function(old){return old.ref.id===d.id;})&&!instances.some(function(i){return i.designId===d.id;});});
-        designs=s.designs.map(function(d){d.ref.qty=d.qty;d.ref.widthIn=d.widthIn;d.ref.heightIn=d.heightIn;d.ref.layoutFeedback='';return d.ref;}).concat(extras);
+        designs=s.designs.map(function(d){d.ref.qty=d.qty;d.ref.widthIn=d.widthIn;d.ref.heightIn=d.heightIn;d.ref.addSizeKey=d.addSizeKey;d.ref.addBatch=d.addBatch;d.ref.layoutFeedback='';return d.ref;}).concat(extras);
         var byId=new Map();instances=s.instances.map(function(i){var d=designs.find(function(d){return d.id===i.designId;});var copy=Object.assign({},i,{canvas:d.trimmed.canvas});byId.set(i.id,copy);return copy;});
         sheets=s.sheets.map(function(sheet){return Object.assign({},sheet,{placements:sheet.placements.map(function(p){return Object.assign({},p,{inst:byId.get(p.inst)});})});});
         selectedInstanceIds=new Set(s.selected);manualMode=s.manual;dpiGlobal=s.dpi;sheetWidthPxGlobal=s.width;
@@ -937,8 +937,10 @@
     setSheetSize(preset.widthIn, preset.lengthIn);
     updateUnitLabels();
     if (sheets.length) {
-      manualMode = false;
-      repack(lastArrangeMode || selectedArrangeMode(), true);
+      var settings = getSheetPixelSettings();
+      sheets.forEach(function(sheet){sheet.widthPx=settings.sheetWidthPx;sheet.heightPx=settings.sheetLengthPx;});
+      renderAllSheets();computeStats();
+      document.getElementById('layoutHistoryStatus').textContent = 'Sheet preset changed. Existing pieces stay in place; use Arrange on sheet to reflow.';
     } else {
       renderStartupSheetPreview();
     }
@@ -969,7 +971,7 @@
     gapSlider.value = Math.min(1, Math.max(0, gapIn));
     updateUnitLabels();
     renderAllDesigns();
-    if (sheets.length) { repack(lastArrangeMode || selectedArrangeMode(), true); }
+    if (sheets.length) { renderAllSheets();computeStats(); }
     else { renderStartupSheetPreview(); }
   }
 
@@ -1008,13 +1010,8 @@
   });
   document.getElementById('autoExtend').addEventListener('change', function(){
     if (!sheets.length) { renderStartupSheetPreview(); return; }
-    // The checkbox changes the export layout contract, so apply it immediately
-    // as one undoable Arrange action. Remaining copies stay explicitly unplaced
-    // when continuation is disabled.
-    layoutHistory.run('Change sheet continuation', function(){
-      manualMode = false;
-      repack(lastArrangeMode || selectedArrangeMode(), true);
-    });
+    // Settings affect future placement. Only an explicit Arrange may reflow.
+    document.getElementById('layoutHistoryStatus').textContent = 'Sheet continuation applies to the next Add or Arrange. Existing layout stays unchanged.';
   });
   customerNameInput.addEventListener('input', function(){
     if (sheets.length) {
@@ -1470,6 +1467,18 @@
     }
     refreshSourceInfo();
     fields.appendChild(sourceInfo);
+    var sizeHelp = document.createElement('p');
+    sizeHelp.className = 'next-size-help';sizeHelp.style.fontSize='12px';sizeHelp.style.color='#526477';
+    sizeHelp.textContent = 'New size applies to the next copies you add. Existing layout stays unchanged.';
+    function refreshSizeHelp() {
+      var differentSize = sheets.some(function(s){return s.placements.some(function(p){
+        var dpi = p.inst.layoutDpi || dpiGlobal;
+        var size = p.inst.placedSizeIn || [p.inst.baseW/dpi,p.inst.baseH/dpi];
+        return p.inst.designId === design.id && (Math.abs(size[0]-design.widthIn)>0.000001 || Math.abs(size[1]-design.heightIn)>0.000001);
+      });});
+      sizeHelp.hidden = !differentSize;
+    }
+    refreshSizeHelp();fields.appendChild(sizeHelp);
     var resetImageBtn = document.createElement('button');
     resetImageBtn.type = 'button'; resetImageBtn.className = 'reset-image-btn'; resetImageBtn.textContent = t('resetImage');
     resetImageBtn.title = 'Discard all applied background, cleanup, and enhancement edits';
@@ -1579,6 +1588,7 @@
         heightInput.value = formatMeasure(design.heightIn);
       }
       refreshSourceInfo();
+      refreshSizeHelp();
     });
     heightInput.addEventListener('input', function(){
       var v = readMeasureInput(heightInput) || 0;
@@ -1588,6 +1598,7 @@
         widthInput.value = formatMeasure(design.widthIn);
       }
       refreshSourceInfo();
+      refreshSizeHelp();
     });
 
     var vibField = document.createElement('div');
@@ -1671,7 +1682,7 @@
       var wPx = Math.max(1, Math.round(design.widthIn * dpi));
       var hPx = Math.max(1, Math.round(design.heightIn * dpi));
       for (var n = 0; n < count; n++) {
-        newInstances.push({ canvas: design.trimmed.canvas, vibrance: design.vibrance, baseW: wPx, baseH: hPx, rotation: 0, id: instanceIdCounter++, designId: design.id, manualX: 0, manualY: 0 });
+        newInstances.push({ canvas: design.trimmed.canvas, vibrance: design.vibrance, baseW: wPx, baseH: hPx, layoutDpi:dpi, placedSizeIn: [design.widthIn,design.heightIn], addBatch:design.addBatch||0, rotation: 0, id: instanceIdCounter++, designId: design.id, manualX: 0, manualY: 0 });
       }
     return newInstances;
   }
@@ -1853,13 +1864,19 @@
       sheet.placements.forEach(function(p){ if (p.inst.layoutLocked) locked.push(p.inst); });
     });
     var lockedIds = new Set(locked.map(function(inst){ return inst.id; }));
-    var lockedByDesign = new Map();
-    locked.forEach(function(inst){ lockedByDesign.set(inst.designId, (lockedByDesign.get(inst.designId) || 0) + 1); });
-    var next = locked.slice();
+    // Reflow current piece snapshots; a changed card is only a future Add size.
     var dpi = parseFloat(dpiInput.value) || 300;
+    var next = instances.map(function(inst){
+      if (lockedIds.has(inst.id)) return inst;
+      var scale = dpi / (inst.layoutDpi || dpiGlobal);
+      return Object.assign({},inst,{baseW:Math.round(inst.baseW*scale),baseH:Math.round(inst.baseH*scale),layoutDpi:dpi});
+    });
     designs.forEach(function(design){
-      var needed = Math.max(0, design.qty - (lockedByDesign.get(design.id) || 0));
+      var current = next.filter(function(inst){return inst.designId === design.id;});
+      var key = JSON.stringify([design.widthIn,design.heightIn]);
+      var needed = !current.length ? design.qty : design.addSizeKey === key ? Math.max(0,design.qty-current.filter(function(i){return (i.addBatch||0)===(design.addBatch||0);}).length) : 0;
       if (needed) next = next.concat(createInstancesForDesign(design, dpi, needed));
+      if (!current.length) design.addSizeKey = key;
     });
     instances = next;
     return lockedIds;
@@ -3512,8 +3529,12 @@
     var placedIds = new Set();
     sheets.forEach(function(sheet){ sheet.placements.forEach(function(p){ placedIds.add(p.inst.id); }); });
     var designInstances = instances.filter(function(inst){ return inst.designId === design.id; });
+    var sizeKey = JSON.stringify([design.widthIn,design.heightIn]);
+    if (!design.addSizeKey) design.addSizeKey = designInstances.length ? JSON.stringify(designInstances[0].placedSizeIn || [designInstances[0].baseW/settings.dpi,designInstances[0].baseH/settings.dpi]) : sizeKey;
+    if (design.addSizeKey !== sizeKey) { design.addBatch = (design.addBatch||0)+1;design.addSizeKey = sizeKey; }
     var pending = designInstances.filter(function(inst){ return !placedIds.has(inst.id); });
-    var missing = Math.max(0, design.qty - designInstances.length);
+    var batchInstances = designInstances.filter(function(inst){return (inst.addBatch||0)===(design.addBatch||0);});
+    var missing = Math.max(0, design.qty - batchInstances.length);
     var created = missing ? createInstancesForDesign(Object.assign({}, design, { qty: missing }), settings.dpi) : [];
     pending = pending.concat(created);
 
@@ -3574,7 +3595,7 @@
         layoutHistory.run('Arrange on sheet — ' + arrangeModeLabel(arrangeMode),function(){
         prepareInstancesForArrange();
         lastArrangeMode = arrangeMode;
-        lastArrangeRequested = designs.reduce(function(total, design){ return total + design.qty; }, 0);
+        lastArrangeRequested = instances.length;
         manualMode = false;
         manualModeNote.style.display = 'none';
         repack(arrangeMode, true);
@@ -3680,7 +3701,7 @@
     autoArrange:function(){
       var mode=selectedArrangeMode();
       layoutHistory.run('Arrange on sheet — '+arrangeModeLabel(mode),function(){
-      prepareInstancesForArrange();lastArrangeMode=mode;lastArrangeRequested=designs.reduce(function(n,d){return n+d.qty;},0);
+      prepareInstancesForArrange();lastArrangeMode=mode;lastArrangeRequested=instances.length;
       manualMode=false;repack(mode,true);
       });
     }
