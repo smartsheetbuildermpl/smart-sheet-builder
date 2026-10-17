@@ -14,7 +14,16 @@ export function resetUrl(request) {
   return appAuthUrl(request, '/reset-password');
 }
 export function appAuthUrl(request, path = '/auth/callback') {
-  return `${publicAppOrigin(request)}${path}`;
+  if (!['/reset-password', '/auth/callback'].includes(path)) throw failure('Invalid authentication redirect path.', 503);
+  const current = new URL(request.url);
+  const isLoopback = url => ['localhost', '127.0.0.1', '[::1]'].includes(url.hostname);
+  const deployed = Boolean(process.env.VERCEL || process.env.VERCEL_ENV);
+  // Local builds can run with NODE_ENV=production. Only an actual loopback
+  // request outside Vercel may use that origin; deployed links use the canonical policy.
+  const local = !deployed && isLoopback(current) && ['http:', 'https:'].includes(current.protocol);
+  const origin = local ? current.origin : publicAppOrigin(request);
+  if (deployed && isLoopback(new URL(origin))) throw failure('Configure SMART_SHEET_SITE_URL with the production HTTPS app origin.', 503);
+  return new URL(path, origin).href;
 }
 function key() {
   const secret = process.env.SMART_SHEET_RECOVERY_SECRET || getSupabaseConfig().serviceRoleKey;

@@ -27,16 +27,11 @@ export default function ResetPasswordPage() {
     verifyLink(); window.addEventListener('hashchange', changed);
     return () => window.removeEventListener('hashchange', changed);
   }, []);
-  useEffect(() => {
-    if (state !== 'success' || warning) return;
-    const timer = setTimeout(() => location.replace('/?signin=1&passwordChanged=1'), 3000);
-    return () => clearTimeout(timer);
-  }, [state, warning]);
-  return <main className="password-page"><div className="password-card"><p className="access-kicker">Smart Sheet Builder</p><h1>{state === 'request' ? 'Request a password reset' : 'Reset password'}</h1>
+  return <main className="password-page"><div className="password-card"><p className="access-kicker">Smart Sheet Builder</p><h1>{state === 'request' ? 'Request a password reset' : state === 'ready' ? 'Set new password' : 'Reset password'}</h1>
     {state === 'checking' && <p role="status">Checking your recovery link…</p>}
     {state === 'invalid' && <><p role="alert">{message}</p><button onClick={() => setState('request')}>Request a new reset link</button></>}
     {state === 'request' && <PasswordRequestForm />}
-    {state === 'success' && <div role="status"><p>Password updated successfully</p>{warning && <p>{warning}</p>}<a className="auth-success-link" href="/?signin=1">Sign in</a></div>}
+    {state === 'success' && <div role="status"><p>Password changed successfully</p>{warning && <p>{warning}</p>}<a className="auth-success-link" href="/?signin=1">Sign in</a></div>}
     {state === 'ready' && <form className="auth-form" noValidate onSubmit={async e => {
       e.preventDefault(); const validation = passwordError(password, confirmation); setMessage(validation); if (validation || busy) return;
       setBusy(true);
@@ -51,8 +46,8 @@ export default function ResetPasswordPage() {
       } catch (e) { setMessage(e.publicMessage || 'Unable to reach the password service. Check your connection before trying again.'); }
       finally { setPassword(''); setConfirmation(''); setBusy(false); }
     }}>
-      <PasswordFields password={password} confirmation={confirmation} setPassword={setPassword} setConfirmation={setConfirmation} disabled={busy} />
-      {message && <p role="alert">{message}</p>}<button disabled={busy} type="submit">{busy ? 'Updating…' : 'Set new password'}</button>
+      <PasswordFields password={password} confirmation={confirmation} setPassword={setPassword} setConfirmation={setConfirmation} disabled={busy} confirmationLabel="Confirm password" />
+      {message && <p role="alert">{message}</p>}<button disabled={busy} type="submit">{busy ? 'Saving…' : 'Save password'}</button>
     </form>}
   </div></main>;
 }
