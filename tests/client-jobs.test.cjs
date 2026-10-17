@@ -227,7 +227,7 @@ async function run() {
       chunk('IEND', Buffer.alloc(0))
     ]);
     assert.throws(() => lib.decodePng(inflatedBomb), /oversized interlaced/);
-    assert.equal(lib.defaults.edgeIn, 0.1); assert.equal(lib.defaults.gapIn, 0.1);
+    assert.equal(lib.defaults.edgeIn, 0.5); assert.equal(lib.defaults.gapIn, 0.3);
     // Existing shop overrides keep their original packing contract.
     const token = await f.portal('basic', { edgeIn: 0.3, gapIn: 0 }),
       other = await f.portal('unlimited');

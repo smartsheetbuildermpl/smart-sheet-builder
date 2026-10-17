@@ -17,9 +17,10 @@ const jwt = (user) =>
   const errors = [];
   let loseConsume = true;
   let failOnePublicUpload = true;
+  let previewRequests = 0, failPreview = true, failDetail = true;
   const consumedKeys = [];
   try {
-    const token = await f.portal('basic', { widthIn: 3, lengthIn: 3 });
+    const token = await f.portal('basic', { widthIn: 3, lengthIn: 3, edgeIn: 0.1, gapIn: 0.1 });
     async function pageFor(user) {
       const context = await browser.newContext({ hasTouch: true }),
         page = await context.newPage({
@@ -77,16 +78,25 @@ const jwt = (user) =>
             json: { message: 'Simulated upload connection failure' }
           });
         } else if (pub) {
+          if (rr.method() === 'POST' && u.searchParams.get('action') === 'preview') {
+            previewRequests++;
+            await new Promise(resolve => setTimeout(resolve, 1200));
+            if (failPreview) { failPreview = false; return r.fulfill({status:503,json:{message:'Layout service temporarily unavailable. Please retry.'}}); }
+          }
           if (rr.method() === 'POST' && u.searchParams.get('action') === 'upload')
             await new Promise((resolve) => setTimeout(resolve, 250));
           result = await f.pub[rr.method()](req, { params: { token: pub[1] } });
         }
-        else if (match)
+        else if (match) {
+          await new Promise(resolve => setTimeout(resolve, 1200));
           result = await f.files.GET(req, {
             params: { id: match[1], file: match[2] }
           });
-        else if (u.pathname === '/api/client-jobs')
+        }
+        else if (u.pathname === '/api/client-jobs') {
+          if (u.searchParams.has('id') && failDetail) { failDetail=false; return r.fulfill({status:503,json:{message:'Private sources temporarily unavailable.'}}); }
           result = await f.owner[rr.method()](req);
+        }
         else if (u.pathname === '/api/auth/me') result = await f.me.GET(req);
         else if (u.pathname === '/api/export/status')
           result = await f.status.GET(req);
@@ -193,10 +203,36 @@ const jwt = (user) =>
     await customer.page
       .getByRole('spinbutton', { name: 'Quantity for soft-edge.png' })
       .fill('2');
+    await customer.page.clock.install();
     await customer.page
       .getByRole('button', { name: 'Generate Print Preview', exact: true })
       .click();
+    await customer.page.getByText('Preparing your print layout', {exact:true}).waitFor();
+    assert(await customer.page.getByRole('button',{name:'Preparing print layout…',exact:true}).isDisabled());
+    await customer.page.screenshot({path:path.join(out,'client-preparing-layout.png'),fullPage:true});
+    await customer.page.clock.fastForward(15001);
+    await customer.page.getByText('Still preparing your layout — larger artwork can take longer.',{exact:true}).waitFor();
+    await customer.page.getByRole('button',{name:'Retry preview',exact:true}).waitFor();
+    assert.equal(await customer.page.locator('.client-layout-loading').count(),0);
+    assert.equal(previewRequests,1,'duplicate clicks cannot start another preview request');
+    assert.equal((await f.one('select count(*)::int as n from client_jobs')).n,1,'failed preview retains the original submission');
+    await customer.page.getByRole('button',{name:'Retry preview',exact:true}).click();
     await customer.page.locator('.client-preview canvas').waitFor();
+    await customer.page.evaluate(() => {
+      const decode = Image.prototype.decode;
+      window.failArtworkDecode = true;
+      Image.prototype.decode = function() { if (window.failArtworkDecode) return Promise.reject(Error('Temporary artwork decode failure')); return decode.call(this); };
+    });
+    await customer.page.getByRole('button',{name:'Generate Print Preview',exact:true}).click();
+    await customer.page.getByRole('button',{name:'Retry preview',exact:true}).waitFor();
+    assert.equal(await customer.page.locator('.client-layout-loading').count(),0,'render failure stops animation');
+    assert.equal(await customer.page.locator('.client-preview-card').getAttribute('aria-busy'),'false');
+    assert(await customer.page.getByRole('button',{name:'Confirm & Send to Shop',exact:true}).isDisabled(),'failed render cannot be confirmed');
+    const requestsBeforeRenderRetry = previewRequests;
+    await customer.page.evaluate(() => { window.failArtworkDecode = false; });
+    await customer.page.getByRole('button',{name:'Retry preview',exact:true}).click();
+    await customer.page.locator('.client-preview canvas').waitFor();
+    assert.equal(previewRequests,requestsBeforeRenderRetry,'render retry does not create another server layout');
     await width.fill('0.9');
     assert.equal(await customer.page.getByRole('button',{name:'Confirm & Send to Shop',exact:true}).count(),0,'size edit invalidates preview');
     await customer.page.getByRole('button',{name:'Generate Print Preview',exact:true}).click();await customer.page.locator('.client-preview canvas').waitFor();
@@ -298,6 +334,16 @@ const jwt = (user) =>
     const owner = await pageFor('basic');
     await owner.page.goto(`${base}/?clientJob=${job.id}`);
     await owner.page.getByRole('dialog', { name: 'Client Portal' }).waitFor();
+    await owner.page.getByRole('button',{name:'Retry layout',exact:true}).waitFor();
+    assert.equal(await owner.page.locator('.client-layout-loading').count(),0);
+    await owner.page.getByRole('button',{name:'Retry layout',exact:true}).click();
+    await owner.page.getByText('Preparing your print layout',{exact:true}).waitFor();
+    assert(await owner.page.getByRole('button',{name:'View details',exact:true}).first().isDisabled());
+    await owner.page.screenshot({path:path.join(out,'shop-preparing-layout.png'),fullPage:true});
+    await owner.page.getByRole('button',{name:'Close Client Portal',exact:true}).click();
+    assert.equal(await owner.page.locator('.client-layout-loading:visible').count(),0,'closing cancels layout loading');
+    await owner.page.locator('.access-reveal-handle').hover();
+    await owner.page.getByRole('button',{name:/^Client Portal/}).click();
     await owner.page.locator('.client-preview canvas').waitFor();
     await owner.page.getByRole('button', { name: 'Close Client Portal' }).click();
     await owner.page.locator('.access-reveal-handle').hover();
@@ -340,6 +386,14 @@ const jwt = (user) =>
     await owner.page.screenshot({ path: path.join(out, 'client-portal-desktop.png'), fullPage: true });
     await owner.page.getByRole('button', { name: 'Shop portal settings' }).click();
     await owner.page.getByText('Portal link active', { exact: true }).waitFor();
+    const gap = owner.page.getByLabel('Spacing (in)',{exact:true}), edge = owner.page.getByLabel('Auto-layout edge allowance (in)',{exact:true});
+    assert.equal(await gap.inputValue(),'0.1'); assert.equal(await edge.inputValue(),'0.1');
+    await owner.page.getByRole('button',{name:'Reset portal layout defaults',exact:true}).click();
+    assert.equal(await gap.inputValue(),'0.3'); assert.equal(await edge.inputValue(),'0.5');
+    await edge.scrollIntoViewIfNeeded();
+    await owner.page.screenshot({path:path.join(out,'portal-layout-defaults.png'),fullPage:true});
+    await owner.page.getByRole('button',{name:'Use current Builder sheet settings',exact:true}).click();
+    assert.equal(await gap.inputValue(),'0.1'); assert.equal(await edge.inputValue(),'0.1');
     const originalLink = await owner.page.getByLabel('Client upload link').inputValue();
     assert.equal(new URL(originalLink).origin, new URL(base).origin);
     assert.equal(new URL(originalLink).pathname, '/client-upload/' + token);

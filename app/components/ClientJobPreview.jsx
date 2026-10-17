@@ -1,12 +1,18 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
-export default function ClientJobPreview({ manifest, assets, urls }) {
+import PrintLayoutLoading from './PrintLayoutLoading';
+export default function ClientJobPreview({ manifest, assets, urls, onBusyChange, onReadyChange }) {
   const box = useRef(null),
-    [error, setError] = useState('');
+    [error, setError] = useState(''),
+    [stage, setStage] = useState('Preparing artwork…'),
+    [attempt, setAttempt] = useState(0);
   useEffect(() => {
     let cancelled = false;
     const images = [];
     setError('');
+    setStage('Preparing artwork…');
+    onBusyChange?.(true);
+    onReadyChange?.(false);
     box.current.replaceChildren();
     (async () => {
       const sources = {};
@@ -24,6 +30,9 @@ export default function ClientJobPreview({ manifest, assets, urls }) {
         images.push(img);
         if (cancelled) return;
       }
+      setStage('Creating your preview…');
+      // Yield a frame before painting so loading feedback can reach the screen.
+      await new Promise(resolve => requestAnimationFrame(resolve));
       for (const [i, s] of manifest.sheets.entries()) {
         if (cancelled) return;
         const canvas = document.createElement('canvas'),
@@ -60,25 +69,30 @@ export default function ClientJobPreview({ manifest, assets, urls }) {
         const label = document.createElement('p');
         label.textContent = `Sheet ${i + 1} · ${s.widthIn.toFixed(2)} × ${s.heightIn.toFixed(2)} in`;
         box.current.append(label, canvas);
+        await new Promise(resolve => requestAnimationFrame(resolve));
       }
       images.forEach((img) => {
         img.src = '';
       });
       images.length = 0;
+      if (!cancelled) { setStage(''); onBusyChange?.(false); onReadyChange?.(true); }
     })().catch((e) => {
-      if (!cancelled) setError(e.message);
+      if (!cancelled) { setError(e.message); setStage(''); onBusyChange?.(false); onReadyChange?.(false); box.current.replaceChildren(); }
     });
     return () => {
       cancelled = true;
+      onBusyChange?.(false);
+      onReadyChange?.(false);
       images.forEach((img) => {
         img.src = '';
       });
     };
-  }, [manifest, assets, urls]);
+  }, [manifest, assets, urls, attempt, onBusyChange, onReadyChange]);
   return (
     <>
-      <div className="client-preview" ref={box} />
-      {error && <p role="alert">{error}</p>}
+      {stage && <PrintLayoutLoading stage={stage} />}
+      <div className="client-preview" ref={box} hidden={Boolean(stage || error)} aria-busy={Boolean(stage)} />
+      {error && <div className="client-error" role="alert">We couldn’t create the print preview. {error} <button type="button" className="secondary" onClick={() => setAttempt(value => value + 1)}>Retry preview</button></div>}
     </>
   );
 }

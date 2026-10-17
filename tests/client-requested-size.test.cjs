@@ -3,7 +3,7 @@ const { fixture, png } = require('./client-jobs.test.cjs');
 (async () => {
   const f = await fixture();
   try {
-    const token = await f.portal('basic', { widthIn: 3, lengthIn: 3, rotate: false });
+    const token = await f.portal('basic', { widthIn: 3, lengthIn: 3, rotate: false, edgeIn: 0.1, gapIn: 0.1 });
     const draft = await f.call('create', token);
     const original = png(600, 400);
     const uploaded = await f.call('upload', token, draft.submission, original);

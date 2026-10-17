@@ -2,6 +2,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import ClientJobPreview from './ClientJobPreview';
+import PrintLayoutLoading from './PrintLayoutLoading';
 const stamp = (v) => (v ? new Date(v).toLocaleString() : 'Not recorded');
 function status(j, now) {
   return new Date(j.expires_at) <= now
@@ -34,6 +35,11 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     [detail, setDetail] = useState(null),
     [urls, setUrls] = useState({}),
     [busy, setBusy] = useState(false),
+    [detailLoading, setDetailLoading] = useState(false),
+    [previewBusy, setPreviewBusy] = useState(false),
+    [previewReady, setPreviewReady] = useState(false),
+    [detailError, setDetailError] = useState(''),
+    [detailAttempt, setDetailAttempt] = useState(0),
     [exporting, setExporting] = useState(false),
     [error, setError] = useState(''),
     [message, setMessage] = useState(''),
@@ -65,10 +71,11 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     links.current = [];
   }, [accountId]);
   const request = useCallback(
-    async (path = '', body) => {
+    async (path = '', body, signal) => {
       const r = await fetch(`/api/client-jobs${path}`, {
         method: body ? 'POST' : 'GET',
         cache: 'no-store',
+        signal,
         headers: {
           Authorization: `Bearer ${auth.accessToken}`,
           'Content-Type': 'application/json'
@@ -95,6 +102,9 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
       setOpen(false);
       setData(null);
       setDetail(null);
+      setDetailLoading(false);
+      setPreviewBusy(false);
+      setDetailError('');
       return;
     }
     let live = true;
@@ -156,11 +166,14 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     blobs.current = {};
     links.current.forEach(URL.revokeObjectURL);
     links.current = [];
+    setDetailLoading(false);
+    setPreviewBusy(false);
+    setDetailError('');
     if (open && selected) {
-      setBusy(true);
+      setDetailLoading(true);
       setError('');
       (async () => {
-        const d = await request(`?id=${encodeURIComponent(selected)}`),
+        const d = await request(`?id=${encodeURIComponent(selected)}`, undefined, controller.signal),
           nextBlobs = {},
           nextUrls = {};
         for (const a of d.job.assets.filter((a) => a.ready)) {
@@ -174,7 +187,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
             throw Error(e.message);
           }
           const blob = await r.blob();
-          if (!live) return;
+          if (!live || epoch !== loadEpoch.current) return;
           nextBlobs[a.id] = blob;
           nextUrls[a.id] = URL.createObjectURL(blob);
           links.current.push(nextUrls[a.id]);
@@ -186,17 +199,20 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
         }
       })()
         .catch((e) => {
-          if (live) setError(e.message);
+          if (live && epoch === loadEpoch.current) {
+            links.current.forEach(URL.revokeObjectURL); links.current = [];
+            setDetailError(e.message);
+          }
         })
         .finally(() => {
-          if (live) setBusy(false);
+          if (live) setDetailLoading(false);
         });
     }
     return () => {
       live = false;
       controller.abort();
     };
-  }, [selected, open, request, auth.accessToken]);
+  }, [selected, open, request, auth.accessToken, detailAttempt]);
   useEffect(
     () => () => {
       links.current.forEach(URL.revokeObjectURL);
@@ -369,6 +385,8 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                     >
                       Use current Builder sheet settings
                     </button>
+                    <button type="button" className="secondary" onClick={() => setConfig({ ...config, gapIn: 0.3, edgeIn: 0.5 })}>Reset portal layout defaults</button>
+                    <p className="client-muted">New portal defaults: 0.30 in spacing · 0.50 in edge allowance. Changes apply after saving; confirmed layouts stay locked.</p>
                     <label>
                       Printing machine
                       <select
@@ -504,7 +522,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                     <div className="client-submission-actions">
                       <button
                         className="secondary"
-                        disabled={busy || exporting || !j.confirmed_at || expired}
+                        disabled={busy || detailLoading || previewBusy || exporting || !j.confirmed_at || expired}
                         onClick={() => setSelected(j.id)}
                       >
                         View details
@@ -515,9 +533,10 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
               })}
             </div>
           </section>
-          <section className="client-card client-detail-panel">
+          <section className="client-card client-detail-panel" aria-busy={detailLoading || previewBusy}>
             <h2>{detail?.reference || 'Print layout'}</h2>
-            {busy && <p role="status">Loading private original sources…</p>}
+            {detailLoading && <PrintLayoutLoading stage="Preparing artwork…" />}
+            {detailError && <div role="alert" className="client-error">We couldn’t load this print layout. {detailError} <button type="button" className="secondary" onClick={() => setDetailAttempt(value => value + 1)}>Retry layout</button></div>}
             {detail ? (
               <>
                 <p>
@@ -536,6 +555,8 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                   manifest={detail.manifest}
                   assets={detail.assets}
                   urls={urls}
+                  onBusyChange={setPreviewBusy}
+                  onReadyChange={setPreviewReady}
                 />
                 <label>
                   Export sheet
@@ -552,13 +573,13 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                   </select>
                 </label>
                 <button
-                  disabled={exporting || new Date(detail.expires_at) <= now}
+                  disabled={exporting || !previewReady || new Date(detail.expires_at) <= now}
                   onClick={() => download('png')}
                 >
                   Download layout PNG
                 </button>
                 <button
-                  disabled={exporting || new Date(detail.expires_at) <= now}
+                  disabled={exporting || !previewReady || new Date(detail.expires_at) <= now}
                   onClick={() => download('tiff')}
                 >
                   Convert layout to TIFF
@@ -568,7 +589,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                   allowance. Previewing is free.
                 </p>
               </>
-            ) : (
+            ) : !detailLoading && !detailError && (
               <p>Select a confirmed client submission to view its locked print layout.</p>
             )}
           </section>

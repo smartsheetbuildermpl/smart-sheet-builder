@@ -18,8 +18,8 @@ export const defaults = {
   widthIn: 23,
   lengthIn: 39,
   dpi: 300,
-  gapIn: 0.1,
-  edgeIn: 0.1,
+  gapIn: 0.3,
+  edgeIn: 0.5,
   rotate: true,
   autoExtend: true
 };
