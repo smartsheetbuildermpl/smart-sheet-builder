@@ -364,6 +364,16 @@
 .client-profile-row h3 { margin:0 0 3px; }
 .client-profile-actions { grid-column:1 / -1; display:flex; flex-wrap:wrap; gap:6px; }
 .client-profile-actions button { margin:0; padding:6px 10px; font-size:12px; }
+.client-jobs-dialog.client-action-dialog { width:min(500px, calc(100vw - 24px)); height:fit-content; min-height:0; max-height:calc(100dvh - 32px); margin:auto; padding:0; overflow-y:auto; border-radius:10px; }
+.client-jobs-dialog.client-profile-editor { width:min(650px, calc(100vw - 24px)); }
+.client-jobs-dialog.client-action-dialog > header { margin:0; padding:14px 18px; gap:16px; }
+.client-action-dialog > header h2 { margin:0; font-size:17px; }
+.client-action-body { padding:18px; overflow-wrap:anywhere; }
+.client-action-body p { line-height:1.5; }
+.client-action-body > :first-child { margin-top:0; }
+.client-action-profile { font-weight:600; color:var(--ws-navy, #142e4c); }
+.client-action-buttons { display:flex; flex-wrap:wrap; gap:8px; margin-top:16px; }
+.client-action-buttons button { margin:0; }
 .client-profile-badge { display:block; width:fit-content; margin-top:5px; padding:2px 7px; border-radius:5px; background:#edf3f8; color:#29475d; font-size:11px; }
 .client-project-error { color:#a32121; display:block; font-size:12px; margin-top:5px; }
 .client-success-heading { display:flex; align-items:center; gap:10px; }

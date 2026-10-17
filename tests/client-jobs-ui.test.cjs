@@ -17,7 +17,8 @@ const jwt = (user) =>
   const errors = [];
   let loseConsume = true;
   let failOnePublicUpload = true;
-  let previewRequests = 0, failPreview = true, failDetail = true;
+    let previewRequests = 0, failPreview = true, failDetail = true;
+  let failRotate = true, rotateAttempts = 0;
   const consumedKeys = [];
   try {
     const token = await f.portal('basic', { widthIn: 3, lengthIn: 3, edgeIn: 0.1, gapIn: 0.1 });
@@ -94,6 +95,11 @@ const jwt = (user) =>
           });
         }
         else if (u.pathname === '/api/client-jobs') {
+          if (rr.method() === 'POST' && rr.postDataJSON().action === 'rotate') {
+            rotateAttempts++;
+            await new Promise(resolve => setTimeout(resolve, 400));
+            if (failRotate) { failRotate=false; return r.fulfill({status:503,json:{message:'Link service temporarily unavailable. Please retry.'}}); }
+          }
           if (u.searchParams.has('id') && failDetail) { failDetail=false; return r.fulfill({status:503,json:{message:'Private sources temporarily unavailable.'}}); }
           result = await f.owner[rr.method()](req);
         }
@@ -388,7 +394,8 @@ const jwt = (user) =>
     );
     await owner.page.screenshot({ path: path.join(out, 'client-portal-desktop.png'), fullPage: true });
     await owner.page.getByRole('button', { name: 'Shop portal settings' }).click();
-    await owner.page.getByText('Portal link active', { exact: true }).waitFor();
+    const legacy = owner.page.getByRole('article',{name:'Legacy / Default Profile',exact:true});
+    await legacy.getByRole('button',{name:'Edit',exact:true}).click();
     const gap = owner.page.getByLabel('Spacing (in)',{exact:true}), edge = owner.page.getByLabel('Auto-layout edge allowance (in)',{exact:true});
     assert.equal(await gap.inputValue(),'0.1'); assert.equal(await edge.inputValue(),'0.1');
     await owner.page.getByRole('button',{name:'Reset portal layout defaults',exact:true}).click();
@@ -397,15 +404,38 @@ const jwt = (user) =>
     await owner.page.screenshot({path:path.join(out,'portal-layout-defaults.png'),fullPage:true});
     await owner.page.getByRole('button',{name:'Use current Builder sheet settings',exact:true}).click();
     assert.equal(await gap.inputValue(),'0.1'); assert.equal(await edge.inputValue(),'0.1');
-    const originalLink = await owner.page.getByLabel('Client upload link').inputValue();
+    await owner.page.keyboard.press('Escape');
+    assert(await legacy.getByRole('button',{name:'Edit',exact:true}).evaluate(el => el === document.activeElement));
+    const copyOrigin = legacy.getByRole('button',{name:'Copy link',exact:true});
+    await owner.page.evaluate(() => Object.defineProperty(navigator, 'share', { configurable:true, value:async payload => { window.sharedPortalLink=payload; } }));
+    await copyOrigin.focus();
+    const portalScroll = await owner.page.locator('.client-jobs-dialog').evaluate(el => el.scrollTop);
+    await copyOrigin.click();
+    const shareDialog = owner.page.getByRole('dialog',{name:'Share Client Upload Link',exact:true});
+    await shareDialog.waitFor();
+    assert(await shareDialog.evaluate(el=>el.getBoundingClientRect().height<500),'share action stays compact');
+    assert.equal(await owner.page.locator('.client-jobs-dialog:not(.client-action-dialog)').evaluate(el=>el.scrollTop),portalScroll,'share does not jump to settings');
+    assert(await shareDialog.getByRole('button',{name:'Copy link',exact:true}).evaluate(el=>el===document.activeElement));
+    await owner.page.keyboard.press('Shift+Tab');
+    assert(await shareDialog.evaluate(el=>el.contains(document.activeElement)),'focus remains inside action modal');
+    const originalLink = await owner.page.getByLabel('Client upload link',{exact:true}).inputValue();
     assert.equal(new URL(originalLink).origin, new URL(base).origin);
     assert.equal(new URL(originalLink).pathname, '/client-upload/' + token);
-    await owner.page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { window.copiedPortalLink = text; } } }));
+    await owner.page.evaluate(() => Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: async text => { if (!window.copyFailedOnce) { window.copyFailedOnce=true; throw Error('Simulated clipboard failure'); } window.copiedPortalLink = text; } } }));
+    await shareDialog.getByRole('button',{name:'Copy link',exact:true}).click();
+    await shareDialog.getByRole('alert').filter({hasText:'Copy the displayed link manually or retry'}).waitFor();
     await owner.page
-      .getByRole('button', { name: 'Copy upload link', exact: true })
+      .getByRole('dialog',{name:'Share Client Upload Link',exact:true}).getByRole('button', { name: 'Copy link', exact: true })
       .click();
     assert.equal(await owner.page.evaluate(() => window.copiedPortalLink), originalLink);
-    await owner.page.getByText('Upload link copied.', { exact: true }).waitFor();
+    await shareDialog.getByText('Upload link copied.', { exact: true }).waitFor();
+    await shareDialog.getByRole('button',{name:'Share',exact:true}).click();
+    await shareDialog.getByText('Upload link shared.',{exact:true}).waitFor();
+    assert.equal((await owner.page.evaluate(()=>window.sharedPortalLink)).url,originalLink);
+    await owner.page.screenshot({path:path.join(out,'share-link-action-modal.png'),fullPage:true});
+    await owner.page.keyboard.press('Escape');
+    assert(await copyOrigin.evaluate(el=>el===document.activeElement));
+    assert.equal(await owner.page.locator('.client-jobs-dialog').evaluate(el=>el.scrollTop),portalScroll,'closing restores focus without scrolling');
     assert.equal(
       await owner.page.getByRole('button', { name: /^Client Portal/ }).count(),
       1
@@ -573,18 +603,37 @@ const jwt = (user) =>
     );
     assert.equal(maintenance.status, 200);
     assert.equal(f.objects.size, 0, 'daily cron purges expired private files');
-    owner.page.once('dialog', d => d.accept());
     await owner.page.getByRole('article',{name:'Legacy / Default Profile',exact:true}).getByRole('button', { name: 'Disable', exact: true }).click();
-    await owner.page.getByText('Portal link setup required', { exact: true }).waitFor();
+    const disableDialog = owner.page.getByRole('dialog',{name:'Disable upload link?',exact:true});
+    await disableDialog.getByRole('button',{name:'Cancel',exact:true}).click();
+    assert.equal((await f.owner.GET(f.req('/api/client-jobs',undefined,'basic')).then(r=>r.json())).portal.enabled,true,'cancel does not disable');
+    await legacy.getByRole('button',{name:'Disable',exact:true}).click();
+    await disableDialog.getByRole('button',{name:'Disable link',exact:true}).click();
+    await owner.page.getByRole('dialog',{name:'Portal link setup required',exact:true}).waitFor();
     await customer.page.goto(`${base}/client-upload/${token}`);
     await customer.page.getByRole('alert').filter({ hasText: 'This upload portal is currently disabled.' }).waitFor();
     assert.equal(await customer.page.locator('input[type=file]').count(), 0);
-    await owner.page.getByRole('button', { name: 'Create/Enable link', exact: true }).click();
-    await owner.page.getByText('Portal link active', { exact: true }).waitFor();
-    owner.page.once('dialog', d => d.accept());
+    await owner.page.keyboard.press('Escape');
+    await legacy.getByRole('button',{name:'Copy link',exact:true}).click();
+    const setupDialog = owner.page.getByRole('dialog',{name:'Portal link setup required',exact:true});
+    await setupDialog.getByRole('button',{name:'Enable link',exact:true}).click();
+    const enableDialog = owner.page.getByRole('dialog',{name:'Enable upload link?',exact:true});
+    await enableDialog.getByRole('button',{name:'Enable link',exact:true}).click();
+    await shareDialog.waitFor();
+    await owner.page.keyboard.press('Escape');
     await owner.page.getByRole('article',{name:'Legacy / Default Profile',exact:true}).getByRole('button', { name: 'Regenerate link', exact: true }).click();
-    await owner.page.waitForFunction(old => document.querySelector('input[aria-label="Client upload link"]').value !== old, originalLink);
-    const nextToken = (await owner.page.getByLabel('Client upload link').inputValue()).split('/').at(-1);
+    const rotateDialog=owner.page.getByRole('dialog',{name:'Regenerate upload link?',exact:true});
+    await owner.page.screenshot({path:path.join(out,'regenerate-link-confirmation.png'),fullPage:true});
+    await rotateDialog.getByRole('button',{name:'Regenerate',exact:true}).click();
+    assert(await rotateDialog.getByRole('button',{name:'Updating…',exact:true}).isDisabled());
+    await rotateDialog.getByRole('alert').filter({hasText:'temporarily unavailable'}).waitFor();
+    assert.equal(rotateAttempts,1);
+    await rotateDialog.getByRole('button',{name:'Regenerate',exact:true}).click();
+    await shareDialog.waitFor();
+    assert.equal(rotateAttempts,2,'one failed attempt followed by explicit retry');
+    assert.notEqual(await owner.page.getByLabel('Client upload link',{exact:true}).inputValue(),originalLink);
+    const nextToken = (await owner.page.getByLabel('Client upload link',{exact:true}).inputValue()).split('/').at(-1);
+    await owner.page.keyboard.press('Escape');
     await customer.page.reload();
     await customer.page.getByRole('alert').filter({ hasText: 'invalid or has been replaced' }).waitFor();
     await customer.page.goto(`${base}/client-upload/${nextToken}`);
@@ -626,12 +675,31 @@ const jwt = (user) =>
     await owner.page.getByRole('article',{name:'DTF 24″ Gang Sheet',exact:true}).getByText('Active',{exact:true}).waitFor();
     await owner.page.setViewportSize({width:1440,height:1100});await owner.page.locator('dialog').evaluate(el=>{el.scrollTop=0;});
     await owner.page.screenshot({path:path.join(out,'upload-profiles-management.png'),fullPage:true});
+    const disabledProfile=owner.page.getByRole('article',{name:'UV-DTF 24″ Gang Sheet',exact:true});
+    await disabledProfile.getByRole('button',{name:'Share',exact:true}).click();
+    await setupDialog.waitFor();
+    await owner.page.setViewportSize({width:375,height:520});
+    assert(await setupDialog.evaluate(el=>{const r=el.getBoundingClientRect();return r.left>=0&&r.right<=innerWidth&&r.top>=0&&r.bottom<=innerHeight;}));
+    assert(await setupDialog.evaluate(el=>el.getBoundingClientRect().height<450),'mobile setup action does not fill the viewport');
+    await owner.page.screenshot({path:path.join(out,'disabled-profile-mobile-modal.png'),fullPage:true});
+    await owner.page.keyboard.press('Escape');
+    assert(await disabledProfile.getByRole('button',{name:'Share',exact:true}).evaluate(el=>el===document.activeElement));
+    await disabledProfile.getByRole('button',{name:'Edit',exact:true}).click();
+    await owner.page.getByRole('button',{name:'Create/Enable link',exact:true}).click();
+    const saveConfirm=owner.page.getByRole('dialog',{name:'Save settings and enable link?',exact:true});
+    await saveConfirm.getByRole('button',{name:'Cancel',exact:true}).click();
+    assert(await owner.page.getByRole('dialog',{name:'Edit UV-DTF 24″ Gang Sheet',exact:true}).isVisible());
+    await owner.page.keyboard.press('Escape');
+    await owner.page.setViewportSize({width:1440,height:1100});
     await owner.page.getByRole('article',{name:'DTF 24″ Gang Sheet',exact:true}).getByRole('button',{name:'Edit',exact:true}).click();
     assert.equal(await owner.page.getByLabel('Printing machine',{exact:true}).inputValue(),'dtf');
+    await owner.page.keyboard.press('Escape');
     await owner.page.getByRole('article',{name:'DTF 24″ Gang Sheet',exact:true}).getByRole('button',{name:'Duplicate profile',exact:true}).click();
     await owner.page.getByRole('article',{name:'DTF 24″ Gang Sheet (copy)',exact:true}).waitFor();
     await owner.page.getByRole('button',{name:'Create new profile',exact:true}).click();
     await owner.page.getByLabel('Profile name',{exact:true}).fill('Custom test profile');await owner.page.getByRole('button',{name:'Create profile',exact:true}).click();
+    await owner.page.getByRole('dialog',{name:'Edit Custom test profile',exact:true}).waitFor();
+    await owner.page.keyboard.press('Escape');
     await owner.page.getByRole('article',{name:'Custom test profile',exact:true}).waitFor();
     await owner.page.getByRole('button', { name: 'Close Client Portal' }).click();
     await customer.context.close();

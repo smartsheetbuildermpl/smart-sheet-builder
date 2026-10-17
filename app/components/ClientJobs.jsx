@@ -4,6 +4,7 @@ import { createPortal } from 'react-dom';
 import ClientJobPreview from './ClientJobPreview';
 import PrintLayoutLoading from './PrintLayoutLoading';
 import UploadProfiles from './UploadProfiles';
+import PortalActionDialog from './PortalActionDialog';
 import { machineLabel } from '../lib/client-upload-profiles';
 const stamp = (v) => (v ? new Date(v).toLocaleString() : 'Not recorded');
 function status(j, now) {
@@ -51,7 +52,9 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     [now, setNow] = useState(Date.now()),
     [offset, setOffset] = useState(0),
     [sheet, setSheet] = useState(0),
-    [settingsOpen, setSettingsOpen] = useState(false);
+    [settingsOpen, setSettingsOpen] = useState(false),
+    [editorOrigin, setEditorOrigin] = useState(null),
+    [saveConfirmOrigin, setSaveConfirmOrigin] = useState(null);
   const dialog = useRef(null),
     frame = useRef(null),
     blobs = useRef({}),
@@ -69,6 +72,8 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     setSelected('');
     setOpen(false);
     setSettingsOpen(false);
+    setEditorOrigin(null);
+    setSaveConfirmOrigin(null);
     setError('');
     setMessage('');
     setUrls({});
@@ -265,15 +270,17 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
       setData(d);
       const next = d.profiles.find(p => p.id === d.selectedProfileId) || d.portal;
       setProfileId(next.id); setProfileName(next.name); setCreatingProfile(false); setConfig(next.settings);
-      setMessage(
+      const successMessage =
         action === 'disable'
           ? 'Upload link disabled. Existing confirmed submissions remain available.'
           : action === 'rotate'
             ? 'New upload link ready. The previous link can no longer accept submissions.'
-            : action === 'duplicate' ? 'Profile duplicated with its own disabled link. Review settings before enabling.' : 'Profile and settings saved.'
-      );
+            : action === 'duplicate' ? 'Profile duplicated with its own disabled link. Review settings before enabling.' : 'Profile and settings saved.';
+      setMessage(successMessage);
+      return { profile:next, message:successMessage };
     } catch (e) {
       if (authRef.current.accessToken === auth.accessToken) setError(e.message);
+      return { error:e.message };
     } finally {
       if (authRef.current.accessToken === auth.accessToken) setBusy(false);
     }
@@ -302,7 +309,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
   const count =
     data?.jobs.filter((j) => status(j, now) === 'Confirmed').length || 0;
   const portal = creatingProfile ? null : data?.profiles?.find(p => p.id === profileId) || data?.portal;
-  function editProfile(p) { setCreatingProfile(false); setProfileId(p.id); setProfileName(p.name); setConfig(p.settings); setMessage(''); }
+  function editProfile(p, event) { setCreatingProfile(false); setProfileId(p.id); setProfileName(p.name); setConfig(p.settings); setMessage(''); setError(''); setEditorOrigin(event.currentTarget); }
   if (!auth.signedIn || !auth.accessToken) return null;
   return (
     <>
@@ -356,18 +363,13 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
         {settingsOpen && <section className="client-card client-settings-panel" aria-label="Shop portal settings">
           <div className="client-settings-panel-heading"><div><h2>Shop portal settings</h2><p>Manage the private upload link and print layout defaults.</p></div><button type="button" className="secondary" onClick={() => setSettingsOpen(false)}>Done</button></div>
           <UploadProfiles profiles={data?.profiles || []} selectedId={portal?.id} busy={busy || exporting}
-            onEdit={editProfile} onAction={mutate} onMessage={setMessage} onError={setError}
-            onCreate={() => { setCreatingProfile(true); setProfileName(''); setConfig({ ...config, gapIn:0.3, edgeIn:0.5 }); }} />
-          <section className="client-link-card">
-            <h3>Share Client Upload Link</h3>
-            <p role="status"><strong>{portal?.active ? 'Portal link active' : 'Portal link setup required'}</strong></p>
-            {portal?.enabled === false && <p>This upload portal is currently disabled. Complete settings, then click Create/Enable link.</p>}
-            {data?.setupIssues?.length > 0 && <ul>{data.setupIssues.map((issue) => <li key={issue}>{issue}</li>)}</ul>}
-            {portal?.url && <><input aria-label="Client upload link" readOnly value={portal.url} /><div className="client-link-actions"><button disabled={!portal.active} onClick={async () => { try { await navigator.clipboard.writeText(portal.url); setMessage('Upload link copied.'); } catch { setError('Copy the displayed link manually.'); } }}>Copy upload link</button></div></>}
-          </section>
-          {config && <form onSubmit={(e) => { e.preventDefault(); mutate('save'); }}>
-                    <h3>{creatingProfile ? 'New upload profile' : `Edit ${portal?.name || 'upload profile'}`}</h3>
-                    <label>Profile name<input required maxLength={120} value={profileName ?? portal?.name ?? ''} onChange={e => setProfileName(e.target.value)} /></label>
+            onEdit={editProfile} onAction={mutate} setupIssues={data?.setupIssues}
+            onCreate={event => { setCreatingProfile(true); setProfileName(''); setConfig({ ...config, gapIn:0.3, edgeIn:0.5 }); setError(''); setMessage(''); setEditorOrigin(event.currentTarget); }} />
+          {editorOrigin && open && config && <PortalActionDialog title={creatingProfile ? 'New upload profile' : `Edit ${portal?.name || 'upload profile'}`} origin={editorOrigin} wide busy={busy || exporting} onClose={() => setEditorOrigin(null)}>
+          {error && <p role="alert" className="client-error">{error}</p>}
+          {message && <p role="status">{message}</p>}
+          <form onSubmit={(e) => { e.preventDefault(); if (!creatingProfile && !portal?.active) setSaveConfirmOrigin(e.nativeEvent.submitter || document.activeElement); else mutate('save'); }}>
+                    <label>Profile name<input data-initial-focus required maxLength={120} value={profileName ?? portal?.name ?? ''} onChange={e => setProfileName(e.target.value)} /></label>
                     <label>
                       Shop display name
                       <input
@@ -477,7 +479,14 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                     <button disabled={busy || exporting}>
                       {creatingProfile ? 'Create profile' : portal?.active ? 'Save portal settings' : 'Create/Enable link'}
                     </button>
-          </form>}
+          </form>
+          {saveConfirmOrigin && <PortalActionDialog title="Save settings and enable link?" origin={saveConfirmOrigin} busy={busy} onClose={() => setSaveConfirmOrigin(null)}>
+            <p>Save these settings and enable the upload link for {portal?.name}. Clients can submit new artwork using these settings. Confirmed submissions remain unchanged.</p>
+            {error && <p role="alert" className="client-error">{error}</p>}
+            <div className="client-action-buttons"><button type="button" className="secondary" data-initial-focus disabled={busy} onClick={() => setSaveConfirmOrigin(null)}>Cancel</button>
+            <button type="button" disabled={busy} onClick={async () => { const result = await mutate('save'); if (result?.profile) setSaveConfirmOrigin(null); }}>{busy ? 'Saving…' : 'Save and enable'}</button></div>
+          </PortalActionDialog>}
+          </PortalActionDialog>}
         </section>}
         <div className="client-columns client-owner-grid">
           <section>
