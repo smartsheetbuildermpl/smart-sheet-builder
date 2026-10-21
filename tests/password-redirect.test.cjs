@@ -15,7 +15,7 @@ const req = origin => new NextRequest(origin+'/api/auth/password/request', {meth
     assert.equal((await request.POST(req(prod))).status,200);
     assert.equal(calls.at(-1).url.searchParams.get('redirect_to'),prod+'/reset-password');
     assert(!calls.at(-1).url.href.includes('localhost'));
-    assert(calls.at(-1).body.code_challenge,'retain HttpOnly PKCE recovery proof');
+    assert.deepEqual(calls.at(-1).body,{email:'test@example.test'},'new recovery links must not be bound to a requesting-browser PKCE verifier');
     process.env.SMART_SHEET_SITE_URL='http://localhost:3000';
     const count=calls.length;
     assert.equal((await request.POST(req(prod))).status,503,'production misconfiguration fails before sending an unsafe redirect');
@@ -23,7 +23,7 @@ const req = origin => new NextRequest(origin+'/api/auth/password/request', {meth
     delete process.env.SMART_SHEET_SITE_URL; process.env.VERCEL_PROJECT_PRODUCTION_URL='smart-sheet-builder.vercel.app';
     assert.equal(helper.resetUrl(req(prod)),prod+'/reset-password','trusted Vercel fallback');
     delete process.env.VERCEL;delete process.env.VERCEL_ENV; delete process.env.VERCEL_PROJECT_PRODUCTION_URL;
-    // A locally running build retains a same-origin PKCE cookie, even with a
+    // A locally running build retains a same-origin redirect, even with a
     // production canonical value configured in the development environment.
     process.env.SMART_SHEET_SITE_URL=prod;
     for(const mode of ['development','production']){
@@ -38,6 +38,6 @@ const req = origin => new NextRequest(origin+'/api/auth/password/request', {meth
     process.env.VERCEL_ENV='production';process.env.SMART_SHEET_SITE_URL='http://localhost:3000';
     assert.throws(()=>helper.resetUrl(req('http://localhost:3000')),'a Vercel deployment cannot select a local URL');
     assert.throws(()=>helper.appAuthUrl(req(prod),'/'),'generic root is not an auth callback');
-    console.log('PASS: exact production /reset-password and /auth/callback, no production localhost, fail closed for misconfiguration, local dev/build PKCE origins, trusted Vercel fallback.');
+    console.log('PASS: exact production /reset-password and /auth/callback, cross-device recovery issuance, no production localhost, fail closed for misconfiguration, local dev/build origins, trusted Vercel fallback.');
   } finally { global.fetch=priorFetch;for(const key of Object.keys(process.env))if(!(key in before))delete process.env[key];Object.assign(process.env,before); }
 })().catch(e=>{console.error(e);process.exitCode=1;});

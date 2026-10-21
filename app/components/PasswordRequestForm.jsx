@@ -18,7 +18,7 @@ export default function PasswordRequestForm({ onBack }) {
       setMessage(RESET_REQUEST_MESSAGE);
     } catch (e) { setError(e.message || 'Unable to send the request. Check your connection and try again.'); } finally { setBusy(false); }
   }}>
-    <p>We’ll email you a link to reset your password. Open it in this browser.</p>
+    <p>We’ll email you a secure reset link. You can open the newest link on another computer or phone.</p>
     <label>Email address<input type="email" autoComplete="email" maxLength={254} value={email} onChange={e => setEmail(e.target.value)} required /></label>
     <button type="submit" disabled={busy || remaining > 0}>{busy ? 'Sending…' : remaining ? `Resend in ${remaining}s` : 'Send reset link'}</button>
     {message && <p role="status">{message}</p>}{error && <p role="alert">{error}</p>}

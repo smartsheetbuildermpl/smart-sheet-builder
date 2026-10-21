@@ -11,6 +11,7 @@ export async function POST(request) {
     const fields = Object.keys(body);
     if (!(fields.length === 1 || fields.length === 2 && fields.includes('access_token') && fields.includes('refresh_token'))) throw new Error('Invalid recovery proof');
     const proof = readCookie(request);
+    if (typeof body.code === 'string' && !proof?.verifier) return clearCookie(json({message:'This older reset link is tied to the browser that requested it. Request a new reset email to open it on another computer or phone.',code:'recovery_browser_mismatch'},401));
     let session, implicitProof;
     phase = 'session';
     if (body.resume === true && proof?.token && proof?.userId) {
@@ -59,6 +60,6 @@ export async function POST(request) {
       const response = json({ message: 'The password recovery service is temporarily unavailable. Your link has not been marked invalid. Please retry or contact support.', code:'recovery_unavailable' }, 503);
       return pending ? setCookie(response,request,pending) : response;
     }
-    return clearCookie(json({ message: 'This recovery link is invalid, expired, or already used. Request a new reset link and open it in the same browser.', code: 'invalid_recovery' }, 401));
+    return clearCookie(json({ message: 'This recovery link is invalid, expired, or already used. Request a new reset link and open the newest email.', code: 'invalid_recovery' }, 401));
   }
 }
