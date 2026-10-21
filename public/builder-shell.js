@@ -72,7 +72,7 @@
   var toolbar = byId('resultArea').firstElementChild;
   toolbar.classList.add('builder-selection-toolbar');
   function selectionState() {
-    [byId('rotateSelectedBtn'), byId('removeSelectedPieces')].forEach(function(button) { button.hidden = button.disabled; });
+    [byId('rotateSelectedBtn'), byId('duplicateSelectedPieces'), byId('removeSelectedPieces')].forEach(function(button) { button.hidden = button.disabled; });
   }
   new MutationObserver(selectionState).observe(toolbar, { attributes:true, subtree:true, attributeFilter:['disabled'] });
   selectionState();

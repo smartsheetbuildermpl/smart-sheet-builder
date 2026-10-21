@@ -354,8 +354,9 @@
             <option value="5">5x</option>
           </select>
           <button id="rotateSelectedBtn" class="secondary" style="width:auto; padding:8px 12px; font-size:13px;" data-i18n="rotateSelected" disabled>I-rotate selected</button>
-          <button id="layoutUndo" class="secondary" style="width:auto" disabled title="Undo layout action (Ctrl/Cmd+Z)">Undo layout</button>
-          <button id="layoutRedo" class="secondary" style="width:auto" disabled title="Redo layout action (Ctrl/Cmd+Shift+Z)">Redo layout</button>
+          <button id="layoutUndo" class="secondary layout-history-button" style="width:auto" disabled aria-label="Undo layout" title="Undo layout (Ctrl/Cmd+Z)"><span aria-hidden="true">↶</span> Undo</button>
+          <button id="layoutRedo" class="secondary layout-history-button" style="width:auto" disabled aria-label="Redo layout" title="Redo layout (Ctrl/Cmd+Shift+Z or Ctrl+Y)"><span aria-hidden="true">↷</span> Redo</button>
+          <button id="duplicateSelectedPieces" class="secondary" style="width:auto" disabled title="Duplicate selected pieces into available space">Duplicate selected</button>
           <button id="removeSelectedPieces" class="secondary" style="width:auto" disabled>Remove selected pieces</button>
           <span id="layoutHistoryStatus" role="status" aria-live="polite" style="font-size:12px"></span>
         </div>
@@ -774,8 +775,33 @@
   var previewBitmaps = new WeakSet();
   var currentMeasureUnit = 'in';
   var layoutDragActive = false;
+  var layoutActionsPending = 0;
   var lastArrangeMode = null;
   var lastArrangeRequested = 0;
+  var lastLayoutSettings = null;
+  // Store physical settings in inches; changing the display unit is not an edit.
+  function captureLayoutSettings() {
+    return {machine:machinePresetSelect.value,widthIn:getSheetWidthIn(),lengthIn:getSheetLengthIn(),
+      gapIn:getGapIn(),edgeIn:getAutoLayoutEdgeAllowanceIn(),dpi:dpiInput.value,
+      rotate:document.getElementById('autoRotate').checked,extend:document.getElementById('autoExtend').checked,
+      mode:document.getElementById('arrangeMode').value};
+  }
+  function captureValidLayoutSettings() {
+    var s=captureLayoutSettings();
+    ['widthIn','lengthIn','gapIn','edgeIn'].forEach(function(key){
+      var minimum=key==='widthIn'||key==='lengthIn'?Number.MIN_VALUE:0;
+      if(!Number.isFinite(s[key])||s[key]<minimum)s[key]=lastLayoutSettings?lastLayoutSettings[key]:0;
+    });
+    if(!(Number(s.dpi)>0))s.dpi=String(dpiGlobal);
+    return s;
+  }
+  function restoreLayoutSettings(s) {
+    machinePresetSelect.value=s.machine;setSheetSize(s.widthIn,s.lengthIn);
+    setMeasureInput(gapNumber,s.gapIn);setMeasureInput(edgeAllowanceNumber,s.edgeIn);
+    gapSlider.value=Math.min(1,Math.max(0,s.gapIn));dpiInput.value=s.dpi;
+    document.getElementById('autoRotate').checked=s.rotate;document.getElementById('autoExtend').checked=s.extend;
+    document.getElementById('arrangeMode').value=s.mode;updateUnitLabels();updateArrangeControls();
+  }
   // Geometry-only session history: source canvases are shared, never cloned.
   // Restoring geometry resolves the latest active image of each design, so
   // layout Undo cannot accidentally undo a background/optimization edit.
@@ -783,16 +809,19 @@
     var past=[],future=[],depth=0,restoring=false;
     function capture(){
       return {designs:designs.map(function(d){return {ref:d,qty:d.qty,widthIn:d.widthIn,heightIn:d.heightIn,addSizeKey:d.addSizeKey,addBatch:d.addBatch};}),
-        instances:instances.map(function(i){var copy=Object.assign({},i);delete copy.canvas;return copy;}),
+        instances:instances.map(function(i){var copy=Object.assign({},i);delete copy.canvas;if(i.placedSizeIn)copy.placedSizeIn=i.placedSizeIn.slice();return copy;}),
         sheets:sheets.map(function(s){var copy=Object.assign({},s,{placements:s.placements.map(function(p){return Object.assign({},p,{inst:p.inst.id});})});delete copy.renderCanvas;delete copy.exportUi;return copy;}),
         selected:Array.from(selectedInstanceIds),manual:manualMode,dpi:dpiGlobal,width:sheetWidthPxGlobal,
-        tarpaulinSize:currentMachinePreset().family === 'tarpaulin' ? [getSheetWidthIn(),getSheetLengthIn()] : null,
+        settings:captureValidLayoutSettings(),
         arrange:{mode:lastArrangeMode,requested:lastArrangeRequested,skipped:lastSkipped||0,reason:lastSkipReason||''}};
     }
-    function signature(s){return JSON.stringify([s.instances,s.sheets,s.designs.map(function(d){return [d.ref.id,d.qty,d.widthIn,d.heightIn];}),s.tarpaulinSize]);}
+    function signature(s){return JSON.stringify([s.instances,s.sheets,s.settings]);}
+    function busy(){return layoutDragActive||layoutActionsPending>0;}
     function update(){
-      document.getElementById('layoutUndo').disabled=!past.length||layoutDragActive;
-      document.getElementById('layoutRedo').disabled=!future.length||layoutDragActive;
+      var undo=document.getElementById('layoutUndo'),redo=document.getElementById('layoutRedo');
+      undo.disabled=!past.length||busy();redo.disabled=!future.length||busy();
+      undo.title='Undo layout'+(past.length?': '+past[past.length-1].label:'')+' (Ctrl/Cmd+Z)';
+      redo.title='Redo layout'+(future.length?': '+future[future.length-1].label:'')+' (Ctrl/Cmd+Shift+Z or Ctrl+Y)';
     }
     function trim(){
       while(past.length+future.length>32||past.concat(future).reduce(function(n,e){return n+e.state.instances.length;},0)>100000){if(past.length)past.shift();else future.shift();}
@@ -800,32 +829,50 @@
       function retained(){var canvases=new Set();past.concat(future).forEach(function(e){e.state.designs.forEach(function(d){if(designs.includes(d.ref))return;Object.values(d.ref).forEach(function(v){if(v instanceof HTMLCanvasElement)canvases.add(v);else if(v&&v.canvas instanceof HTMLCanvasElement)canvases.add(v.canvas);});});});var bytes=0;canvases.forEach(function(c){bytes+=c.width*c.height*4;});return bytes;}
       while(past.length+future.length>1&&retained()>128*1024*1024){if(past.length>1)past.shift();else future.shift();}
     }
-    function record(before,label){if(restoring||depth||signature(before)===signature(capture()))return;past.push({state:before,label:label});future=[];trim();update();}
+    // A settings editing gesture coalesces into its first before-state, just
+    // like a pointer drag. No canvases, URLs or encoded image bytes are copied.
+    function record(before,label,group){
+      if(restoring||depth||signature(before)===signature(capture()))return;
+      if(!group||future.length||!past.length||past[past.length-1].group!==group)past.push({state:before,label:label,group:group});
+      else if(signature(past[past.length-1].state)===signature(capture()))past.pop();
+      future=[];trim();update();
+      document.getElementById('layoutHistoryStatus').textContent=label+'.';
+    }
     function restore(s){
       restoring=true;
       try {
-        // Keep newly uploaded, unplaced cards when undoing earlier geometry.
-        var extras=designs.filter(function(d){return !s.designs.some(function(old){return old.ref.id===d.id;})&&!instances.some(function(i){return i.designId===d.id;});});
+        // Uploads are outside layout history, even when their pieces were placed.
+        var extras=designs.filter(function(d){return !s.designs.some(function(old){return old.ref.id===d.id;});});
         designs=s.designs.map(function(d){d.ref.qty=d.qty;d.ref.widthIn=d.widthIn;d.ref.heightIn=d.heightIn;d.ref.addSizeKey=d.addSizeKey;d.ref.addBatch=d.addBatch;d.ref.layoutFeedback='';return d.ref;}).concat(extras);
-        var byId=new Map();instances=s.instances.map(function(i){var d=designs.find(function(d){return d.id===i.designId;});var copy=Object.assign({},i,{canvas:d.trimmed.canvas});byId.set(i.id,copy);return copy;});
+        var byId=new Map();instances=s.instances.map(function(i){var d=designs.find(function(d){return d.id===i.designId;});var copy=Object.assign({},i,{canvas:d.trimmed.canvas,vibrance:d.vibrance});if(i.placedSizeIn)copy.placedSizeIn=i.placedSizeIn.slice();byId.set(i.id,copy);return copy;});
         sheets=s.sheets.map(function(sheet){return Object.assign({},sheet,{placements:sheet.placements.map(function(p){return Object.assign({},p,{inst:byId.get(p.inst)});})});});
-        selectedInstanceIds=new Set(s.selected);manualMode=s.manual;dpiGlobal=s.dpi;sheetWidthPxGlobal=s.width;
-        if (s.tarpaulinSize && currentMachinePreset().family === 'tarpaulin') setSheetSize(s.tarpaulinSize[0],s.tarpaulinSize[1]);
+        selectedInstanceIds=new Set(s.selected.filter(function(id){return sheets.some(function(sheet){return sheet.placements.some(function(p){return p.inst.id===id;});});}));
+        manualMode=s.manual;dpiGlobal=s.dpi;sheetWidthPxGlobal=s.width;restoreLayoutSettings(s.settings);
         lastArrangeMode=s.arrange&&s.arrange.mode||null;lastArrangeRequested=s.arrange&&s.arrange.requested||0;
         lastSkipped=s.arrange&&s.arrange.skipped||0;lastSkipReason=s.arrange&&s.arrange.reason||'';
         renderAllDesigns();setOverlapState(computeAllOverlaps());setQualityState(computeAllLowRes());
-        if(sheets.length)renderAllSheets();else renderStartupSheetPreview();computeStats();
+        if(sheets.length){renderAllSheets();computeStats();}else renderStartupSheetPreview();
+        updateSelectionControls();lastLayoutSettings=captureValidLayoutSettings();
       }finally{restoring=false;}
     }
-    function travel(from,to,prefix){if(layoutDragActive||!from.length)return;var entry=from.pop();to.push({state:capture(),label:entry.label});restore(entry.state);trim();update();document.getElementById('layoutHistoryStatus').textContent=prefix+entry.label;}
+    function travel(from,to,prefix){if(busy()||!from.length)return;var entry=from.pop();to.push({state:capture(),label:entry.label});restore(entry.state);trim();update();document.getElementById('layoutHistoryStatus').textContent=prefix+entry.label;}
     var api={capture:capture,record:record,update:update,undo:function(){travel(past,future,'Undid ');},redo:function(){travel(future,past,'Redid ');},
+      // Removing an uploaded asset must not resurrect it via layout Undo.
+      forgetDesign:function(id){
+        past.concat(future).forEach(function(e){var s=e.state,removed=new Set(s.instances.filter(function(i){return i.designId===id;}).map(function(i){return i.id;}));
+          s.designs=s.designs.filter(function(d){return d.ref.id!==id;});s.instances=s.instances.filter(function(i){return i.designId!==id;});
+          s.sheets=s.sheets.map(function(sheet){return Object.assign({},sheet,{placements:sheet.placements.filter(function(p){return !removed.has(p.inst);})});}).filter(function(sheet){return sheet.placements.length;});s.selected=s.selected.filter(function(i){return !removed.has(i);});
+        });
+        [past,future].forEach(function(stack){var next=capture();for(var i=stack.length-1;i>=0;i--){if(signature(stack[i].state)===signature(next))stack.splice(i,1);else next=stack[i].state;}});update();
+      },
       run:function(label,fn){if(depth||restoring)return fn();var before=capture(),result;depth++;try{result=fn();}catch(error){restore(before);throw error;}finally{depth--;record(before,label);}return result;},
       wrap:function(label,fn){return function(){var args=arguments,that=this;return api.run(label,function(){return fn.apply(that,args);});};}};
     document.getElementById('layoutUndo').onclick=api.undo;document.getElementById('layoutRedo').onclick=api.redo;
     document.addEventListener('keydown',function(e){
-      if(e.defaultPrevented||!(e.ctrlKey||e.metaKey)||e.altKey||e.key.toLowerCase()!=='z'||document.querySelector('dialog[open]'))return;
-      if(e.target.closest('input,textarea,select,[contenteditable="true"]'))return;
-      e.preventDefault();if(e.shiftKey)api.redo();else api.undo();
+      var key=e.key.toLowerCase(),redo=key==='z'&&e.shiftKey||key==='y'&&e.ctrlKey&&!e.metaKey&&!e.shiftKey;
+      if(e.defaultPrevented||e.isComposing||!(e.ctrlKey||e.metaKey)||e.altKey||(key!=='z'&&!redo)||document.querySelector('dialog[open]')||document.getElementById('dtfCheckOverlay').style.display==='flex')return;
+      if(e.composedPath().some(function(node){return node instanceof HTMLElement&&(node.isContentEditable||node.matches('input,textarea,select'));}))return;
+      e.preventDefault();if(redo)api.redo();else api.undo();
     });
     return api;
   })();
@@ -975,44 +1022,48 @@
     else { renderStartupSheetPreview(); }
   }
 
-  gapSlider.addEventListener('input', syncGapFromSlider);
-  gapNumber.addEventListener('input', function(){
-    var gapIn = getGapIn();
-    gapSlider.value = Math.min(1, Math.max(0, gapIn));
-    syncSheetGap();
-  });
   measureUnitSelect.addEventListener('change', function(){ preserveMeasuresForUnitChange(measureUnitSelect.value); });
-  machinePresetSelect.addEventListener('change', applyMachinePreset);
-  // Tarpaulin fields are the canonical physical size. Sheet geometry and
-  // preview recipes are derived from them, never from the preset defaults.
-  function syncTarpaulinSheetSize() {
-    if (currentMachinePreset().family !== 'tarpaulin' || layoutDragActive) return;
-    var widthIn = getSheetWidthIn(), lengthIn = getSheetLengthIn();
-    if (!Number.isFinite(widthIn) || !Number.isFinite(lengthIn) || widthIn <= 0 || lengthIn <= 0) return;
-    var before = layoutHistory.capture();
-    var preview = sheetsContainer.querySelector('.sheet-canvas');
-    var previousSize = sheets.length ? [sheets[0].widthPx,sheets[0].heightPx,dpiGlobal] : preview && preview._ssbExportRecipe;
-    // Input events arrive after the field changes; history uses the last
-    // rendered physical size so Undo restores both the fields and the sheet.
-    if (previousSize) before.tarpaulinSize = [previousSize[0]/previousSize[2],previousSize[1]/previousSize[2]];
-    var settings = getSheetPixelSettings();
-    sheets.forEach(function(sheet){
-      sheet.widthPx = settings.sheetWidthPx;
-      sheet.heightPx = settings.sheetLengthPx;
+  // Apply settings without reflowing pieces. Record the prior physical fields
+  // as well as the prior sheet geometry, and group a whole input/slider edit.
+  (function bindLayoutSettingsHistory(){
+    var labels={sheetWidth:'Change sheet width',sheetLength:'Change sheet length',machinePreset:'Change printing machine',
+      gapNumber:'Change spacing',gap:'Change spacing',edgeAllowanceNumber:'Change edge allowance',
+      autoRotate:'Change auto-rotate',autoExtend:'Change sheet continuation'};
+    Object.keys(labels).forEach(function(id){
+      var input=document.getElementById(id),group=null;
+      function finish(){group=null;}
+      input.addEventListener('blur',finish);
+      function apply(){
+        if(layoutDragActive||layoutActionsPending)return;
+        var before=layoutHistory.capture();
+        if(lastLayoutSettings)before.settings=Object.assign({},lastLayoutSettings);
+        if(id==='gap')setMeasureInput(gapNumber,parseFloat(gapSlider.value)||0);
+        var next=captureLayoutSettings();
+        if(![next.widthIn,next.lengthIn,next.gapIn,next.edgeIn].every(Number.isFinite)||next.widthIn<=0||next.lengthIn<=0||next.gapIn<0||next.edgeIn<0)return;
+        if(!group)group={};
+        if(id==='machinePreset')applyMachinePreset();
+        else {
+          if(id==='gapNumber'||id==='gap'){
+            gapSlider.value=Math.min(1,Math.max(0,next.gapIn));syncSheetGap();
+          }
+          if(id==='edgeAllowanceNumber')sheets.forEach(function(sheet){sheet.autoEdgeAllowancePx=Math.ceil(next.edgeIn*dpiGlobal);});
+          if(id==='sheetWidth'||id==='sheetLength'){
+            // Keep the active layout DPI. Editing dimensions never rescales
+            // artwork or reruns either packing algorithm.
+            var preset=currentMachinePreset();
+            var width=Math.min(next.widthIn,preset.maxWidthIn||Infinity),height=Math.min(next.lengthIn,preset.maxLengthIn||Infinity);
+            sheetWidthPxGlobal=Math.round(width*dpiGlobal);
+            sheets.forEach(function(sheet){sheet.widthPx=sheetWidthPxGlobal;sheet.heightPx=Math.round(height*dpiGlobal);});
+          }
+          if(sheets.length){renderAllSheets();computeStats();}else renderStartupSheetPreview();
+        }
+        lastLayoutSettings=captureValidLayoutSettings();
+        layoutHistory.record(before,labels[id],group);
+      }
+      input.addEventListener('input',apply);
+      input.addEventListener('change',function(){apply();finish();});
     });
-    if (sheets.length) { renderAllSheets(); computeStats(); }
-    else renderStartupSheetPreview();
-    layoutHistory.record(before,'Change Tarpaulin sheet size');
-  }
-  ['sheetWidth','sheetLength'].forEach(function(id){
-    document.getElementById(id).addEventListener('input',syncTarpaulinSheetSize);
-    document.getElementById(id).addEventListener('change',syncTarpaulinSheetSize);
-  });
-  document.getElementById('autoExtend').addEventListener('change', function(){
-    if (!sheets.length) { renderStartupSheetPreview(); return; }
-    // Settings affect future placement. Only an explicit Arrange may reflow.
-    document.getElementById('layoutHistoryStatus').textContent = 'Sheet continuation applies to the next Add or Arrange. Existing layout stays unchanged.';
-  });
+  })();
   customerNameInput.addEventListener('input', function(){
     if (sheets.length) {
       sheets.forEach(function(sheet){ if (sheet.renderCanvas) drawSheetPreview(sheet.renderCanvas, sheet); });
@@ -1026,7 +1077,7 @@
   document.getElementById('langToggleTL').addEventListener('click', function(){ applyLanguage('tl'); });
   document.getElementById('langToggleEN').addEventListener('click', function(){ applyLanguage('en'); });
   rotateSelectedBtn.addEventListener('click', function(){
-    if (selectedInstanceIds.size === 0) return;
+    if (selectedInstanceIds.size === 0 || layoutDragActive || layoutActionsPending) return;
     layoutHistory.run('Rotate selected pieces',function(){
     enterManualModeIfNeeded();
     sheets.forEach(function(sheet){
@@ -1041,7 +1092,9 @@
     });
   });
 
-  document.getElementById('removeSelectedPieces').onclick=function(){layoutHistory.run('Remove selected pieces',function(){
+  document.getElementById('removeSelectedPieces').onclick=function(){
+    if(layoutDragActive||layoutActionsPending)return;
+    layoutHistory.run('Remove selected pieces',function(){
     var affected=new Set(instances.filter(function(i){return selectedInstanceIds.has(i.id);}).map(function(i){return i.designId;}));
     instances=instances.filter(function(i){return !selectedInstanceIds.has(i.id);});
     sheets.forEach(function(s){s.placements=s.placements.filter(function(p){return !selectedInstanceIds.has(p.inst.id);});});
@@ -1050,6 +1103,32 @@
     selectedInstanceIds.clear();setOverlapState(computeAllOverlaps());setQualityState(computeAllLowRes());renderAllDesigns();
     if(sheets.length)renderAllSheets();else renderStartupSheetPreview();updateSelectionControls();computeStats();
   });};
+
+  document.getElementById('duplicateSelectedPieces').onclick=function(){
+    if(layoutDragActive||layoutActionsPending||!selectedInstanceIds.size)return;
+    layoutHistory.run('Duplicate selected pieces',function(){
+      var templates=new Map(),pending=[];
+      sheets.forEach(function(sheet){sheet.placements.forEach(function(p){
+        if(!selectedInstanceIds.has(p.inst.id))return;
+        var id=instanceIdCounter++,copy=Object.assign({},p.inst,{id:id,baseW:p.w,baseH:p.h,rotation:0});
+        templates.set(id,p.inst);pending.push(copy);
+      });});
+      // Reuse the existing gap finder without changing its scoring. Duplicates
+      // retain the selected size/orientation; older placements stay untouched.
+      var result=packIncrementalBatch(pending,Object.assign({},getSheetPixelSettings(),{allowRotation:false}));
+      result.addedInstances.forEach(function(inst){
+        var original=templates.get(inst.id);inst.baseW=original.baseW;inst.baseH=original.baseH;inst.rotation=original.rotation;
+        if(original.placedSizeIn)inst.placedSizeIn=original.placedSizeIn.slice();
+        inst.layoutLocked=true;
+      });
+      if(!result.added){document.getElementById('layoutHistoryStatus').textContent='No space for duplicates. Enable another sheet or free some space.';return;}
+      instances=instances.concat(result.addedInstances);sheets=result.sheets;
+      selectedInstanceIds=new Set(result.addedInstances.map(function(inst){return inst.id;}));
+      lastArrangeMode=null;lastArrangeRequested=0;lastSkipped=0;
+      setOverlapState(computeAllOverlaps());setQualityState(computeAllLowRes());renderAllSheets();computeStats();updateSelectionControls();
+      document.getElementById('layoutHistoryStatus').textContent='Duplicated '+result.added+' piece(s).'+(result.skipped?' '+result.skipped+' could not fit.':'');
+    });
+  };
 
   function applyLanguage(lang){
     currentLang = lang;
@@ -1136,7 +1215,8 @@
     return { canvas: cropped, w: cropW, h: cropH, cropRect: cropRect, noChange: false };
   }
 
-  arrangeModeSelect.addEventListener('change', updateArrangeControls);
+  arrangeModeSelect.addEventListener('change', function(){updateArrangeControls();if(lastLayoutSettings)lastLayoutSettings.mode=selectedArrangeMode();});
+  dpiInput.addEventListener('input',function(){if(lastLayoutSettings&&Number.isFinite(Number(dpiInput.value))&&Number(dpiInput.value)>0)lastLayoutSettings.dpi=dpiInput.value;});
 
   // Upload and native transparent-margin trimming accept the original PNG up
   // to the established per-side browser safety limit. They intentionally do
@@ -1369,6 +1449,7 @@
       manualMode = false;
       renderStartupSheetPreview();
     }
+    layoutHistory.forgetDesign(design.id);
   }
 
   function renderDesignItem(design) {
@@ -1757,6 +1838,7 @@
 
   function updateSelectionControls() {
     document.getElementById('removeSelectedPieces').disabled=selectedInstanceIds.size===0;
+    document.getElementById('duplicateSelectedPieces').disabled=selectedInstanceIds.size===0;
     if (rotateSelectedBtn) rotateSelectedBtn.disabled = selectedInstanceIds.size === 0;
     if (window.smartSheetWorkspace) window.smartSheetWorkspace.syncSelection();
   }
@@ -2017,7 +2099,7 @@
   }
 
   function resizePlacementOnSheet(p, sheet, canvasEl, overlayEl, corner, e) {
-    if (e.button !== 0 || layoutDragActive) return;
+    if (e.button !== 0 || layoutDragActive || layoutActionsPending) return;
     var historyBefore=layoutHistory.capture();
     e.preventDefault();
     e.stopPropagation();
@@ -2154,7 +2236,7 @@
       }
 
       handle.addEventListener('pointerdown', function(e){
-        if(e.button!==0||layoutDragActive)return;
+        if(e.button!==0||layoutDragActive||layoutActionsPending)return;
         e.preventDefault();
         e.stopPropagation();
         if (!selectedInstanceIds.has(p.inst.id)) {
@@ -2241,12 +2323,16 @@
       rotateBtn.addEventListener('pointerdown', function(e){ e.stopPropagation(); });
       rotateBtn.addEventListener('click', function(e){
         e.stopPropagation();
+        if(layoutDragActive||layoutActionsPending)return;
+        layoutHistory.run('Rotate piece',function(){
         enterManualModeIfNeeded();
         rotatePlacementOnSheet(p, sheet);
         setOverlapState(computeAllOverlaps());
         setQualityState(computeAllLowRes());
         drawSheetPreview(canvasEl, sheet);
         renderOverlayFor(overlayEl, sheet, canvasEl, true);
+        computeStats();
+        });
       });
       overlayEl.appendChild(rotateBtn);
     });
@@ -2388,9 +2474,11 @@
     renderOverlayFor(overlay, sheet, canvas, false);
     attachMagnifier(stage, canvas);
     if (window.smartSheetWorkspace) window.smartSheetWorkspace.refresh();
+    lastLayoutSettings=captureValidLayoutSettings();
   }
 
   function renderAllSheets() {
+    lastLayoutSettings=captureValidLayoutSettings();
     sheetsContainer.innerHTML = '';
     manualModeNote.style.display = manualMode ? 'block' : 'none';
     var interactive = true;
@@ -3558,8 +3646,10 @@
   }
 
   function arrangeSingleDesign(design, button) {
+    if(layoutDragActive||layoutActionsPending)return;
     errorMsg.style.display = 'none';
     button.disabled = true;
+    layoutActionsPending++;layoutHistory.update();
     button.textContent = t('arrangeThisDesignBusy');
     if (!sheets.length) {
       manualMode = false;
@@ -3574,6 +3664,7 @@
         errorMsg.textContent = t('processError') + (err && err.message ? err.message : t('unknownError')) + '.';
         errorMsg.style.display = 'block';
       } finally {
+        layoutActionsPending--;layoutHistory.update();
         button.disabled = false;
         button.textContent = t('arrangeThisDesign');
       }
@@ -3581,6 +3672,7 @@
   }
 
   packBtn.addEventListener('click', function(){
+    if(layoutDragActive||layoutActionsPending)return;
     errorMsg.style.display = 'none';
     if (designs.length === 0) {
       errorMsg.textContent = t('noFile');
@@ -3589,6 +3681,7 @@
     }
     var arrangeMode = selectedArrangeMode();
     packBtn.disabled = true;
+    layoutActionsPending++;layoutHistory.update();
     packBtn.textContent = t('packBtnBusy') + ' — ' + arrangeModeLabel(arrangeMode);
     setTimeout(function(){
       try {
@@ -3607,6 +3700,7 @@
         errorMsg.style.display = 'block';
       } finally {
         packBtn.disabled = false;
+        layoutActionsPending--;layoutHistory.update();
         updateArrangeControls();
       }
     }, 20);
@@ -3686,7 +3780,6 @@
   applyLanguage('en');
   rotatePlacementOnSheet=layoutHistory.wrap('Rotate piece',rotatePlacementOnSheet);
   appendDesignToCurrentLayout=layoutHistory.wrap('Add to layout',appendDesignToCurrentLayout);
-  removeDesignAndLayout=layoutHistory.wrap('Remove design',removeDesignAndLayout);
   if (window.installSheetWorkspace) window.installSheetWorkspace({
     history:layoutHistory,
     get designs(){return designs;}, set designs(value){designs=value;},
