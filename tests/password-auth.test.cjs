@@ -13,7 +13,7 @@ function load(file) {
 Object.assign(process.env, { NEXT_PUBLIC_SUPABASE_URL: 'https://supabase.test', NEXT_PUBLIC_SUPABASE_ANON_KEY: 'anon-key-test', SUPABASE_SERVICE_ROLE_KEY: 'service-key-test', SMART_SHEET_SITE_URL: 'https://builder.example.test', NODE_ENV: 'production' });
 const user = { id: '00000000-0000-4000-8000-000000000002', email: 'user@example.test', email_confirmed_at: '2026-01-01T00:00:00Z' };
 const snapshot = { role: 'user', exports_used: 4, exports_unlimited: false, can_manage_design_library: false, full_name: 'Unchanged' };
-const calls = [], tickets = new Set(); let recoveryConsumed = false, wrongIdentity = false, auditFailure = false;
+const calls = [], tickets = new Set(); let recoveryConsumed = false, wrongIdentity = false, auditFailure = false, missingRecoveryRpc = false;
 const response = (data, status = 200) => new Response(JSON.stringify(data), { status });
 global.fetch = async (url, options = {}) => {
   const u = new URL(url), body = options.body ? JSON.parse(options.body) : null, token = options.headers?.Authorization?.slice(7);
@@ -22,7 +22,7 @@ global.fetch = async (url, options = {}) => {
   if (u.pathname === '/auth/v1/recover') return body.email === 'limited@example.test' ? response({ message: 'account-specific rate limit' }, 429) : body.email === 'smtp@example.test' ? response({ message: 'account-specific SMTP failure' }, 500) : response({});
   if (u.pathname === '/auth/v1/verify') { if (body.token_hash !== 'a'.repeat(64) || recoveryConsumed) return response({ message: 'expired' }, 403); recoveryConsumed = true; return response({ access_token: 'recovery-token', user }); }
   if (u.pathname === '/auth/v1/token') {
-    if (u.searchParams.get('grant_type') === 'pkce') return body.auth_code === 'valid-code' && body.code_verifier ? response({ access_token: 'recovery-token', user }) : response({ message: 'bad code' }, 400);
+    if (u.searchParams.get('grant_type') === 'pkce') return body.auth_code === 'valid-code' && body.code_verifier ? response({ access_token: 'recovery-token', refresh_token:'recovery-refresh', expires_in:3600, token_type:'bearer', user }) : response({ message: 'bad code' }, 400);
     return body.password === 'correct-current' ? response({ access_token: 'fresh-token', user: wrongIdentity ? { ...user, id: 'different' } : user }) : response({ message: 'invalid credentials' }, 400);
   }
   if (u.pathname === '/auth/v1/user') {
@@ -31,7 +31,8 @@ global.fetch = async (url, options = {}) => {
     if (options.method === 'PUT') { assert.deepEqual(Object.keys(body), ['password']); return response(user); }
     return response(user);
   }
-  if (u.pathname === '/rest/v1/rpc/ssb_create_password_recovery') { const id = `ticket-${tickets.size}`; tickets.add(id); return response(id); }
+  if (u.pathname === '/rest/v1/rpc/ssb_create_password_recovery') { if (missingRecoveryRpc) return response({code:'PGRST202',message:'Could not find recovery function in schema cache'},404); const id = `ticket-${tickets.size}`; tickets.add(id); return response(id); }
+  if (u.pathname === '/rest/v1/password_recovery_tickets') return response(tickets.has(u.searchParams.get('id').slice(3)) ? [{id:'fixture',expires_at:new Date(Date.now()+600000).toISOString()}] : []);
   if (u.pathname === '/rest/v1/rpc/ssb_claim_password_recovery') { const exists = tickets.delete(body.p_ticket); return response(exists); }
   if (u.pathname === '/rest/v1/rpc/ssb_record_password_change') { assert.deepEqual(body, { p_user: user.id }); return auditFailure ? response({ message: 'unavailable' }, 500) : response(null); }
   if (u.pathname === '/auth/v1/logout') return response(null);
@@ -58,14 +59,28 @@ const cookieOf = r => r.headers.get('set-cookie')?.split(';')[0];
   assert.throws(() => helper.resetUrl(req('request', {}))); process.env.SMART_SHEET_SITE_URL = 'https://builder.example.test';
   const sent = await request.POST(req('request', { email: user.email }));
   assert.equal((await verify.POST(req('verify', { code: 'valid-code' }))).status, 401, 'PKCE needs original browser proof');
-  let verified = await verify.POST(req('verify', { code: 'valid-code' }, { cookie: cookieOf(sent) })); assert.equal(verified.status, 200); assert.deepEqual(await verified.json(), { ready: true }, 'do not expose Auth tokens');
+  missingRecoveryRpc = true;
+  let verified = await verify.POST(req('verify', { code: 'valid-code' }, { cookie: cookieOf(sent) }));
+  assert.equal(verified.status,503,'missing live recovery migration is a service error, never an expired link');
+  assert.equal((await verified.json()).code,'recovery_unavailable');
+  const pendingCookie=cookieOf(verified), pending=helper.readCookie(req('verify',{}, {cookie:pendingCookie}));
+  assert.equal(pending.pending,true); assert(pending.token); assert(!pending.ticket);
+  const exchanges=calls.filter(c=>c.path==='/auth/v1/token' && c.query.get('grant_type')==='pkce').length;
+  missingRecoveryRpc = false;
+  verified=await verify.POST(req('verify',{resume:true},{cookie:pendingCookie}));
+  assert.equal(verified.status,200); assert.deepEqual(await verified.json(), {ready:true},'resume does not expose tokens');
+  assert.equal(calls.filter(c=>c.path==='/auth/v1/token' && c.query.get('grant_type')==='pkce').length,exchanges,'retry must never exchange a single-use code twice');
   const recoveryCookie = cookieOf(verified);
+  assert.equal(helper.readCookie(req('verify',{}, {cookie:recoveryCookie})).expires,pending.expires,'retry never extends the recovery deadline');
+  assert.equal((await verify.POST(req('verify',{resume:true},{cookie:recoveryCookie}))).status,200,'page reload can resume its exact protected recovery session');
+  assert.equal((await verify.POST(req('verify',{resume:true}))).status,401,'normal signed-in session cannot be adopted as recovery');
   const credentials = { password: 'new-password-123', confirmation: 'new-password-123' };
   assert.equal((await reset.POST(req('reset', { ...credentials, confirmation: 'mismatch' }, { cookie: recoveryCookie }))).status, 400);
   assert.equal((await reset.POST(req('reset', credentials, { token: 'session-token' }))).status, 401, 'ordinary bearer cannot bypass current password');
   assert.equal((await reset.POST(req('reset', credentials, { cookie: recoveryCookie + 'tampered' }))).status, 401);
   let r = await reset.POST(req('reset', credentials, { cookie: recoveryCookie })); assert.equal(r.status, 200); assert.equal((await r.json()).message, 'Password changed successfully');
   assert.equal((await reset.POST(req('reset', credentials, { cookie: recoveryCookie }))).status, 401, 'same cookie cannot replay reset');
+  assert.equal((await verify.POST(req('verify',{resume:true},{cookie:recoveryCookie}))).status,401,'used ticket cannot reopen the password form');
   assert.equal((await verify.POST(req('verify', { token_hash: 'invalid-hash' }))).status, 401);
   verified = await verify.POST(req('verify', { token_hash: 'a'.repeat(64) })); assert.equal(verified.status, 200);
   assert.equal((await verify.POST(req('verify', { token_hash: 'a'.repeat(64) }))).status, 401, 'used email link rejected');

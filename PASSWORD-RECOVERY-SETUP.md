@@ -4,7 +4,7 @@ This setup is for **Smart Sheet Builder**, not MPL Cloud. No production database
 
 ## Configure before deploying
 
-1. In the Smart Sheet Builder Supabase project's SQL Editor, run `supabase-password-recovery-v1.sql` after the existing `supabase-user-management-v1.sql` migration. It is repeatable. It adds private, expiring, single-use recovery tickets and a password-change audit RPC. Existing users, roles, profiles, export records and library permissions are not changed.
+1. In the Smart Sheet Builder Supabase project's SQL Editor, run `supabase-password-recovery-v1.sql` after the existing `supabase-user-management-v1.sql` migration, then run `supabase-auth-callback-v1.sql`. Both recovery migrations are required and repeatable. They add private, expiring, single-use recovery tickets, implicit-session replay protection and a password-change audit RPC. Existing users, roles, profiles, export records and library permissions are not changed.
 2. In Vercel, set this server-only environment variable for **Production**:
    ```text
    SMART_SHEET_SITE_URL=https://smart-sheet-builder.vercel.app
@@ -17,7 +17,7 @@ This setup is for **Smart Sheet Builder**, not MPL Cloud. No production database
    - Development redirect: `http://localhost:3000/reset-password`
    - If using another development port, add its exact URL too (for example `http://localhost:3108/reset-password`).
 4. When actually running locally outside Vercel, auth links use the loopback request origin, including local `next start` builds, so the HttpOnly PKCE cookie remains on the correct browser origin. Vercel deployments always use the existing canonical `SMART_SHEET_SITE_URL`/trusted deployment policy and reject localhost configuration before requesting an email. For Vercel previews, allow the exact preview `/reset-password` URL in Supabase; the app uses `VERCEL_URL` unless explicitly overridden. The requesting page and configured site origin must match so the browser can retain the recovery proof.
-5. In Supabase **Authentication → Email Templates → Reset Password**, verify that the reset link uses `{{ .ConfirmationURL }}`. This preserves Supabase verification and redirects to the configured `/reset-password` page with a PKCE code. Do not replace it with the bare Site URL or remove the query parameters. Previously sent implicit-flow links must be replaced with a new request from this version of the app.
+5. In Supabase **Authentication → Email Templates → Reset Password**, verify that the reset link uses `{{ .ConfirmationURL }}`. This preserves Supabase verification and redirects to the configured `/reset-password` page with a PKCE code or implicit recovery session. Do not replace it with the bare Site URL or remove query/hash parameters.
 6. Configure production email delivery in Supabase **Authentication → Email → SMTP Settings** (custom SMTP): sender address/name, SMTP host, port, username and password from your email provider. Verify the sender/domain with that provider. Test an actual message to a staff inbox and check spam. The public success message deliberately does not prove an address exists or a message was delivered.
 7. Redeploy after environment changes. Keep existing email confirmation and security policies enabled. Both forms require at least eight characters and matching confirmation; Supabase may enforce stricter password rules.
 
@@ -40,7 +40,7 @@ Supabase references: [password authentication and recovery](https://supabase.com
 1. Sign out → Sign in → **Forgot password?** Enter a known test email and send. Repeat with an unknown address after the cooldown. Both must show: “If an account exists for this email, we sent a password reset link. Please check your inbox and spam folder.”
 2. Open the newest email link in the **same browser** where it was requested, within 15 minutes. A new request replaces that browser's previous recovery proof. Set matching passwords of at least eight characters. Expect “Password changed successfully”, then Sign In.
 3. Sign in with the new password; verify the old password fails. Reopen the used link and try an expired link: both should offer **Request a new reset link**.
-4. Sign in → Account → **Security → Change password**. Try a wrong current password, mismatched confirmation, then a valid change. Expect success and a fresh sign-in. The app has no Supabase JS SDK; it re-authenticates through the existing Supabase Auth REST client before updating its own authenticated user.
+4. Sign in → Account → **Security → Change password**. Try a wrong current password, mismatched confirmation, then a valid change. Expect success and a fresh sign-in. Signed-in changes still re-authenticate through the existing Supabase Auth REST client before updating that authenticated user.
 5. As the owner, open **Users & Registrations → View History** for that account. Expect “Password changed by user” with its timestamp, without password values. Check that role, status, export allowance/usage and Design Library permission are unchanged. An unlimited account remains non-admin.
 
 ## Security and operational behavior
@@ -62,3 +62,19 @@ Supporting code: `app/api/_lib/password-auth.js`, the four routes in `app/api/au
 Migration: `supabase-password-recovery-v1.sql`. Tests: `tests/password-auth.test.cjs`, `tests/password-ui.test.cjs`, extended `tests/user-management-db.test.cjs`, plus existing auth, access and user-management regression suites.
 
 Automated API/browser tests isolate Supabase responses; the database suite executes the SQL in isolated PostgreSQL/PGlite. These tests do not send real email, change live passwords, or apply the production migration. Complete the staff test steps against your configured Supabase project before calling email delivery verified.
+
+## Verified recovery blocker and fix (2026-10-21)
+
+Read-only inspection of the live Dashboard confirmed that Site URL and both production redirect URLs are correct, and Reset Password uses `<a href="{{ .ConfirmationURL }}">Reset password</a>`. The template and redirect settings were not changed.
+
+The live Supabase REST schema does not expose `ssb_create_password_recovery`, `ssb_create_implicit_password_recovery`, or `ssb_claim_password_recovery`. Deliberately invalid UUID probes (which cannot execute a write) returned **404 / PGRST202**, “Could not find the function … in the schema cache,” for all three. This is a missing password-recovery migration/schema-cache problem, not evidence that a fresh email token expired. Apply the two existing recovery migrations in step 1, sequentially, in the **Smart Sheet Builder** project. If already applied, verify their successful completion/grants and reload the PostgREST schema cache. Do not change URL Configuration again.
+
+The old reset page erased the URL before verification completed and mapped every API/network failure to “invalid, expired, or already used.” The isolated fix now:
+
+- Uses `exchangeCodeForSession(code)` exactly once on a recovery-only server SDK client with the existing encrypted HttpOnly PKCE verifier. It does not enable URL detection on the shared login/registration client.
+- Establishes implicit access/refresh tokens through the same isolated SDK, then independently verifies recent recovery authentication and server replay protection. A normal login session or a forged `type=recovery` fragment still cannot authorize a reset.
+- Waits for a valid protected recovery ticket before clearing query/hash parameters or showing password fields. StrictMode reattaches to the existing verification promise.
+- Shows service/connection failures separately, with Retry. An already verified Auth session is retained only in the encrypted, short-lived HttpOnly cookie while ticket setup is unavailable; Retry resumes that proof without exchanging the one-use code again or extending expiry. A completed/used ticket cannot be resumed.
+- Logs only verification phase, HTTP status and technical code, never email-link tokens, passwords, request bodies or raw provider errors.
+
+No production migration or code deployment is performed by these code changes. A live success test requires applying the missing migrations and deploying the reviewed commit; local fixtures are not evidence of a completed production password change.

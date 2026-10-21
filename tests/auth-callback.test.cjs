@@ -17,8 +17,8 @@ const cookieOf=r=>r.headers.get('set-cookie')?.split(';')[0];
    if(!['s'.repeat(64),'r'.repeat(64)].includes(body.token_hash)||used.has(body.token_hash))return response({message:'expired'},403);
    used.add(body.token_hash);return response({access_token:'fresh',user});
   }
-  if(u.pathname==='/auth/v1/token')return body.auth_code==='good-code'&&body.code_verifier?response({access_token:'fresh',user}):response({message:'bad code'},400);
-  if(u.pathname==='/auth/v1/user')return validTokens.has(options.headers.Authorization?.slice(7))||options.headers.Authorization==='Bearer fresh'?response(user):response({message:'invalid signature'},401);
+  if(u.pathname==='/auth/v1/token')return body.auth_code==='good-code'&&body.code_verifier?response({access_token:'fresh',refresh_token:'recovery-refresh',expires_in:3600,token_type:'bearer',user}):response({message:'bad code'},400);
+  if(u.pathname==='/auth/v1/user') { const authorization=new Headers(options.headers).get('authorization'); return validTokens.has(authorization?.slice(7))||authorization==='Bearer fresh'?response(user):response({message:'invalid signature'},401); }
   if(u.pathname==='/auth/v1/logout')return response({});
   return dbFetch(url,options);
  };
@@ -40,7 +40,15 @@ const cookieOf=r=>r.headers.get('set-cookie')?.split(';')[0];
  assert.equal((await verify.POST(req('password/verify',{access_token:jwt('otp',now-1000)}))).status,401,'stale OTP cannot become recovery');
  const token=jwt('otp'),r=await verify.POST(req('password/verify',{access_token:token}));assert.equal(r.status,200);assert.deepEqual(await r.json(),{ready:true});assert(cookieOf(r));
  assert.equal((await verify.POST(req('password/verify',{access_token:token}))).status,401,'implicit email session cannot mint repeated tickets');
- assert.equal((await f.one('select count(*)::int n from password_recovery_tickets where implicit_proof is not null')).n,1);
+ const implicitClaims={sub:user.id,session_id:'sdk-implicit-session',exp:now+3600,amr:[{method:'otp',timestamp:now}]};
+ const signature=Buffer.alloc(32,1).toString('base64url');
+ const sdkToken=Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url')+'.'+Buffer.from(JSON.stringify(implicitClaims)).toString('base64url')+'.'+signature;
+ validTokens.add(sdkToken);
+ assert.equal((await verify.POST(req('password/verify',{access_token:sdkToken,refresh_token:'implicit-refresh'}))).status,200,'SDK establishes implicit session before recovery proof validation');
+ assert.equal((await verify.POST(req('password/verify',{access_token:sdkToken,refresh_token:'implicit-refresh'}))).status,401,'used implicit recovery cannot mint another ticket');
+ const normalToken=Buffer.from(JSON.stringify({alg:'HS256',typ:'JWT'})).toString('base64url')+'.'+Buffer.from(JSON.stringify({...implicitClaims,amr:[{method:'password',timestamp:now}]})).toString('base64url')+'.'+signature;validTokens.add(normalToken);
+ assert.equal((await verify.POST(req('password/verify',{access_token:normalToken,refresh_token:'normal-refresh'}))).status,401,'valid ordinary session plus forged recovery hash cannot authorize reset');
+ assert.equal((await f.one('select count(*)::int n from password_recovery_tickets where implicit_proof is not null')).n,2);
  await f.db.exec('set role authenticated');await assert.rejects(()=>f.q("select ssb_create_implicit_password_recovery($1,$2)",[user.id,'a'.repeat(64)]));await f.db.exec('reset role');
  offline=true;assert.equal((await confirm.POST(req('confirm',{access_token:'confirmed-implicit'}))).status,503);
  const snapshot=await f.one('select role,exports_unlimited,status from profiles where id=$1',[user.id]);assert.deepEqual(snapshot,originalProfile);

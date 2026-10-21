@@ -9,12 +9,23 @@ const output = fs.mkdtempSync(path.join(os.tmpdir(), 'ssb-password-ui-'));
     const page = await browser.newPage({ viewport: { width: 375, height: 812 } });
     const errors = []; page.on('pageerror', e => errors.push(e.message));
     let changes = 0, resets = 0, verifies = 0;
+    const verificationBodies = [];
+    let releaseVerification, resumeReady = false;
+    const heldVerification = new Promise(resolve => { releaseVerification=resolve; });
     const success = 'If an account exists for this email, we sent a password reset link. Please check your inbox and spam folder.';
-    await page.route('**/api/**', route => {
+    await page.route('**/api/**', async route => {
       const request = route.request(), url = new URL(request.url()), body = request.postDataJSON();
       const token = request.headers().authorization;
       if (url.pathname === '/api/auth/password/request') return route.fulfill({ json: { message: success, retryAfter: 60 } });
-      if (url.pathname === '/api/auth/password/verify') { verifies++; return body.code === 'valid-code' ? route.fulfill({ json: { ready: true } }) : route.fulfill({ status: 401, json: { message: 'This recovery link is invalid, expired, or already used. Request a new reset link.' } }); }
+      if (url.pathname === '/api/auth/password/verify') {
+        verifies++; verificationBodies.push(body);
+        if (body.code === 'held-code') { await heldVerification; return route.fulfill({json:{ready:true}}); }
+        if (body.code === 'setup-code') return route.fulfill({status:503,json:{code:'recovery_unavailable',message:'The password recovery service is temporarily unavailable. Your link has not been marked invalid. Please retry or contact support.'}});
+        if (body.code === 'offline-code') return route.abort('failed');
+        return body.code === 'valid-code' || body.access_token === 'fresh-implicit' || body.token_hash === 'fresh-token-hash' || body.resume && resumeReady
+          ? route.fulfill({json:{ready:true}})
+          : route.fulfill({status:401,json:{code:'invalid_recovery',message:'This recovery link is invalid, expired, or already used. Request a new reset link.'}});
+      }
       if (url.pathname === '/api/auth/password/reset') { resets++; return route.fulfill({ json: { message: 'Password changed successfully' } }); }
       if (url.pathname === '/api/auth/password/change') { changes++; return body.currentPassword === 'correct-current' ? route.fulfill({ json: { message: 'Password changed successfully' } }) : route.fulfill({ status: 400, json: { message: 'Current password could not be verified. Check it and try again.' } }); }
       if (url.pathname === '/api/auth/profile') return route.fulfill({ json: { profile: { full_name: 'Test User', business_name: '', mobile: '', city: '', country: '', machine_type: '', monthly_usage: '' } } });
@@ -37,7 +48,40 @@ const output = fs.mkdtempSync(path.join(os.tmpdir(), 'ssb-password-ui-'));
     await page.goto(base);
     await page.goto(`${base}/reset-password#access_token=ordinary-session&type=recovery`);
     await page.getByRole('button', { name: 'Request a new reset link' }).waitFor();
-    assert.equal(new URL(page.url()).hash, '');
+    assert.notEqual(new URL(page.url()).hash, '', 'failed verification retains URL proof until a new request is chosen');
+    await page.goto(base);
+    await page.goto(`${base}/reset-password?code=held-code`);
+    await page.getByText('Checking your recovery link…',{exact:true}).waitFor();
+    assert.equal(new URL(page.url()).search,'?code=held-code','do not erase one-use proof during initialization');
+    assert.equal(await page.locator('.password-card [role="alert"]').count(),0,'no false invalid error during initialization');
+    assert.equal(await page.getByLabel('New password',{exact:true}).count(),0,'no password form before verified recovery');
+    releaseVerification(); await page.getByRole('heading',{name:'Set new password',exact:true}).waitFor();
+    assert.equal(verificationBodies.filter(b=>b.code==='held-code').length,1,'StrictMode makes one exchange');
+    assert.equal(new URL(page.url()).search,'');
+    await page.goto(base);
+    await page.goto(`${base}/reset-password?code=setup-code`);
+    await page.getByRole('alert').filter({hasText:'temporarily unavailable'}).waitFor();
+    assert.equal(new URL(page.url()).search,'?code=setup-code','setup failure does not erase URL');
+    assert.equal(await page.getByLabel('New password',{exact:true}).count(),0);
+    await page.screenshot({path:path.join(output,'recovery-service-unavailable.png')});
+    resumeReady=true;
+    await page.getByRole('button',{name:'Retry verification',exact:true}).click();
+    await page.getByRole('heading',{name:'Set new password',exact:true}).waitFor();
+    assert.deepEqual(verificationBodies.at(-1),{resume:true});
+    assert.equal(verificationBodies.filter(b=>b.code==='setup-code').length,1,'retry resumes protected proof without exchanging code again');
+    resumeReady=false;
+    await page.goto(`${base}/reset-password?code=offline-code`);
+    await page.getByRole('alert').filter({hasText:'Unable to reach'}).waitFor();
+    assert.equal(new URL(page.url()).search,'?code=offline-code');
+    await page.goto(base);
+    await page.goto(`${base}/reset-password#access_token=fresh-implicit&refresh_token=implicit-refresh&type=recovery`);
+    await page.getByRole('heading',{name:'Set new password',exact:true}).waitFor();
+    assert.deepEqual(verificationBodies.at(-1),{access_token:'fresh-implicit',refresh_token:'implicit-refresh'});
+    assert.equal(new URL(page.url()).hash,'');
+    await page.screenshot({path:path.join(output,'implicit-recovery-ready.png')});
+    await page.goto(`${base}/reset-password?token_hash=fresh-token-hash&type=recovery`);
+    await page.getByRole('heading',{name:'Set new password',exact:true}).waitFor();
+    assert.deepEqual(verificationBodies.at(-1),{token_hash:'fresh-token-hash'});
     const before = verifies;
     await page.goto(`${base}/reset-password?code=valid-code`);
     await page.getByRole('heading', { name: 'Set new password' }).waitFor();

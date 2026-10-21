@@ -5,31 +5,55 @@ import PasswordFields from '../components/PasswordFields';
 import { passwordError } from '../lib/password-rules';
 import { browserAuth } from '../lib/browser-auth';
 export default function ResetPasswordPage() {
-  const started = useRef(false);
+  const attempt = useRef(null), retryVerification = useRef(null);
   const [state, setState] = useState('checking'), [message, setMessage] = useState(''), [password, setPassword] = useState(''), [confirmation, setConfirmation] = useState(''), [busy, setBusy] = useState(false), [warning, setWarning] = useState('');
   useEffect(() => {
+    let live = true;
+    function verify(body, key) {
+      setState('checking'); setMessage('');
+      // Reattach to the same promise under StrictMode. The SDK exchange runs on
+      // the server with the HttpOnly PKCE verifier, never twice in the browser.
+      if (attempt.current?.key !== key) attempt.current = {key, promise:fetch('/api/auth/password/verify', {
+        method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)
+      }).then(async response => ({ok:response.ok,status:response.status,data:await response.json()}))};
+      const current = attempt.current;
+      current.promise.then(({ok,status,data}) => {
+        if (!live || attempt.current !== current) return;
+        if (ok && data.ready === true) {
+          // Keep the recovery parameters until Auth and the protected server
+          // session are both ready. Do not persist them in local/session storage.
+          history.replaceState(null, '', '/reset-password');
+          setState('ready'); return;
+        }
+        console.error('[password-recovery]', {status,code:data.code || 'verification_failed'});
+        if (status >= 500 || data.code === 'recovery_unavailable') {
+          setState('unavailable'); setMessage(data.message || 'The password recovery service is temporarily unavailable. Please retry.');
+        } else {
+          setState('invalid'); setMessage(data.message || 'This recovery link is invalid, expired, or already used. Request a new reset link.');
+        }
+      }).catch(() => {
+        if (live && attempt.current === current) { setState('unavailable'); setMessage('Unable to reach the recovery service. Check your connection and retry.'); }
+      });
+    }
     function verifyLink() {
-    if (started.current) return; started.current = true;
-    setState('checking'); setMessage('');
-    const query = new URLSearchParams(location.search), hash = new URLSearchParams(location.hash.slice(1));
-    const code = query.get('code'), token_hash = query.get('token_hash'), access_token = hash.get('type') === 'recovery' ? hash.get('access_token') : null;
-    // Scrub credentials immediately. They are never copied to persistent storage,
-    // logged, or sent as a referrer. React StrictMode must not exchange twice.
-    history.replaceState(null, '', '/reset-password');
-    if (query.has('error') || hash.has('error') || (!code && !access_token && !(token_hash && query.get('type') === 'recovery'))) {
-      setState('invalid'); setMessage('This recovery link is invalid, expired, or already used. Request a new reset link.'); return;
+      const query = new URLSearchParams(location.search), hash = new URLSearchParams(location.hash.slice(1));
+      const code = query.get('code'), token_hash = query.get('type') === 'recovery' ? query.get('token_hash') : null;
+      const access_token = hash.get('type') === 'recovery' ? hash.get('access_token') : null;
+      if (query.has('error') || hash.has('error') || (hash.has('access_token') && !access_token)) {
+        setState('invalid'); setMessage('This recovery link is invalid, expired, or already used. Request a new reset link.'); return;
+      }
+      const body = code ? {code} : token_hash ? {token_hash} : access_token ? {access_token,...(hash.get('refresh_token') ? {refresh_token:hash.get('refresh_token')} : {})} : {resume:true};
+      verify(body, location.search + location.hash || 'resume');
     }
-    fetch('/api/auth/password/verify', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(code ? { code } : token_hash ? { token_hash } : { access_token }) })
-      .then(async r => { const data = await r.json(); if (!r.ok) throw new Error(data.message); setState('ready'); })
-      .catch(() => { setState('invalid'); setMessage('This recovery link could not be verified. It may be invalid, expired, or already used. Check your connection or request a new reset link.'); });
-    }
-    const changed = () => { if (location.hash) { started.current = false; verifyLink(); } };
-    verifyLink(); window.addEventListener('hashchange', changed);
-    return () => window.removeEventListener('hashchange', changed);
+    retryVerification.current = () => { attempt.current = null; verify({resume:true},'retry'); };
+    verifyLink(); window.addEventListener('hashchange', verifyLink);
+    return () => { live = false; retryVerification.current = null; window.removeEventListener('hashchange', verifyLink); };
   }, []);
   return <main className="password-page"><div className="password-card"><p className="access-kicker">Smart Sheet Builder</p><h1>{state === 'request' ? 'Request a password reset' : state === 'ready' ? 'Set new password' : 'Reset password'}</h1>
     {state === 'checking' && <p role="status">Checking your recovery link…</p>}
-    {state === 'invalid' && <><p role="alert">{message}</p><button onClick={() => setState('request')}>Request a new reset link</button></>}
+    {['invalid','unavailable'].includes(state) && <><p role="alert">{message}</p>
+      {state === 'unavailable' && <button onClick={() => retryVerification.current?.()}>Retry verification</button>}
+      <button onClick={() => { history.replaceState(null, '', '/reset-password'); attempt.current = null; setState('request'); }}>Request a new reset link</button></>}
     {state === 'request' && <PasswordRequestForm />}
     {state === 'success' && <div role="status"><p>Password changed successfully</p>{warning && <p>{warning}</p>}<a className="auth-success-link" href="/?signin=1">Sign in</a></div>}
     {state === 'ready' && <form className="auth-form" noValidate onSubmit={async e => {
