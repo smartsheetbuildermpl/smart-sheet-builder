@@ -362,6 +362,12 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
         {message && <p role="status">{message}</p>}
         {settingsOpen && <section className="client-card client-settings-panel" aria-label="Shop portal settings">
           <div className="client-settings-panel-heading"><div><h2>Shop portal settings</h2><p>Manage the private upload link and print layout defaults.</p></div><button type="button" className="secondary" onClick={() => setSettingsOpen(false)}>Done</button></div>
+          {!!data?.serviceWarnings?.length && (
+            <div className="client-notice" role="status">
+              <ul>{data.serviceWarnings.map(issue => <li key={issue}>{issue}</li>)}</ul>
+              <p>Localhost uses its own environment settings. Restart the local server after updating them; Vercel changes require a redeploy.</p>
+            </div>
+          )}
           <UploadProfiles profiles={data?.profiles || []} selectedId={portal?.id} busy={busy || exporting}
             onEdit={editProfile} onAction={mutate} setupIssues={data?.setupIssues}
             onCreate={event => { setCreatingProfile(true); setProfileName(''); setConfig({ ...config, gapIn:0.3, edgeIn:0.5 }); setError(''); setMessage(''); setEditorOrigin(event.currentTarget); }} />
@@ -470,11 +476,11 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                       Artwork sizing: use uploaded artwork at 300 PPI, after
                       transparent-margin trimming.
                     </p>
-                    {!data?.emailConfigured && (
-                      <p className="client-error">
-                        An administrator must configure the email provider and
-                        production site URL before this link can be enabled.
-                      </p>
+                    {!!data?.setupIssues?.length && (
+                      <div className="client-error">
+                        <p>Complete these server settings before enabling this link:</p>
+                        <ul>{data.setupIssues.map(issue => <li key={issue}>{issue}</li>)}</ul>
+                      </div>
                     )}
                     <button disabled={busy || exporting}>
                       {creatingProfile ? 'Create profile' : portal?.active ? 'Save portal settings' : 'Create/Enable link'}

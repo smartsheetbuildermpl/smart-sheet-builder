@@ -11,6 +11,7 @@ import {
   linkToken,
   emailReady,
   portalSetup,
+  portalServiceWarnings,
   publicOrigin,
   uuid,
   rate
@@ -56,6 +57,7 @@ export async function GET(request) {
       portal: visibleProfiles[0], // Compatibility for existing owner clients; no secret fields.
       jobs: list,
       setupIssues,
+      serviceWarnings: portalServiceWarnings(),
       emailConfigured: emailReady(),
       serverTime: new Date().toISOString()
     });
@@ -67,19 +69,17 @@ export async function POST(request) {
   try {
     const { user } = await accountActor(request), body = await request.json();
     await rate(request, `portal-settings:${user.id}`, 30);
-    if (body.action !== 'disable') publicOrigin(request);
-    if (body.action !== 'disable' && !process.env.CRON_SECRET)
-      throw failure(
-        'Configure Vercel CRON_SECRET before enabling uploads.',
-        503
-      );
     if (!['save', 'rotate', 'disable', 'enable', 'create', 'duplicate'].includes(body.action))
       throw failure('Invalid portal action.', 400);
-    if (body.action !== 'disable' && !emailReady())
-      throw failure(
-        'Configure Client Jobs email delivery and SMART_SHEET_SITE_URL before enabling the upload link.',
-        503
-      );
+    if (body.action !== 'disable') {
+      const setupIssues = portalSetup(request);
+      // These are allowlisted configuration instructions, never secret values
+      // or raw provider errors. Only the authenticated shop owner sees them.
+      if (setupIssues.length) return reply({
+        code: 'portal_configuration_missing', setupIssues,
+        message: `Client Portal setup is incomplete on this server. ${setupIssues.join(' ')} After updating environment settings, restart the local server or redeploy Vercel, then retry. Your profile settings have not been changed.`
+      }, 503);
+    }
     const profileId = body.profileId ? uuid(body.profileId) : null;
     const old = profileId
       ? await jobs('profile-get', { p_owner: user.id, p_data: { id: profileId } })

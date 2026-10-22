@@ -1,5 +1,7 @@
 # Client Portal link diagnosis and deployment
 
+> Current behavior update (2026-10-22): the diagnosis below is a historical snapshot from September. See `CLIENT-JOBS-SETUP.md` for the current dependency/deployment rules. Profile save/enable and public upload/preview no longer depend on Resend or `CRON_SECRET`; missing email delivery is reported at new submission confirmation and as an owner setup warning. Cleanup authentication remains mandatory on the maintenance route, and exact access expiry remains independent of cron. Apply `supabase-client-upload-limits-v1.sql` after the existing Jobs/Profiles migrations; the private bucket allowance is now at least 32 MiB, with a service-only idempotent reservation RPC. This update does not claim that Vercel environment values or production delivery have been verified.
+
 ## Live checks on 2026-09-27
 
 - The Supabase project configured in local `.env.local` is `xczwxxybbohnzkxgtsjd`. It contains one portal record, with `enabled = false`. The existing database function filters out disabled portals before lookup, then raises the same `P0002` message for a disabled record, an unknown token, and an inactive shop. This reproduced the exact reported error. Portal tokens do not expire; draft submission sessions do.

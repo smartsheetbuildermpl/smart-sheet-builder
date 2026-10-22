@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto';
 import {
   cleanup,
+  emailReady,
   notifications,
   reply,
   errorReply
@@ -20,8 +21,9 @@ async function runMaintenance(request) {
     return reply({ message: 'Unauthorized' }, 401);
   try {
     const purged = await cleanup();
-    const notified = await notifications();
-    return reply({ purged, notified });
+    const emailConfigured = emailReady();
+    const notified = emailConfigured ? await notifications() : 0;
+    return reply({ purged, notified, emailConfigured });
   } catch (e) {
     return errorReply(e);
   }

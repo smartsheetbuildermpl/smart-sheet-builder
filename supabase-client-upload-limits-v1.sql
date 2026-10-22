@@ -1,7 +1,16 @@
 -- Portal upload reliability only. No profile, history, expiry, or RLS changes.
 begin;
-update storage.buckets set file_size_limit=33554432
- where id='client-job-sources' and public=false;
+-- Fail atomically if prerequisites were not installed. Never create a public
+-- bucket or silently deploy the RPC without its required private storage.
+do $$ begin
+ if not exists(select 1 from storage.buckets where id='client-job-sources' and public=false) then
+  raise exception 'Apply the Client Jobs migration with its private client-job-sources bucket before this migration.';
+ end if;
+end $$;
+-- Preserve an existing larger/unlimited bucket allowance; app upload validation
+-- still independently enforces 32 MiB. No job/profile rows are modified.
+update storage.buckets set file_size_limit=greatest(file_size_limit,33554432)
+ where id='client-job-sources' and public=false and file_size_limit is not null;
 
 -- Reuse a reservation on retry (including a lost HTTP response). The existing
 -- job RPC locks the row and enforces the opaque link, draft state and expiry.

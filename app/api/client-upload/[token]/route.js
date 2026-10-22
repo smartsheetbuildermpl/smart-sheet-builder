@@ -19,7 +19,6 @@ import {
   text,
   emailReady,
   publicOrigin,
-  portalSetup,
   notifications
 } from '../../_lib/client-jobs';
 export const dynamic = 'force-dynamic';
@@ -47,7 +46,7 @@ export async function GET(request, { params }) {
   try {
     await rate(request, 'public-view', 240);
     const { portal } = await publicActor(request, params.token, false);
-    if (portalSetup(request).length) throw failure('Portal service configuration is incomplete.', 503);
+    publicOrigin(request);
     return reply({ shopName: portal.settings.shopName, profileName: portal.name, machine: portal.settings.machine });
   } catch (e) {
     return errorReply(e);
@@ -59,12 +58,6 @@ export async function POST(request, { params }) {
     await rate(request, 'public-mutation', 120);
     if (action === 'create') {
       const { link } = await publicActor(request, params.token, false);
-      if (portalSetup(request).length) throw failure('Portal service configuration is incomplete.', 503);
-      if (!emailReady())
-        throw failure(
-          'This shop’s upload portal is not ready. Please contact the shop.',
-          503
-        );
       await rate(request, 'new-submission', 10);
       publicOrigin(request);
       const id = sourceId();
@@ -174,11 +167,8 @@ export async function POST(request, { params }) {
     }
     if (action === 'confirm') {
       if (!job.confirmed_at && !job.reference?.trim()) throw failure('Enter a Project / Client Name and generate the preview before confirming.',400);
-      if (!emailReady())
-        throw failure(
-          'Shop email notifications are not configured. Contact the shop.',
-          503
-        );
+      if (!job.confirmed_at && !emailReady())
+        throw Object.assign(failure('Client Portal email delivery is not configured.', 503), { code: 'portal_email_not_configured' });
       const updated = await jobs('confirm', {
         ...args,
         p_data: {

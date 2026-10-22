@@ -29,7 +29,7 @@ export async function jobs(action, args = {}) {
   if (!getSupabaseConfig().configured) {
     console.error('[client-portal-config]', 'Missing Supabase URL, anon key or service-role key.');
     const e = failure('Client portal server configuration is incomplete.', 503);
-    e.code = 'portal_configuration_error';
+    e.code = 'portal_supabase_not_configured';
     throw e;
   }
   return rpc('ssb_client_jobs', { p_action: action, ...args });
@@ -43,6 +43,12 @@ export const reply = (data, status = 200) =>
     }
   });
 export function errorReply(e) {
+  const setupErrors = {
+    portal_supabase_not_configured: 'Client Portal database access is not configured in this environment. Configure NEXT_PUBLIC_SUPABASE_URL, NEXT_PUBLIC_SUPABASE_ANON_KEY and SUPABASE_SERVICE_ROLE_KEY on the server.',
+    portal_origin_not_configured: 'Client Portal public URL is not configured in this environment. Set SMART_SHEET_SITE_URL to the public app origin (HTTPS in production).',
+    portal_email_not_configured: 'Client Portal email delivery is not configured in this environment. The submission has not been confirmed. Ask the shop to configure email delivery, then retry; your uploaded designs and preview are still available until this draft expires.'
+  };
+  if (setupErrors[e.code]) return reply({ code: e.code, message: setupErrors[e.code] }, 503);
   const portalErrors = {
     P0404: [404, 'portal_not_found', 'This upload link is invalid or has been replaced. Ask the shop for the current link.'],
     P0403: [403, 'portal_disabled', 'This upload portal is currently disabled.'],
@@ -75,7 +81,7 @@ export function errorReply(e) {
       code: status >= 500 ? 'portal_configuration_error' : e.code || 'portal_request_failed',
       message:
         status >= 500
-          ? 'The upload portal could not connect to its configured services. Please retry later or contact the shop. This is not an expired link.'
+          ? 'Client Portal could not complete this request. Please retry. If it continues, the shop administrator should check the server logs.'
           : e.message
     },
     status
@@ -141,7 +147,8 @@ export function linkToken(portal) {
   return value?.type === 'client-link' && typeof value.token === 'string' && hash(value.token) === portal.link_hash ? value.token : '';
 }
 export function publicOrigin(request) {
-  return publicAppOrigin(request, { localPortal: true });
+  try { return publicAppOrigin(request, { localPortal: true }); }
+  catch (e) { e.code = 'portal_origin_not_configured'; throw e; }
 }
 export function emailReady() {
   return Boolean(
@@ -152,10 +159,13 @@ export function emailReady() {
 export function portalSetup(request) {
   const issues = [];
   try { publicOrigin(request); } catch { issues.push('Set SMART_SHEET_SITE_URL to the public app origin.'); }
-  if (!process.env.RESEND_API_KEY) issues.push('Set RESEND_API_KEY for job notifications.');
-  if (!process.env.CLIENT_JOBS_EMAIL_FROM) issues.push('Set CLIENT_JOBS_EMAIL_FROM to a verified sender.');
-  if (!process.env.CRON_SECRET) issues.push('Set Vercel CRON_SECRET for the daily cleanup job.');
   return issues;
+}
+export function portalServiceWarnings() {
+  const warnings = [];
+  if (!emailReady()) warnings.push('Client Portal email delivery is not configured in this environment. Add RESEND_API_KEY and CLIENT_JOBS_EMAIL_FROM before clients confirm submissions. Profile settings, links, uploads and previews can still be saved.');
+  if (!process.env.CRON_SECRET) warnings.push('Scheduled cleanup is not configured in this environment. Add CRON_SECRET to authorize the daily maintenance job. Profile settings can still be saved; exact access expiry remains enforced independently of cleanup. Vercel does not run cron on localhost.');
+  return warnings;
 }
 export async function rate(request, scope, limit) {
   const name = process.env.VERCEL
