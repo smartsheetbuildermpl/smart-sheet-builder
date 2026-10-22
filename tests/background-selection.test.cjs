@@ -8,21 +8,22 @@ const source=fs.readFileSync('public/background-editor.js','utf8');
 const before=execFileSync('git',['show','729540d:public/background-editor.js'],{encoding:'utf8'});
 const currentWand=source.slice(source.indexOf('    function coverage('),source.indexOf('    function applySelection('));
 const previousWand=before.slice(before.indexOf('    function coverage('),before.indexOf('    function eraseSelection('));
-assert.equal(currentWand,previousWand,'Magic Wand coverage, tolerance, connectivity and preview selection unchanged');
+assert.equal(currentWand.replace(/\r\n/g,'\n'),previousWand.replace(/\r\n/g,'\n'),'Magic Wand coverage, tolerance, connectivity and preview selection unchanged');
 // Inspect only in this browser-local test page. No production test hooks.
 const editor=source.replace('    function applySelection(target) {','    window.selectionTest={get mask(){return selection.slice()},get pixels(){return pixels.data.slice()}};\n    function applySelection(target) {');
-const builder=fs.readFileSync('public/builder.html','utf8').replace(/\}\)\(\);\s*<\/script>/,'window.selectionBuilder={get designs(){return designs},get sheets(){return sheets},get instances(){return instances},downloadPng,downloadTiff};})();</script>');
+const builder=fs.readFileSync('public/builder.html','utf8').replace(/\}\)\(\);\s*<\/script>/,'window.selectionBuilder={get designs(){return designs},get sheets(){return sheets},get instances(){return instances},downloadPng,downloadTiff};exportDelivery=SmartSheetExportDelivery.create({gate:async()=>({allowed:true,authorization:"encoder-fixture-only"}),save:saveExportBlob});})();</script>');
 const artifacts=fs.mkdtempSync(path.join(os.tmpdir(),'background-selection-'));
 const internetLogo=process.env.BG_LOGO_PATH;
 (async()=>{
   const browser=await chromium.launch({channel:'chrome',headless:true});
   try{
     const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
+    await require('./preflight-review-helper.cjs')(page);
     await page.route('http://localhost:4196/**',r=>{
       const name=new URL(r.request().url()).pathname;
       if(name==='/background-editor.js')return r.fulfill({body:editor,contentType:'text/javascript'});
       if(name==='/internet-logo.png'&&internetLogo)return r.fulfill({body:fs.readFileSync(internetLogo),contentType:'image/png'});
-      if(/^\/(background-editor|print-optimizer|sheet-workspace)\.(js|css)$/.test(name))return r.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('js')?'text/javascript':'text/css'});
+      if(/^\/(background-editor|print-optimizer|sheet-workspace|export-delivery|sheet-packing|builder-shell|workspace-theme)\.(js|css)$/.test(name))return r.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('js')?'text/javascript':'text/css'});
       return r.fulfill({body:builder,contentType:'text/html'});
     });
     await page.goto('http://localhost:4196/builder.html');
@@ -102,7 +103,9 @@ const internetLogo=process.env.BG_LOGO_PATH;
     // Use the normal Add path at one source pixel per export pixel.
     await card.getByRole('spinbutton',{name:'Width',exact:true}).fill(String(applied.w/300));
     await card.getByRole('spinbutton',{name:'Height',exact:true}).fill(String(applied.h/300));
+    await page.getByRole('tab',{name:'Sheet',exact:true}).click();
     await page.locator('#sheetWidth').fill('2');await page.locator('#sheetLength').fill('2');
+    await page.getByRole('tab',{name:'Designs',exact:true}).click();
     await card.getByRole('button',{name:'Add to layout',exact:true}).click();
     await page.waitForFunction(()=>selectionBuilder.sheets.length>0);
     const rendered=await page.evaluate(()=>{const d=selectionBuilder.designs[0],s=selectionBuilder.sheets[0],p=s.placements[0];if(p.inst.canvas!==d.trimmed.canvas)throw Error('Export uses a different source');return {w:s.renderCanvas.width,h:s.renderCanvas.height,rgba:Array.from(s.renderCanvas.getContext('2d').getImageData(0,0,s.renderCanvas.width,s.renderCanvas.height).data)};});

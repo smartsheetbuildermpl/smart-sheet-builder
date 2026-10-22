@@ -21,7 +21,8 @@ function tiffSize(bytes) { const at=bytes.readUInt32LE(4),n=bytes.readUInt16LE(a
  const output=fs.mkdtempSync(path.join(os.tmpdir(),'tarpaulin-size-'));
  try {
   const page=await browser.newPage({viewport:{width:1440,height:1650}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
-  await page.route('http://localhost:4213/**',r=>{const p=new URL(r.request().url()).pathname;if(p==='/builder.html')return r.fulfill({body:html,contentType:'text/html'});if(/\.(js|css)$/.test(p))return r.fulfill({body:fs.readFileSync('public'+p),contentType:p.endsWith('.js')?'text/javascript':'text/css'});return r.fulfill({body:'<style>body{margin:0}iframe{border:0;width:100%;height:1620px}</style><iframe src="/builder.html"></iframe>',contentType:'text/html'});});
+  await require('./preflight-review-helper.cjs')(page);
+    await page.route('http://localhost:4213/**',r=>{const p=new URL(r.request().url()).pathname;if(p==='/builder.html')return r.fulfill({body:html,contentType:'text/html'});if(/\.(js|css)$/.test(p))return r.fulfill({body:fs.readFileSync('public'+p),contentType:p.endsWith('.js')?'text/javascript':'text/css'});return r.fulfill({body:'<style>body{margin:0}iframe{border:0;width:100%;height:1620px}</style><iframe src="/builder.html"></iframe>',contentType:'text/html'});});
   await page.goto('http://localhost:4213');const frame=page.frameLocator('iframe'),doc=page.frames().find(f=>f.url().endsWith('/builder.html'));
   await frame.locator('#machinePreset').waitFor({state:'attached'});await doc.evaluate(()=>document.getElementById('dpi').value=10);
   await frame.getByRole('tab',{name:'Sheet',exact:true}).click();await frame.locator('#machinePreset').selectOption('tarpaulin');

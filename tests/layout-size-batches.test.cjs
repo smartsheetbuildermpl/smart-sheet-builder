@@ -8,7 +8,8 @@ const hook=`window.batchTest={get sheets(){return sheets},settings:getSheetPixel
 const html=fs.readFileSync('public/builder.html','utf8').replace(/\}\)\(\);\s*<\/script>/,hook+'})();</script>');
 (async()=>{const browser=await chromium.launch({channel:'chrome',headless:true}),out=fs.mkdtempSync(path.join(os.tmpdir(),'layout-size-batches-'));
 try{const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];page.on('pageerror',e=>errors.push(e.message));
- await page.route('http://localhost:4216/**',r=>{const p=new URL(r.request().url()).pathname;if(p==='/builder.html')return r.fulfill({body:html,contentType:'text/html'});if(/\.(js|css)$/.test(p))return r.fulfill({body:fs.readFileSync('public'+p),contentType:p.endsWith('.js')?'text/javascript':'text/css'});return r.fulfill({body:'<style>body{margin:0}iframe{width:100%;height:980px;border:0}</style><iframe src="/builder.html"></iframe>',contentType:'text/html'});});
+ await require('./preflight-review-helper.cjs')(page);
+    await page.route('http://localhost:4216/**',r=>{const p=new URL(r.request().url()).pathname;if(p==='/builder.html')return r.fulfill({body:html,contentType:'text/html'});if(/\.(js|css)$/.test(p))return r.fulfill({body:fs.readFileSync('public'+p),contentType:p.endsWith('.js')?'text/javascript':'text/css'});return r.fulfill({body:'<style>body{margin:0}iframe{width:100%;height:980px;border:0}</style><iframe src="/builder.html"></iframe>',contentType:'text/html'});});
  await page.goto('http://localhost:4216');const frame=page.frameLocator('iframe'),doc=page.frames().find(f=>f.url().endsWith('/builder.html'));
  await frame.getByRole('tab',{name:'Sheet',exact:true}).click();
  for(const machine of ['dtf','uvdtf24','uvdtf12','tarpaulin']){await frame.locator('#machinePreset').selectOption(machine);const s=await doc.evaluate(()=>batchTest.settings());assert.equal(s.gapPx,30);assert.equal(s.autoEdgeAllowancePx,30);}

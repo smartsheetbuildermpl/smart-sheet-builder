@@ -11,6 +11,7 @@ const html=fs.readFileSync('public/builder.html','utf8').replace(/\}\)\(\);\s*<\
     let balance=2, serverEpoch=Date.parse('2026-09-26T12:00:00Z'), due=serverEpoch+10800000, refill=false, refundOffline=false;
     const usage=()=>({signedIn:true,email:'standard@test.example',label:'Free account',creditMode:true,remaining:balance,limit:2,used:120,unlimited:false,isSuperAdmin:false,canManageLibrary:false,serverTime:new Date(serverEpoch).toISOString(),nextCreditAt:balance<2?new Date(due).toISOString():null});
     await page.addInitScript(()=>{localStorage.setItem('smart-sheet-builder-v53b-session',JSON.stringify({accessToken:'standard',user:{email:'standard@test.example'}}));Date.now=()=>Date.parse('2099-01-01');});
+    await require('./preflight-review-helper.cjs')(page);
     await page.route('**/builder.html',r=>r.fulfill({body:html,contentType:'text/html'}));
     await page.route('**/api/**',async r=>{
       const req=r.request(),u=new URL(req.url()),body=req.postDataJSON();requests.push({path:u.pathname,body});

@@ -22,6 +22,7 @@ function tiff(bytes) {
   try {
     const page=await browser.newPage({viewport:{width:1440,height:1000}}),errors=[];
     page.on('pageerror',error=>errors.push(error.message));
+    await require('./preflight-review-helper.cjs')(page);
     await page.route('http://localhost:4187/**',route=>{
       const name=new URL(route.request().url()).pathname;
       if(/^\/(background-editor|sheet-workspace|print-optimizer|export-delivery|sheet-packing|builder-shell|workspace-theme)\.(js|css)$/.test(name))return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});

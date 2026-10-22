@@ -8,7 +8,8 @@ async function usageText(page){await page.locator('.access-reveal-handle').hover
  const files=[];let downloads=0,refreshes=0,authFailure=false,networkFailure=false,exportOutage=false;const errors=[];
  async function pageFor(name){const context=await browser.newContext(),page=await context.newPage();page.on('download',d=>{downloads++;files.push(d.path().then(p=>{assert(fs.statSync(p).size>0,'downloaded file is nonempty')}));});page.on('pageerror',e=>errors.push(e.message));
   if(name){const user=f.users[name],expired=jwt(user,Math.floor(Date.now()/1000)-3600);await context.addInitScript(({user,expired})=>{if(!sessionStorage.getItem('qa-seeded')){localStorage.setItem('smart-sheet-builder-v53b-session',JSON.stringify({accessToken:expired,refreshToken:'valid-refresh',user}));sessionStorage.setItem('qa-seeded','1');}},{user,expired});}
-  await page.route('**/builder.html',r=>r.fulfill({contentType:'text/html',body:html}));
+  await require('./preflight-review-helper.cjs')(page);
+    await page.route('**/builder.html',r=>r.fulfill({contentType:'text/html',body:html}));
   await page.route('**/auth/v1/**',r=>{const u=new URL(r.request().url());if(u.pathname.endsWith('/token')){refreshes++;if(authFailure)return r.fulfill({status:400,json:{error_code:'refresh_token_not_found',msg:'Invalid Refresh Token: Refresh Token Not Found'}});const user=f.users[name||'basic'];return r.fulfill({json:{access_token:jwt(user,Math.floor(Date.now()/1000)+3600),refresh_token:'refreshed-token-'+refreshes,expires_in:3600,token_type:'bearer',user}});}if(u.pathname.endsWith('/logout'))return r.fulfill({json:{}});return r.fulfill({json:f.users[name||'basic']});});
   await page.route('**/api/**',async r=>{const request=r.request(),url=new URL(request.url()),headers=await request.allHeaders();if(headers.authorization&&name)headers.authorization='Bearer '+name;
    if(exportOutage&&url.pathname==='/api/export/consume')return r.fulfill({status:503,json:{message:'Unavailable'}});

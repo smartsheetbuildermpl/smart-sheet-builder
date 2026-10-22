@@ -64,6 +64,7 @@ function metadata(bytes) {
     const page = await browser.newPage();
     page.setDefaultTimeout(120000);
     page.on('pageerror', error => errors.push(error.message));
+    await require('./preflight-review-helper.cjs')(page);
     await page.route('http://localhost:4193/**', route => {
       const pathname = new URL(route.request().url()).pathname;
       if (pathname === '/builder.html') return route.fulfill({ body: html, contentType: 'text/html' });

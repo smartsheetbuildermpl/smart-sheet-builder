@@ -57,6 +57,7 @@ function alphaCrop(buffer, padding = 1) {
     page.setDefaultTimeout(180000);
     const errors = [];
     page.on('pageerror', error => errors.push(error.message));
+    await require('./preflight-review-helper.cjs')(page);
     await page.route('http://localhost:4201/**', route => {
       const pathname = new URL(route.request().url()).pathname;
       if (pathname === '/builder.html') return route.fulfill({ body: html, contentType: 'text/html' });

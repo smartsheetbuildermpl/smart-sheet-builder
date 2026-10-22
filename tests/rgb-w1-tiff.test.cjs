@@ -42,6 +42,7 @@ function rational(tags, tag) {
   try {
     const page = await browser.newPage();
     page.on('pageerror', error => errors.push(error.message));
+    await require('./preflight-review-helper.cjs')(page);
     await page.route('http://localhost:4180/**', route => {
       const pathname = new URL(route.request().url()).pathname;
       if (/^\/(sheet-workspace|background-editor|print-optimizer|export-delivery|sheet-packing|builder-shell|workspace-theme)\.(js|css)$/.test(pathname)) {
@@ -66,7 +67,7 @@ function rational(tags, tag) {
       window.rgbW1Canvas = canvas;
       const profile = rgbW1Test.getExportProfile('rgb');
       if (profile.mode !== 'dtf_rgb_w1') throw new Error('Expected DTF RGB+W1 profile.');
-      await rgbW1Test.downloadTiff({ renderCanvas: canvas, exportUi: {} }, 0, profile);
+      await rgbW1Test.downloadTiff({ renderCanvas: canvas, widthPx:canvas.width, heightPx:canvas.height, placements:[], exportUi: {} }, 0, profile);
     });
     const bytes = fs.readFileSync(await (await fileDownload).path());
     const tags = parseTiff(bytes);
@@ -94,7 +95,7 @@ function rational(tags, tag) {
     await page.evaluate(async () => {
       const profile = rgbW1Test.getExportProfile('cmyk');
       if (profile.mode !== 'dtf_cmyk_w1') throw new Error('Expected DTF CMYK+W1 profile.');
-      await rgbW1Test.downloadTiff({ renderCanvas: window.rgbW1Canvas, exportUi: {} }, 0, profile);
+      await rgbW1Test.downloadTiff({ renderCanvas: window.rgbW1Canvas, widthPx:5, heightPx:5, placements:[], exportUi: {} }, 0, profile);
     });
     const cmykBytes = fs.readFileSync(await (await cmykDownload).path());
     const cmykTags = parseTiff(cmykBytes);

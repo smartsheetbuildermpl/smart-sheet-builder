@@ -44,6 +44,7 @@ function tiffTags(bytes) {
   try {
     const page=await browser.newPage({viewport:{width:1440,height:1080}}),errors=[];
     page.on('pageerror',e=>errors.push(e.message));
+    await require('./preflight-review-helper.cjs')(page);
     await page.route('http://localhost:4231/**',r=>{
       const p=new URL(r.request().url()).pathname;
       return r.fulfill({body:p==='/'?html:fs.readFileSync('public'+p),contentType:p.endsWith('.js')?'text/javascript':p.endsWith('.css')?'text/css':'text/html'});

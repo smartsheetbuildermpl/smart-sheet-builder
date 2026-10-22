@@ -39,6 +39,7 @@ function tags(bytes) {
   try {
     const page=await browser.newPage({viewport:{width:1440,height:1000}}), errors=[];
     page.setDefaultTimeout(120000);page.on('pageerror',e=>errors.push(e.message));
+    await require('./preflight-review-helper.cjs')(page);
     await page.route('http://localhost:4206/**',r=>{
       const p=new URL(r.request().url()).pathname;
       if(/^\/(sheet-workspace|background-editor|print-optimizer|export-delivery|sheet-packing|builder-shell|workspace-theme)\.(js|css)$/.test(p))return r.fulfill({body:fs.readFileSync('public'+p),contentType:p.endsWith('.js')?'text/javascript':'text/css'});

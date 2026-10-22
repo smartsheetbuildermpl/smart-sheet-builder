@@ -397,6 +397,126 @@
 <script src="/print-optimizer.js"></script>
 <script src="/sheet-packing.js"></script>
 <script src="/export-delivery.js"></script>
+<style>
+  .print-readiness { margin:10px 0; padding:10px 12px; border:1px solid #dbe2e8; border-radius:6px; font-size:12px; color:#17324b; background:#fafbfc; }
+  .print-readiness > summary { cursor:pointer; font-weight:600; }
+  .print-readiness[data-state="review"] { border-color:#dfbd76; }
+  .print-readiness[data-state="attention"] { border-color:#d49b96; }
+  .preflight-facts { display:flex; flex-wrap:wrap; gap:6px 18px; margin:10px 0; line-height:1.5; }
+  .preflight-issues { padding-left:18px; line-height:1.6; }
+  .preflight-note { color:#576573; font-size:12px; line-height:1.5; }
+  .preflight-design { padding:8px 0; border-top:1px solid #e2e7ec; overflow-wrap:anywhere; line-height:1.6; }
+  #printPreflight { width:min(540px, calc(100% - 28px)); max-height:85dvh; padding:20px; border:1px solid #cbd5de; border-radius:8px; color:#17324b; background:#fff; box-sizing:border-box; overflow-y:auto; }
+  #printPreflight::backdrop { background:rgba(12,30,48,.45); }
+  #printPreflight h2 { margin:0 0 8px; font-size:19px; }
+  #printPreflight .preflight-state { display:inline-block; padding:4px 8px; border-radius:4px; background:#e6f2ec; color:#245b40; font-weight:600; }
+  #printPreflight[data-state="review"] .preflight-state { background:#fff1d8; color:#79500f; }
+  #printPreflight[data-state="attention"] .preflight-state { background:#fae9e6; color:#97352b; }
+  #printPreflight .preflight-actions button:last-child { background:#17324b; color:#fff; }
+  #printPreflight .preflight-actions { display:flex; gap:10px; margin-top:16px; }
+  #printPreflight .preflight-actions button { flex:1; }
+</style>
+<script>
+// Read-only metadata/geometry analysis. Never reads, draws or rewrites pixels.
+window.SmartSheetPreflight = (function () {
+  'use strict';
+  var labels = {ready:'Ready to export', review:'Review recommended', attention:'Needs attention'};
+  function analyze(input) {
+    var sheet=input.sheet, dpi=input.dpi, placements=sheet.placements || [], issues=[], blocking=false, groups=new Map(), area=0;
+    function issue(level, message, block) { if(!issues.some(function(i){return i.level===level&&i.message===message;}))issues.push({level:level,message:message}); if(block)blocking=true; }
+    function positive(n) { return Number.isFinite(n) && n>0; }
+    var validSheet=positive(sheet.widthPx)&&positive(sheet.heightPx)&&positive(dpi);
+    if(!validSheet)issue('attention','The sheet dimensions or output PPI are invalid.',true);
+    (input.processing || []).forEach(function(p){issue('attention',p,false);});
+    var validRects=[];
+    placements.forEach(function(p,index){
+      var inst=p.inst || {}, source=inst.canvas, meta=input.sourceInfo(inst), name=meta.name || 'Design '+(index+1);
+      var valid=Number.isFinite(p.x)&&Number.isFinite(p.y)&&positive(p.w)&&positive(p.h)&&positive(inst.baseW)&&positive(inst.baseH)&&Number.isFinite(inst.rotation);
+      if(!valid)issue('attention',name+': placement dimensions or transform are invalid.',true);
+      if(!source || !positive(source.width) || !positive(source.height) || meta.isPreview)issue('attention',name+': full-resolution active source is unavailable.',true);
+      if(valid) {
+        validRects.push(p);
+        if(validSheet&&(p.x < -1e-7 || p.y < -1e-7 || p.x+p.w > sheet.widthPx+1e-7 || p.y+p.h > sheet.heightPx+1e-7))
+          issue('attention',name+': placement extends outside the physical sheet; export clips this area.',false);
+        else if(validSheet && (p.x < (input.edgePx||0)-1e-7 || p.y < (input.edgePx||0)-1e-7 || p.x+p.w > sheet.widthPx-(input.edgePx||0)+1e-7 || p.y+p.h > sheet.heightPx-(input.edgePx||0)+1e-7))
+          issue('info',name+': inside the automatic edge allowance. Manual edge placement is allowed.',false);
+      }
+      var w=inst.baseW/dpi, h=inst.baseH/dpi;
+      var ppi=source&&positive(w)&&positive(h)?Math.min(source.width/w,source.height/h)/(meta.nativeScale||1):null;
+      var key=JSON.stringify([inst.designId,name,w,h,source&&source.width,source&&source.height,meta.nativeScale]);
+      if(!groups.has(key))groups.set(key,{name:name,copies:0,widthIn:w,heightIn:h,ppi:ppi,sourceWidth:source&&source.width,sourceHeight:source&&source.height,
+        available:!!source&&positive(source.width)&&positive(source.height)&&!meta.isPreview,alpha:meta.alpha || 'Transparency not analyzed',upscaled:(meta.nativeScale||1)>1});
+      groups.get(key).copies++;
+    });
+    var overlaps=0;
+    validRects.forEach(function(p,i){validRects.slice(i+1).forEach(function(q){
+      if(p.x<q.x+q.w-1e-7&&p.x+p.w>q.x+1e-7&&p.y<q.y+q.h-1e-7&&p.y+p.h>q.y+1e-7)overlaps++;
+    });});
+    if(overlaps)issue('attention',overlaps+' overlapping placement pair(s). Review the artwork positions.',false);
+    var details=Array.from(groups.values());
+    details.forEach(function(g){
+      if(Number.isFinite(g.ppi)&&g.ppi<300)issue('review',g.name+': '+format(g.ppi)+' effective PPI'+(g.ppi<200?' — low source quality; below 200 PPI.':' — below the recommended 300 PPI.'),false);
+    });
+    if(input.workspace && input.workspace.total>input.workspace.placed)issue('review',(input.workspace.total-input.workspace.placed)+' layout copies remain unplaced and will not be exported.',false);
+    // Union of clipped rectangles: overlapping/outside pieces never inflate usage.
+    var clipped=validRects.map(function(p){return {x:Math.max(0,p.x),y:Math.max(0,p.y),right:Math.min(sheet.widthPx,p.x+p.w),bottom:Math.min(sheet.heightPx,p.y+p.h)};}).filter(function(p){return p.right>p.x&&p.bottom>p.y;});
+    var xs=Array.from(new Set(clipped.reduce(function(a,p){return a.concat([p.x,p.right]);},[]))).sort(function(a,b){return a-b;});
+    for(var i=1;i<xs.length;i++) {
+      var spans=clipped.filter(function(p){return p.x<xs[i]&&p.right>xs[i-1];}).sort(function(a,b){return a.y-b.y;}),bottom=0,covered=0;
+      spans.forEach(function(p){covered+=Math.max(0,p.bottom-Math.max(bottom,p.y));bottom=Math.max(bottom,p.bottom);});
+      area+=(xs[i]-xs[i-1])*covered;
+    }
+    var state=issues.some(function(i){return i.level==='attention';})?'attention':issues.some(function(i){return i.level==='review';})?'review':'ready';
+    return {state:state,label:labels[state],blocking:blocking,machine:input.machine,widthIn:sheet.widthPx/dpi,heightIn:sheet.heightPx/dpi,dpi:dpi,
+      copies:placements.length,designs:new Set(placements.map(function(p){return p.inst&&p.inst.designId!=null?p.inst.designId:p.inst&&p.inst.canvas;})).size,
+      usage:validSheet?area/(sheet.widthPx*sheet.heightPx)*100:0,unusedIn2:validSheet?(sheet.widthPx*sheet.heightPx-area)/(dpi*dpi):0,
+      issues:issues,details:details,workspace:input.workspace};
+  }
+  function format(n) { return Number.isFinite(n)?String(Math.round(n*100)/100):'Unknown'; }
+  function element(tag,text,className) { var el=document.createElement(tag); if(text!=null)el.textContent=text;if(className)el.className=className;return el; }
+  function contents(report) {
+    var body=element('div'), facts=element('div',null,'preflight-facts');
+    [report.machine,format(report.widthIn)+' × '+format(report.heightIn)+' in',format(report.dpi)+' PPI',report.designs+' '+(report.designs===1?'design':'designs')+' · '+report.copies+' placed '+(report.copies===1?'copy':'copies'),
+      'Estimated usage: '+format(report.usage)+'% · '+format(report.unusedIn2)+' in² unused',
+      report.details.length?(report.details.every(function(g){return g.available;})?'Full-resolution sources available':'Source files need attention'):'No placed sources'].forEach(function(text){facts.appendChild(element('span',text));});
+    if(report.workspace)facts.appendChild(element('span','Workspace: '+report.workspace.placed+' / '+report.workspace.total+' layout copies placed'));
+    body.appendChild(facts);
+    if(report.issues.length) {
+      var list=element('ul',null,'preflight-issues');
+      report.issues.forEach(function(issue){list.appendChild(element('li',(issue.level==='info'?'Info: ':'')+issue.message));});body.appendChild(list);
+    } else body.appendChild(element('p','No issues found in the available source metadata and layout geometry.'));
+    body.appendChild(element('p','Final export uses full-resolution source files, not screen previews.','preflight-note'));
+    var details=element('details'), summary=element('summary','Source quality · per-design details'); details.appendChild(summary);
+    report.details.forEach(function(g){
+      var row=element('div',null,'preflight-design');row.appendChild(element('strong',g.name+' · '+g.copies+' '+(g.copies===1?'copy':'copies')));
+      row.appendChild(element('div',format(g.widthIn)+' × '+format(g.heightIn)+' in · '+format(g.ppi)+' effective PPI'+(g.upscaled?' (before smooth enhancement)':'')));
+      row.appendChild(element('div',g.available?'Full-resolution active source available · '+g.sourceWidth+' × '+g.sourceHeight+' px':'Full-resolution source unavailable'));
+      row.appendChild(element('div',g.alpha));details.appendChild(row);
+    });body.appendChild(details);return body;
+  }
+  function summary(getReport) {
+    var el=element('details',null,'print-readiness'), title=element('summary'), body=element('div');el.append(title,body);
+    el.refresh=function(){var r=getReport();el.dataset.state=r.state;title.textContent='Print readiness · '+r.label;if(el.open)body.replaceChildren(contents(r));};
+    el.refresh();el.addEventListener('toggle',function(){if(el.open)el.refresh();});
+    return el;
+  }
+  function review(report) {
+    return new Promise(function(resolve){
+      var prior=document.activeElement, dialog=element('dialog');dialog.id='printPreflight';dialog.setAttribute('aria-labelledby','printPreflightTitle');
+      var heading=element('h2','Print readiness'), title=element('p',report.label,'preflight-state');heading.id='printPreflightTitle';title.setAttribute('role','status');dialog.dataset.state=report.state;
+      dialog.append(heading,title,contents(report));
+      var actions=element('div',null,'preflight-actions'), cancel=element('button','Back to layout','secondary'), proceed=element('button','Continue export');
+      cancel.type=proceed.type='button';proceed.disabled=report.blocking;
+      if(report.blocking)dialog.appendChild(element('p','Restore the missing source or correct invalid export dimensions before exporting.','preflight-note'));
+      actions.append(cancel,proceed);dialog.appendChild(actions);document.body.appendChild(dialog);
+      function finish(value){dialog.close();dialog.remove();if(prior&&prior.isConnected)prior.focus({preventScroll:true});resolve(value);}
+      cancel.onclick=function(){finish(false);};proceed.onclick=function(){finish(true);};dialog.addEventListener('cancel',function(e){e.preventDefault();finish(false);});
+      dialog.showModal();cancel.focus();
+    });
+  }
+  return {analyze:analyze,summary:summary,review:review};
+}());
+</script>
 <script>
 (function(){
   var directOnlineAccess = window.top === window.self &&
@@ -1727,15 +1847,23 @@
     };
   }
 
+  var uploadPreflightStatus = {pending:0, failed:0};
   async function addDesignFiles(fileList) {
     errorMsg.style.display = 'none';
     var files = Array.from(fileList || []);
+    uploadPreflightStatus.pending += files.length;
+    uploadPreflightStatus.failed = 0;
+    refreshPrintReadiness();
     for (var i = 0; i < files.length; i++) {
       try {
         designs.push(await createDesignFromFile(files[i]));
       } catch (err) {
+        uploadPreflightStatus.failed++;
         errorMsg.textContent = t('fileReadError') + (err && err.message ? err.message : '');
         errorMsg.style.display = 'block';
+      } finally {
+        uploadPreflightStatus.pending--;
+        refreshPrintReadiness();
       }
     }
     renderAllDesigns();
@@ -2056,7 +2184,7 @@
 
   function sheetExportRecipe(sheet) {
     return [sheet.widthPx, sheet.heightPx, dpiGlobal, customerNameInput.value.trim(), sheet.headerHeightPx,
-      sheet.placements.map(function(p) { var i=p.inst; return [exportDelivery.sourceId(i.canvas),i.canvas.width,i.canvas.height,p.x,p.y,p.w,p.h,i.baseW,i.baseH,i.rotation,i.vibrance]; })];
+      sheet.placements.map(function(p) { var i=p.inst; return [i.canvas?exportDelivery.sourceId(i.canvas):null,i.canvas&&i.canvas.width,i.canvas&&i.canvas.height,p.x,p.y,p.w,p.h,i.baseW,i.baseH,i.rotation,i.vibrance]; })];
   }
   function drawSheetPreview(canvas, sheet) {
     previewBitmaps.add(canvas);
@@ -2523,6 +2651,8 @@
       pngBtn.textContent = t('downloadPngBtn');
       pngBtn.addEventListener('click', function(){ downloadPng(sheet, idx); });
       downloadRow.appendChild(pngBtn);
+      var readiness=SmartSheetPreflight.summary(function(){return printReadinessReport(sheet);});
+      block.appendChild(readiness);
       block.appendChild(downloadRow);
 
       var exportNote = document.createElement('p');
@@ -2533,7 +2663,7 @@
       var exportProgress = document.createElement('p');
       exportProgress.className = 'export-progress';
       block.appendChild(exportProgress);
-      sheet.exportUi = { tiffBtn: tiffBtn, pngBtn: pngBtn, progress: exportProgress };
+      sheet.exportUi = { tiffBtn: tiffBtn, pngBtn: pngBtn, progress: exportProgress, readiness:readiness };
 
       sheetsContainer.appendChild(block);
 
@@ -2543,6 +2673,24 @@
       attachMagnifier(stage, canvas);
     });
     if (window.smartSheetWorkspace) window.smartSheetWorkspace.refresh();
+  }
+
+  function refreshPrintReadiness() {
+    sheets.forEach(function(sheet){var summary=sheet.exportUi&&sheet.exportUi.readiness;if(summary&&summary.isConnected)summary.refresh();});
+  }
+  function printReadinessReport(sheet) {
+    var processing=[];
+    if(uploadPreflightStatus.pending)processing.push(uploadPreflightStatus.pending+' file(s) are still being prepared. They are not included in this export.');
+    if(uploadPreflightStatus.failed)processing.push(uploadPreflightStatus.failed+' file(s) failed to load during the latest upload. Only successfully placed artwork is included.');
+    if(layoutActionsPending>0||layoutDragActive)processing.push('A layout action is still in progress. This export uses the last completed placements.');
+    var placed=sheets.reduce(function(count,s){return count+s.placements.length;},0);
+    return SmartSheetPreflight.analyze({sheet:sheet,dpi:dpiGlobal,workspace:{placed:placed,total:Math.max(placed,instances.length)},
+      machine:getExportProfile('rgb').machine,edgePx:sheet.autoEdgeAllowancePx == null ? getAutoLayoutEdgeAllowanceIn()*dpiGlobal : sheet.autoEdgeAllowancePx,
+      processing:processing,sourceInfo:function(inst){
+        var d=designForInstance(inst);
+        return {name:d&&d.file&&d.file.name,nativeScale:d&&d.nativeScale||1,isPreview:!!inst.canvas&&previewBitmaps.has(inst.canvas),
+          alpha:d&&d.autoTrimApplied&&!d.wasEdited?'Transparent outer margins detected on upload; active alpha not analyzed.':'Transparency not analyzed'};
+      }});
   }
 
   var dtfCheckOverlay = document.getElementById('dtfCheckOverlay');
@@ -2621,6 +2769,14 @@
       if (ui.progress) ui.progress.textContent = 'Checking export access…';
       var ticket = await exportDelivery.prepare(kind, canvas, kind === 'png' ? ['png',idx] : [profile || getExportProfile('rgb'),idx]);
       if (!ticket) { if (ui.progress) ui.progress.textContent = 'Export blocked. Check Account & exports.'; return; }
+      // Main workspace only. Client Portal keeps its existing locked export flow.
+      if (!new URLSearchParams(location.search).has('clientJob')) {
+        if (ui.progress) ui.progress.textContent = 'Review print readiness…';
+        if (!(await SmartSheetPreflight.review(printReadinessReport(sheet)))) {
+          if (ui.progress) ui.progress.textContent = 'Export cancelled. Layout unchanged.';
+          return;
+        }
+      }
       if (kind === 'tiff' && !profile) {
         profile = await new Promise(function(resolve) { showDtfCheck(sheet, idx, resolve); });
         if (!profile) return;

@@ -11,6 +11,7 @@ assert.notEqual(html, source);
   const errors = [];
   try {
     const page = await browser.newPage(); page.on('pageerror', e => errors.push(e.message));
+    await require('./preflight-review-helper.cjs')(page);
     await page.route('http://localhost:4179/**', route => {
       const name = new URL(route.request().url()).pathname;
       if (name === '/builder.html') return route.fulfill({ body: html, contentType: 'text/html' });
