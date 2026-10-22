@@ -1608,9 +1608,10 @@ window.SmartSheetPreflight = (function () {
     editBackgroundBtn.addEventListener('click', function(){
       try {
         if (!window.openBackgroundEditor) throw new Error('Background Editor could not load. Refresh the page and try again.');
-        var pixels = design.trimmed.w * design.trimmed.h;
-        var historySteps = Math.min(16, Math.floor(48 * 1024 * 1024 / (pixels * 5)));
-        assertImageBudget(design.trimmed.w, design.trimmed.h, 36 + 5 * (historySteps + 1), 'Edit Background');
+        // This editor uses compact masks and a bounded display proxy; retain
+        // native side protection without the older RGBA-history memory estimate.
+        assertNativeImageDimensions(design.trimmed.w, design.trimmed.h, 'Edit Background');
+        if(design.trimmed.w!==design.trimmed.canvas.width||design.trimmed.h!==design.trimmed.canvas.height)throw new Error('Edit Background source dimensions are inconsistent. Reload the source before editing.');
         window.openBackgroundEditor({
           canvas: design.trimmed.canvas, original: design.originalCanvas, sourceRect: imageSourceRect(design),
           name: design.file.name,

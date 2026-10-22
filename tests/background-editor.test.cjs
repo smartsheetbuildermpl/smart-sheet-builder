@@ -87,7 +87,7 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
     assert.equal(await editor.locator('[data-action="tiny-specks"]').count(),1);
     await editor.locator('details.bg-advanced > summary').click();
     await act('Auto-remove edge background').click();
-    assert.match(await page.locator('.bg-status').innerText(),/Outside-connected background selection ready|No image changes from Automatic edge background cleanup/);
+    await idle();assert.match(await page.locator('.bg-status').innerText(),/Outside-connected background selection ready|No reliable, uniform outside background|No outside-connected background remains/);
     await act('Cancel').click();
     await open();await act('Magic Wand').click();await slider('#bg-tolerance',0);await clickPixel(10,10);
     await act('Erase selection').click();assert.equal((await rgba(10,10))[3],0);assert.equal(await selected(),0);
@@ -96,7 +96,7 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
     // Cancel selection edits, then Apply a pending selection directly (without Erase selection).
     await act('Reset editor changes').click();await act('Magic Wand').click();await clickPixel(10,10);
     await page.screenshot({path:path.join(artifacts,'desktop-selection.png')});
-    await act('Apply background removal').click();assert.equal(await editor.count(),0);
+    await act('Apply background removal').click();await editor.waitFor({state:'detached'});assert.equal(await editor.count(),0);
     const applied=await page.evaluate(()=>{
       const d=bgTest.designs[0],p=bgTest.sheets[0].placements[0],c=document.createElement('canvas');
       bgTest.drawSheetCanvas(c,{widthPx:p.w,heightPx:p.h,placements:[{...p,x:0,y:0}]});
@@ -142,11 +142,11 @@ const artifacts = fs.mkdtempSync(path.join(os.tmpdir(),'background-editor-'));
     page.once('dialog',dialog=>dialog.accept());await page.getByRole('button',{name:'Reset image',exact:true}).click();
     // An all-transparent result is rejected in the modal; Cancel still recovers the page.
     await open();await act('Magic Wand').click();await page.locator('#bg-contiguous').uncheck();await slider('#bg-tolerance',255);await clickPixel(30,30);
-    await act('Apply background removal').click();assert.equal(await editor.count(),1);assert.match(await page.locator('.bg-status').innerText(),/completely transparent/);await act('Cancel').click();
+    await act('Apply background removal').click();await idle();assert.equal(await editor.count(),1);assert.match(await page.locator('.bg-status').innerText(),/completely transparent/);await act('Cancel').click();
     assert.equal(await page.evaluate(()=>bgTest.designs[0].trimmed.canvas.toDataURL()),original.original);
     // Large-image failures leave the page and original intact.
     await page.evaluate(()=>{bgTest.designs[0].trimmed.w=8192;bgTest.designs[0].trimmed.h=8192;});
-    await page.getByRole('button',{name:'Edit Background',exact:true}).click();assert.equal(await editor.count(),0);assert.match(await page.locator('.design-item [role=status]').innerText(),/memory limit/);
+    await page.getByRole('button',{name:'Edit Background',exact:true}).click();assert.equal(await editor.count(),0);assert.match(await page.locator('.design-item [role=status]').innerText(),/source dimensions are inconsistent/);
     await page.evaluate(()=>{const d=bgTest.designs[0];d.trimmed.w=d.trimmed.canvas.width;d.trimmed.h=d.trimmed.canvas.height;});
     for(const width of [375,320]){
       await page.setViewportSize({width,height:812});await open();

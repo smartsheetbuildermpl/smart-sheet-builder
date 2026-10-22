@@ -8,7 +8,7 @@ const source=fs.readFileSync('public/background-editor.js','utf8');
 const before=execFileSync('git',['show','729540d:public/background-editor.js'],{encoding:'utf8'});
 const currentWand=source.slice(source.indexOf('    function coverage('),source.indexOf('    function applySelection('));
 const previousWand=before.slice(before.indexOf('    function coverage('),before.indexOf('    function eraseSelection('));
-assert.equal(currentWand.replace(/\r\n/g,'\n'),previousWand.replace(/\r\n/g,'\n'),'Magic Wand coverage, tolerance, connectivity and preview selection unchanged');
+assert.equal(currentWand.replace(/\r\n/g,'\n').replace('      autoSelection=false;\n',''),previousWand.replace(/\r\n/g,'\n'),'Magic Wand coverage, tolerance, connectivity and preview selection unchanged');
 // Inspect only in this browser-local test page. No production test hooks.
 const editor=source.replace('    function applySelection(target) {','    window.selectionTest={get mask(){return selection.slice()},get pixels(){return pixels.data.slice()}};\n    function applySelection(target) {');
 const builder=fs.readFileSync('public/builder.html','utf8').replace(/\}\)\(\);\s*<\/script>/,'window.selectionBuilder={get designs(){return designs},get sheets(){return sheets},get instances(){return instances},downloadPng,downloadTiff};exportDelivery=SmartSheetExportDelivery.create({gate:async()=>({allowed:true,authorization:"encoder-fixture-only"}),save:saveExportBlob});})();</script>');

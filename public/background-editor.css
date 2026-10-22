@@ -44,6 +44,11 @@ html.bg-editor-open,body.bg-editor-open { overflow:hidden !important; overscroll
 .bg-editor .bg-cursor { position:absolute; pointer-events:none; border:1px dashed #142c3c; outline:1px solid #ffffffaa; border-radius:50%; transform:translate(-50%,-50%); }
 .bg-editor .bg-stage[data-tool=pan] { cursor:grab; }
 .bg-editor .bg-stage[data-tool=pan]:active { cursor:grabbing; }
+.bg-editor .bg-stage[data-background=black] { background:#111; }
+.bg-editor .bg-stage[data-background=white] { background:#fff; }
+.bg-editor .bg-inspect { display:flex; flex-wrap:wrap; gap:8px; width:100%; }
+.bg-editor .bg-inspect label { display:flex; align-items:center; gap:5px; font-size:11px; color:#446171; }
+.bg-editor .bg-inspect select { padding:5px; max-width:140px; border:1px solid #c7d7df; border-radius:5px; background:#fff; color:#173e4b; }
 .bg-editor footer { position:relative; z-index:1; min-height:62px; border-top:1px solid #d8e2e8; box-shadow:0 -4px 12px #173e4b0d; }
 .bg-editor .bg-status { flex:1; min-width:170px; margin:0; font-size:12px; color:#446171; }
 .bg-editor .bg-status.error { color:#a32626; }
