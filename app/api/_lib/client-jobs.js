@@ -9,6 +9,7 @@ import { rpc, failure } from './user-management';
 import { seal, unseal } from './export-security';
 import { publicAppOrigin } from './public-app-url';
 import { defaultDesignSize, validDesignSize } from '../../lib/client-design-size';
+import { MAX_UPLOAD_BYTES } from '../../lib/client-portal-limits';
 
 export const BUCKET = 'client-job-sources';
 export const defaults = {
@@ -52,7 +53,7 @@ export function errorReply(e) {
   if (mapped) return reply({ code: mapped[1], message: mapped[2] }, mapped[0]);
   const legacyLookup = e.data?.code === 'P0002' && e.message === 'Upload link unavailable. Ask the shop for a new link.';
   if (legacyLookup || (e.data?.code === '42501' && /^permission denied/i.test(e.message)) || ['PGRST202', 'PGRST205', '42P01', '42883', '42703'].includes(e.data?.code)) {
-    console.error('[client-portal-schema]', e.data?.code, 'Apply supabase-client-jobs-v1.sql then supabase-client-upload-profiles-v1.sql in the same project as NEXT_PUBLIC_SUPABASE_URL; reload PostgREST schema.');
+    console.error('[client-portal-schema]', e.data?.code, 'Apply supabase-client-jobs-v1.sql, supabase-client-upload-profiles-v1.sql, then supabase-client-upload-limits-v1.sql in the same project as NEXT_PUBLIC_SUPABASE_URL; reload PostgREST schema.');
     return reply({ code: 'portal_setup_required', message: 'The upload portal needs a server database update. Please contact the shop; replacing the link will not fix this.' }, 503);
   }
   const code = e.data?.code,
@@ -220,14 +221,14 @@ export function publicJob(job) {
 }
 export function decodePng(bytes) {
   if (
-    bytes.length > 4194304 ||
+    bytes.length > MAX_UPLOAD_BYTES ||
     bytes.length < 33 ||
     !bytes
       .subarray(0, 8)
       .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
     bytes.toString('ascii', 12, 16) !== 'IHDR'
   )
-    throw failure('Upload a valid PNG up to 4 MiB.', 400);
+    throw failure('Upload a valid static PNG up to 32 MiB.', 400);
   const width = bytes.readUInt32BE(16),
     height = bytes.readUInt32BE(20);
   if (
@@ -332,11 +333,6 @@ export function layout(assets, config) {
   }
   if (!items.length || items.length > 500)
     throw failure('A submission must contain 1–500 pieces.', 400);
-  if (assets.reduce((sum, a) => sum + a.width * a.height, 0) > 33554432)
-    throw failure(
-      'The submission exceeds 32 megapixels of source artwork. Split it into smaller submissions; resolution will not be reduced.',
-      400
-    );
   const continuous = s.machine === 'dtf' && !s.autoExtend,
     sheets = [];
   let remaining = items;
@@ -365,16 +361,8 @@ export function layout(assets, config) {
     }));
     const used = Math.max(...placements.map((p) => p.y + p.h)) + gap + edge,
       height = continuous ? Math.max(length, used) : length;
-    if (
-      width * height > 128000000 ||
-      width > 32767 ||
-      height > 32767 ||
-      sheets.length >= 10
-    )
-      throw failure(
-        'This layout exceeds the portal’s full-resolution output budget (128 megapixels per sheet, 10 sheets). Ask the shop for a smaller sheet preset or submit fewer pieces.',
-        400
-      );
+    // Geometry only: output allocation limits belong to the selected owner
+    // export, not the bounded public preview. At most 500 pieces/sheets.
     sheets.push({
       widthPx: width,
       heightPx: height,
@@ -427,10 +415,25 @@ export async function removePaths(paths) {
   if (paths.length)
     await storage('DELETE', '', JSON.stringify({ prefixes: paths }));
 }
+export async function signedUpload(path) {
+  const c = getSupabaseConfig();
+  const response = await fetch(`${c.url}/storage/v1/object/upload/sign/${BUCKET}/${path}`, {
+    method: 'POST', headers: { apikey: c.serviceRoleKey, Authorization: `Bearer ${c.serviceRoleKey}`, 'Content-Type': 'application/json' },
+    body: '{}', cache: 'no-store', signal: AbortSignal.timeout(10000)
+  });
+  if (!response.ok) throw failure('Private upload storage is unavailable. Please retry.', 503);
+  const data = await response.json();
+  const url = new URL(`${c.url}/storage/v1${data.url}`);
+  if (url.origin !== new URL(c.url).origin || !url.searchParams.get('token')) throw failure('Private upload storage is unavailable.', 503);
+  return url.href; // Upload-only, one reserved path, no overwrite or read grant.
+}
 export async function cleanup() {
   const expired = await jobs('cleanup-list');
   let removed = 0;
   for (const job of expired) {
+    // Signed uploads last two hours. Draft access still expires immediately,
+    // but defer physical deletion until no late upload can recreate an orphan.
+    if (job.assets.some(a => a.directUpload && Date.now() < new Date(a.uploadCleanupAfter).getTime())) continue;
     await removePaths(job.assets.map((a) => a.path));
     await jobs('purged', { p_job: job.id });
     removed++;

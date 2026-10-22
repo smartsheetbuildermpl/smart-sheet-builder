@@ -4,6 +4,7 @@ import ClientJobPreview from '../../components/ClientJobPreview';
 import PrintLayoutLoading from '../../components/PrintLayoutLoading';
 import { machineLabel } from '../../lib/client-upload-profiles';
 import { defaultDesignSize, validDesignSize, MAX_REQUESTED_SIZE_IN } from '../../lib/client-design-size';
+import { MAX_UPLOAD_BYTES, PROXY_UPLOAD_BYTES, uploadProblem, outputProblem } from '../../lib/client-portal-limits';
 
 const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
 const activeUploadStates = new Set(['Preparing upload', 'Uploading', 'Processing']);
@@ -30,6 +31,7 @@ export default function ClientUpload({ params }) {
     [dirty, setDirty] = useState(true);
   const objects = useRef([]),
     actionController = useRef(null),
+    requests = useRef(new Set()),
     fileInput = useRef(null),
     uploadQueue = useRef(Promise.resolve()),
     sessionRef = useRef(session),
@@ -43,6 +45,7 @@ export default function ClientUpload({ params }) {
   useEffect(() => {
     let live = true;
     const allocated = objects.current;
+    const pendingRequests = requests.current;
     fetch(base, { cache: 'no-store' })
       .then(async (r) => {
         const d = await r.json().catch(() => ({ code: 'portal_configuration_error', message: 'The upload portal is not deployed or could not be reached. Please contact the shop.' }));
@@ -55,6 +58,7 @@ export default function ClientUpload({ params }) {
     return () => {
       live = false;
       actionController.current?.abort();
+      pendingRequests.forEach(controller => controller.abort());
       allocated.forEach(URL.revokeObjectURL);
     };
   }, [base]);
@@ -69,16 +73,26 @@ export default function ClientUpload({ params }) {
     }
   }, [uploads]);
 
+  async function transfer(url, options, consume = response => response) {
+    const controller = new AbortController(), parent = actionController.current?.signal;
+    const abort = () => controller.abort();
+    parent?.addEventListener('abort', abort, { once: true });
+    requests.current.add(controller);
+    const timer = setTimeout(abort, 90000);
+    try { return await consume(await fetch(url, { ...options, signal: controller.signal })); }
+    catch (e) { if (controller.signal.aborted) throw Error('The request took too long or was cancelled. Your designs are still here; please retry.'); throw e; }
+    finally { clearTimeout(timer); parent?.removeEventListener('abort', abort); requests.current.delete(controller); }
+  }
   async function call(action, body, token = sessionRef.current, headers = {}) {
-    const r = await fetch(`${base}?action=${action}`, {
+    return transfer(`${base}?action=${action}`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-client-submission': token, ...headers },
-      body: body instanceof File ? body : JSON.stringify(body || {}),
-      ...(actionController.current ? { signal: actionController.current.signal } : {})
+      body: body instanceof File ? body : JSON.stringify(body || {})
+    }, async r => {
+      const d = await r.json().catch(() => ({ code: 'portal_configuration_error', message: 'The upload portal could not be reached. Please retry later.' }));
+      if (!r.ok) throw Object.assign(Error(d.message), { code: d.code });
+      return d;
     });
-    const d = await r.json().catch(() => ({ code: 'portal_configuration_error', message: 'The upload portal could not be reached. Please retry later.' }));
-    if (!r.ok) throw Object.assign(Error(d.message), { code: d.code });
-    return d;
   }
 
   async function run(fn, kind = '') {
@@ -104,15 +118,16 @@ export default function ClientUpload({ params }) {
   }
 
   async function validatePng(file) {
-    if (!/\.png$/i.test(file.name) || file.size > 4194304) throw Error('Choose PNG files up to 4 MiB each.');
+    const invalid = reason => Error(uploadProblem(file.name, file.size, reason));
+    if (!/\.png$/i.test(file.name) || file.size > MAX_UPLOAD_BYTES) throw invalid('Choose a static PNG within the upload limit.');
     const sig = new Uint8Array(await file.slice(0, 33).arrayBuffer());
-    if (sig.length < 33 || !pngSignature.every((byte, index) => sig[index] === byte)) throw Error('This file is not a PNG.');
+    if (sig.length < 33 || !pngSignature.every((byte, index) => sig[index] === byte)) throw invalid('This file is not a PNG.');
     const header = new DataView(sig.buffer), w = header.getUint32(16), h = header.getUint32(20);
     if (!w || !h || w > 8192 || h > 8192 || w * h > 16777216 || sig[24] !== 8) {
-      throw Error('Use an 8-bit PNG up to 16 megapixels and 8192 pixels per side. The source will not be downscaled.');
+      throw invalid('Use an 8-bit PNG up to 16 megapixels and 8192 pixels per side. The source will not be downscaled.');
     }
-    const bitmap = await createImageBitmap(file);
-    bitmap.close();
+    // Full CRC/decode/alpha validation is authoritative on the server. Do not
+    // decode a full-size client bitmap merely to upload untouched file bytes.
   }
 
   async function uploadOne(id) {
@@ -130,11 +145,25 @@ export default function ClientUpload({ params }) {
         setJob(created.job);
       }
       patchUpload(id, { state: 'Uploading' });
-      const d = await call('upload', entry.file, token, {
-        'Content-Type': 'image/png',
-        'x-file-name': encodeURIComponent(entry.name)
-      });
-      const asset = d.job.assets.at(-1);
+      let d;
+      if (entry.file.size <= PROXY_UPLOAD_BYTES) {
+        d = await call('upload', entry.file, token, { 'Content-Type': 'image/png', 'x-file-name': encodeURIComponent(entry.name) });
+      } else {
+        const started = await call('upload-start', { id: entry.reservationId, name: entry.name, bytes: entry.file.size }, token);
+        if (started.job) d = started;
+        else {
+          const response = await transfer(started.url, { method: 'PUT', headers: { 'Content-Type': 'image/png', 'x-upsert': 'false' }, body: entry.file });
+          // A lost previous response may mean the immutable upload already
+          // exists. Finalize verifies its exact bytes before marking it ready.
+          patchUpload(id, { state: 'Processing' });
+          try { d = await call('upload-finish', { id: entry.reservationId }, token); }
+          catch (e) {
+            if (!response.ok) throw Error(uploadProblem(entry.name, entry.file.size, `Private storage rejected the transfer (HTTP ${response.status}). Retry; if it persists, ask the shop to check its upload-limit migration.`));
+            throw e;
+          }
+        }
+      }
+      const asset = entry.file.size > PROXY_UPLOAD_BYTES ? d.job.assets.find(a => a.id === entry.reservationId) : d.job.assets.at(-1);
       patchUpload(id, { state: 'Processing', assetId: asset.id });
       // The server has completed validation and private storage before it responds.
       await Promise.resolve();
@@ -159,7 +188,7 @@ export default function ClientUpload({ params }) {
     const entries = files.map((file) => {
       const id = `upload-${++uploadSerial.current}`, url = URL.createObjectURL(file);
       objects.current.push(url);
-      return [id, { id, name: file.name, file, url, state: 'Preparing upload', error: '' }];
+      return [id, { id, reservationId: crypto.randomUUID(), name: file.name, file, url, state: 'Preparing upload', error: '' }];
     });
     uploadsRef.current = { ...uploadsRef.current, ...Object.fromEntries(entries) };
     setUploads((current) => ({ ...current, ...Object.fromEntries(entries) }));
@@ -201,6 +230,7 @@ export default function ClientUpload({ params }) {
     return index;
   }, {});
   const pendingEntries = Object.values(uploads).filter((entry) => !entry.assetId);
+  const finalOutputWarning = job?.manifest?.sheets.map((_, i) => outputProblem(job.manifest, i, job.assets)).find(Boolean);
 
   return <main className="client-page">
     <header><strong>Smart Sheet Builder</strong><span>Client Upload Portal</span></header>
@@ -225,7 +255,7 @@ export default function ClientUpload({ params }) {
         <label>Project / Client Name *<input required placeholder="Example: Mikael – Company Uniform" value={reference} maxLength={120} disabled={busy} aria-invalid={invalidReference} aria-describedby={invalidReference ? 'client-project-error' : undefined} onChange={(e) => { setReference(e.target.value); setDirty(true); }} /></label>
         {invalidReference && <span id="client-project-error" className="client-project-error">Enter a Project / Client Name to preview and submit your gang sheet.</span>}
         <label className="client-drop">Upload designs<input ref={fileInput} type="file" accept="image/png,.png" multiple disabled={busy || !shop} onChange={(e) => { upload(Array.from(e.target.files)); e.target.value = ''; }} /></label>
-        <p className="client-muted">Static 8-bit PNG · up to 4 MiB each · 10 files / 32 MiB total · 500 pieces. Unconfirmed uploads expire after 2 hours.</p>
+        <p className="client-muted">Static 8-bit PNG · up to 32 MiB each · 10 files / 32 MiB total · 500 pieces. Unconfirmed uploads expire after 2 hours.</p>
         {[...(job?.assets || []).map((asset) => ({ asset, entry: uploadByAsset[asset.id] })), ...pendingEntries.map((entry) => ({ entry }))].map(({ asset, entry }) => {
           const id = asset?.id || entry.id, name = asset?.name || entry.name, state = entry?.state || 'Ready', ready = Boolean(asset) && state === 'Ready';
           const size = asset ? designSize(asset) : null;
@@ -247,6 +277,8 @@ export default function ClientUpload({ params }) {
         {(job?.assets.length > 0 || pendingEntries.length > 0) && <div className="client-upload-actions"><button type="button" className="secondary" disabled={busy} onClick={() => fileInput.current?.click()}>Add more design</button><button disabled={busy || previewBusy || hasUploadsInFlight || invalidSizes || invalidReference || !(job?.assets.length)} onClick={generatePreview}>{hasUploadsInFlight ? 'Waiting for uploads…' : operation === 'preview' || previewBusy ? 'Preparing print layout…' : 'Generate Print Preview'}</button></div>}
       </section>
       <section className="client-card client-preview-card" aria-busy={busy || previewBusy}>
+        {previewReady && !dirty && <p role="status">Preview generated · {job?.manifest?.sheets.length} sheet(s). Ready to review.</p>}
+        {job?.manifest && !dirty && finalOutputWarning && <p className="client-muted">Final output needs shop review: {finalOutputWarning}</p>}
         <h2>Print layout estimate</h2><p>This preview is read-only. The shop’s printing preset determines the layout.</p>{operation === 'preview' && <PrintLayoutLoading stage="Calculating print layout…" />}{busy && operation !== 'preview' && <div className="client-preview-skeleton" role="status">{operation === 'confirm' ? 'Sending your submission…' : 'Updating designs…'}</div>}
         {job?.manifest && !dirty && operation !== 'preview' ? <><p><strong>{job.quantity} pieces · {Number(job.meters).toFixed(3)} m</strong></p><ClientJobPreview manifest={job.manifest} assets={job.assets} urls={urls} onBusyChange={setPreviewBusy} onReadyChange={setPreviewReady} /><button disabled={busy || !previewReady || hasUploadsInFlight || invalidReference} onClick={() => { if (invalidReference) return; run(async () => { const d = await call('confirm', { revision: job.revision }); setJob(d.job); setMessage(d.message); }, 'confirm'); }}>{busy ? 'Submitting…' : 'Confirm & Send to Shop'}</button></> : operation !== 'preview' && <p>{hasUploadsInFlight ? 'Your files are being prepared. Preview will be available when they are ready.' : 'Generate a preview after uploading or changing sizes or quantities.'}</p>}
       </section>

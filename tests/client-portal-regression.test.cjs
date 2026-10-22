@@ -1,0 +1,169 @@
+const assert = require('node:assert/strict');
+const { execFileSync } = require('node:child_process');
+const { randomUUID, randomFillSync, createHash } = require('node:crypto');
+const { PNG } = require('pngjs');
+const { fixture, png, load } = require('./client-jobs.test.cjs');
+const { chromium } = require('playwright');
+const { NextRequest } = require('next/server');
+const fs = require('node:fs'), path = require('node:path'), os = require('node:os');
+const base = process.env.SMART_SHEET_TEST_URL || 'http://localhost:3114';
+const out = fs.mkdtempSync(path.join(os.tmpdir(), 'portal-regression-'));
+const sha = bytes => createHash('sha256').update(bytes).digest('hex');
+const baseline = file => execFileSync('git', ['show', `8000b97:${file}`], { encoding: 'utf8' });
+(async () => {
+  const f = await fixture(); let browser;
+  try {
+    const old = load('app/api/_lib/client-jobs.js', baseline('app/api/_lib/client-jobs.js'));
+    const config = { ...f.lib.defaults, shopName: 'Regression shop', email: 'test@example.com' };
+    const source = { id: randomUUID(), ready: true, width: 1500, height: 1500, crop: { x:0,y:0,w:1500,h:1500 }, qty:10 };
+    for (const [widthIn, heightIn] of [[5,5],[4,3]]) {
+      const assets = [{ ...source, widthIn, heightIn }];
+      const before = old.layout(assets, config), after = f.lib.layout(assets, config);
+      assert.deepEqual(after, before, 'ordinary baseline/current placements and physical dimensions identical');
+      assert.equal(after.sheets.length, 1); assert.equal(after.totalPieces, 10);
+      assert.equal(after.sheets[0].widthPx, 6900); assert.equal(after.sheets[0].heightPx, 11700);
+      console.log(`${widthIn} x ${heightIn} x 10: baseline and fixed = 1 sheet, 6900 x 11700, 80.73 MP`);
+    }
+    const long = { ...config, lengthIn:78 };
+    assert.throws(() => old.layout([{ ...source, widthIn:5,heightIn:5 }], long), /128 megapixels/);
+    const large = f.lib.layout([{ ...source, widthIn:5,heightIn:5 }], long);
+    assert.equal(large.sheets.length,1);
+    const { outputProblem } = load('app/lib/client-portal-limits.js');
+    assert.match(outputProblem(large,0), /Sheet 1 of 1.*6900 × 23400 px, 161.46 MP/);
+    const many = f.lib.layout([{ ...source, widthIn:20,heightIn:30,qty:11 }], config);
+    assert.equal(many.sheets.length,11);
+    assert(many.sheets.every((_,i)=>!outputProblem(many,i)), 'sequential exports do not multiply per-sheet budget by sheet count');
+    const sources = Array.from({length:3},(_,i)=>({...source,id:String(i),width:4000,height:4000,widthIn:1,heightIn:1,qty:1}));
+    assert.throws(()=>old.layout(sources,config),/32 megapixels/);
+    const sourceHeavy=f.lib.layout(sources,config);
+    assert.equal(sourceHeavy.totalPieces,3,'source allocation guard cannot reject bounded preview geometry');
+    assert.match(outputProblem(sourceHeavy,0,sources),/48.00 MP/);
+
+    const image = new PNG({width:2000,height:2000}); randomFillSync(image.data);
+    for(let i=3;i<image.data.length;i+=4) image.data[i]=255;
+    const original = PNG.sync.write(image);
+    assert(original.length > 4194304 && original.length < 33554432);
+    assert.throws(()=>old.decodePng(original), /4 MiB/);
+    const decoded = f.lib.decodePng(original);
+    assert.equal(decoded.width,2000); assert.equal(decoded.height,2000); assert.equal(decoded.sha256,sha(original));
+    const token = await f.portal(), draft = await f.call('create',token), id = randomUUID();
+    const start = () => f.call('upload-start',token,draft.submission,{id,name:'print-original.png',bytes:original.length});
+    const reservation = await start(); assert.equal(reservation.status,200,reservation.message);
+    assert.equal((await start()).url,reservation.url);
+    assert.equal((await f.one('select jsonb_array_length(assets) n from client_jobs where id=$1',[draft.job.id])).n,1);
+    assert.equal((await fetch(reservation.url,{method:'PUT',body:original})).status,200);
+    assert.equal((await fetch(reservation.url,{method:'PUT',body:png()})).status,409,'signed upload cannot overwrite original');
+    assert.equal((await fetch(reservation.url)).status,403,'upload capability cannot read');
+    const uploaded = await f.call('upload-finish',token,draft.submission,{id});
+    assert.equal(uploaded.status,200,uploaded.message);
+    assert.equal((await f.call('upload-finish',token,draft.submission,{id})).job.revision,uploaded.job.revision);
+    assert.deepEqual(f.objects.get(`${draft.job.id}/${id}.png`),original);
+    const other = await f.portal('unlimited');
+    assert.equal((await f.call('upload-finish',other,draft.submission,{id})).status,401);
+    await f.portal('basic',{lengthIn:78});
+    const preview = await f.call('preview',token,draft.submission,{quantities:[{id,qty:10,widthIn:5,heightIn:5}]});
+    assert.equal(preview.status,200,preview.message);
+    const locked = await f.call('confirm',token,draft.submission,{revision:preview.job.revision});
+    assert.equal(locked.status,200,locked.message);
+    assert.equal(new Date(locked.job.expires_at)-new Date(locked.job.confirmed_at),86400000);
+    assert.equal((await f.owner.GET(f.req(`/?id=${draft.job.id}`,undefined,'basic'))).status,200,'oversized job details/preview available');
+    const guarded = await f.owner.GET(f.req(`/?id=${draft.job.id}&exportSheet=0`,undefined,'basic'));
+    assert.equal(guarded.status,400); assert.match((await guarded.json()).message,/161.46 MP/);
+    const native = await f.files.GET(f.req('/',undefined,'basic'),{params:{id:draft.job.id,file:id}});
+    assert.equal(sha(Buffer.from(await native.arrayBuffer())),sha(original),'owner receives byte-identical full-resolution PNG');
+    await f.db.exec('set role authenticated');
+    await assert.rejects(()=>f.q("select ssb_client_upload_reserve(null,null,'{}')"));
+    await f.db.exec('reset role');
+
+    // A draft cannot be finalized after expiry. Physical cleanup waits out any
+    // upload-only capability, then deletes the exact reserved object path.
+    const abandoned = await f.call('create',token), abandonedId=randomUUID();
+    await f.call('upload-start',token,abandoned.submission,{id:abandonedId,name:'late.png',bytes:original.length});
+    await f.q("update client_jobs set expires_at=clock_timestamp()-interval '1 second' where id=$1",[abandoned.job.id]);
+    assert.equal((await f.call('upload-finish',token,abandoned.submission,{id:abandonedId})).status,410);
+    await f.lib.cleanup();
+    assert.equal((await f.one('select purged_at from client_jobs where id=$1',[abandoned.job.id])).purged_at,null);
+    await f.q("update client_jobs set assets=jsonb_set(assets,'{0,uploadCleanupAfter}',to_jsonb((clock_timestamp()-interval '1 second')::text)) where id=$1",[abandoned.job.id]);
+    await f.lib.cleanup();
+    assert((await f.one('select purged_at from client_jobs where id=$1',[abandoned.job.id])).purged_at);
+
+    await f.portal('basic');
+    browser = await chromium.launch({executablePath:process.env.CHROME_EXECUTABLE || 'C:/Program Files/Google/Chrome/Application/chrome.exe',headless:true});
+    const page = await browser.newPage({viewport:{width:1280,height:850}});
+    const errors=[];page.on('pageerror',e=>errors.push(e.message));
+    await page.addInitScript(()=>{
+      const bitmap=window.createImageBitmap; window.previewBitmaps=[];
+      window.createImageBitmap=async (...args)=>{ const b=await bitmap(...args); window.previewBitmaps.push([b.width,b.height]); return b; };
+    });
+    let failUpload=true,failPreview=true,stallPreview=false,previewStalled=false;
+    await page.route('**/storage/v1/object/upload/sign/**',async route=>{
+      if(failUpload){failUpload=false;return route.fulfill({status:503,body:'{}',headers:{'Access-Control-Allow-Origin':'*'}});}
+      const r=await fetch(route.request().url(),{method:route.request().method(),body:route.request().postDataBuffer()});
+      await route.fulfill({status:r.status,body:await r.text(),headers:{'Access-Control-Allow-Origin':'*'}});
+    });
+    await page.route('**/api/client-upload/**',async route=>{
+      const request=route.request(),url=new URL(request.url());
+      if(url.searchParams.get('action')==='preview'&&stallPreview){previewStalled=true;return;}
+      if(url.searchParams.get('action')==='preview'&&failPreview){failPreview=false;return route.fulfill({status:503,json:{message:'Temporary preview failure. Retry.'}});}
+      const req = new NextRequest(request.url(),{method:request.method(),headers:{...request.headers(),'x-test-ingress-ip':'203.0.113.81'},...(request.method()==='POST'?{body:request.postDataBuffer()}: {})});
+      const res=await f.pub[request.method()](req,{params:{token}});
+      await route.fulfill({status:res.status,headers:Object.fromEntries(res.headers),body:Buffer.from(await res.arrayBuffer())});
+    });
+    await page.goto(`${base}/client-upload/${token}`);
+    await page.getByLabel('Project / Client Name *',{exact:true}).fill('DTF regression order');
+    await page.locator('input[type=file]').setInputFiles({name:'print-original.png',mimeType:'image/png',buffer:original});
+    await page.getByRole('button',{name:'Retry',exact:true}).click();
+    await page.getByText('Ready',{exact:true}).waitFor();
+    await page.getByLabel('Width (in) for print-original.png',{exact:true}).fill('5');
+    await page.getByRole('spinbutton',{name:'Quantity for print-original.png',exact:true}).fill('10');
+    await page.getByRole('button',{name:'Generate Print Preview',exact:true}).click();
+    await page.getByRole('button',{name:'Retry preview',exact:true}).click();
+    await page.getByRole('button',{name:'Confirm & Send to Shop',exact:true}).waitFor();
+    await page.waitForFunction(()=>document.querySelector('.client-preview canvas') && !document.querySelector('.client-preview[hidden]'));
+    assert.equal(await page.getByLabel('Project / Client Name *',{exact:true}).inputValue(),'DTF regression order');
+    assert.equal(await page.getByLabel('Width (in) for print-original.png',{exact:true}).inputValue(),'5');
+    assert(await page.getByLabel('Lock aspect ratio for print-original.png',{exact:true}).isChecked());
+    assert.equal(await page.locator('.client-file').count(),1);
+    const dimensions=await page.locator('.client-preview canvas').evaluate(c=>[c.width,c.height]);
+    assert(dimensions[0]<=1000 && dimensions[1]<=1600);
+    assert((await page.evaluate(()=>window.previewBitmaps)).every(([w,h])=>Math.max(w,h)<=1600));
+    assert((await page.evaluate(()=>window.previewBitmaps)).some(([w,h])=>w===1600&&h===1600),'2000 px original becomes a display-only 1600 px proxy');
+    await page.screenshot({path:path.join(out,'dtf-5x5-qty10.png'),fullPage:true});
+    await page.getByLabel('Lock aspect ratio for print-original.png',{exact:true}).uncheck();
+    await page.getByLabel('Width (in) for print-original.png',{exact:true}).fill('4');
+    await page.getByLabel('Height (in) for print-original.png',{exact:true}).fill('3');
+    await page.getByRole('button',{name:'Generate Print Preview',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('.client-preview canvas') && !document.querySelector('.client-preview[hidden]'));
+    await page.screenshot({path:path.join(out,'dtf-4x3-qty10.png'),fullPage:true});
+    await page.clock.install(); stallPreview=true;
+    await page.getByRole('button',{name:'Generate Print Preview',exact:true}).click();
+    while(!previewStalled) await new Promise(resolve=>setTimeout(resolve,10));
+    await page.clock.fastForward(90001);
+    await page.getByText(/The request took too long or was cancelled/).waitFor();
+    assert.equal(await page.getByRole('spinbutton',{name:'Quantity for print-original.png',exact:true}).inputValue(),'10');
+    stallPreview=false;
+    await page.getByRole('button',{name:'Retry preview',exact:true}).click();
+    await page.waitForFunction(()=>document.querySelector('.client-preview canvas') && !document.querySelector('.client-preview[hidden]'));
+    await page.clock.resume();
+    await page.getByLabel('Width (in) for print-original.png',{exact:true}).fill('20');
+    await page.getByLabel('Height (in) for print-original.png',{exact:true}).fill('30');
+    await page.getByRole('spinbutton',{name:'Quantity for print-original.png',exact:true}).fill('11');
+    await page.getByRole('button',{name:'Generate Print Preview',exact:true}).click();
+    await page.getByLabel('Preview sheet',{exact:true}).selectOption('10');
+    await page.waitForFunction(()=>document.querySelector('.client-preview canvas') && !document.querySelector('.client-preview[hidden]'));
+    assert.equal(await page.locator('.client-preview canvas').count(),1,'only the selected preview sheet is allocated');
+    await page.getByText('Sheet 11 · 23.00 × 39.00 in',{exact:true}).waitFor();
+    await page.getByLabel('Width (in) for print-original.png',{exact:true}).fill('4');
+    await page.getByLabel('Height (in) for print-original.png',{exact:true}).fill('3');
+    await page.getByRole('spinbutton',{name:'Quantity for print-original.png',exact:true}).fill('10');
+    await f.portal('basic',{lengthIn:78});
+    await page.getByRole('button',{name:'Generate Print Preview',exact:true}).click();
+    await page.getByText(/Final output needs shop review:/).waitFor();
+    await page.waitForFunction(()=>document.querySelector('.client-preview canvas') && !document.querySelector('.client-preview[hidden]'));
+    await page.screenshot({path:path.join(out,'oversized-final-preview-works.png'),fullPage:true});
+    await page.getByRole('button',{name:'Confirm & Send to Shop',exact:true}).click();
+    await page.getByRole('heading',{name:'Gang sheet submitted',exact:true}).waitFor();
+    assert.deepEqual(errors,[]);
+    console.log(`PASS: baseline comparison, ${original.length} byte PNG, immutable private originals, isolated retries, actual budgets/counts, oversized preview, expiry/RLS, browser proxies ${dimensions}, submission. Screenshots: ${out}`);
+  } finally { await browser?.close(); await f.close(); }
+})().catch(e=>{console.error(e);process.exitCode=1;});

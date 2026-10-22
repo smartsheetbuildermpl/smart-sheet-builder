@@ -291,7 +291,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     setExporting(true);
     exportJob.current = detail.id;
     try {
-      await request(`?id=${detail.id}`);
+      await request(`?id=${detail.id}&exportSheet=${sheet}`);
       await frame.current.contentWindow.smartSheetClientJob.exportJob(
         detail,
         blobs.current,

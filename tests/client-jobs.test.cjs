@@ -6,10 +6,10 @@ const assert = require('node:assert/strict'),
   { randomUUID } = require('node:crypto');
 const { fixture: baseFixture } = require('./export-enforcement.test.cjs');
 const cache = new Map();
-function load(file) {
+function load(file, source) {
   file = path.resolve(file);
-  if (cache.has(file)) return cache.get(file);
-  const src = fs.readFileSync(file, 'utf8'),
+  if (!source && cache.has(file)) return cache.get(file);
+  const src = source || fs.readFileSync(file, 'utf8'),
     names = [
       ...src.matchAll(/export (?:async )?(?:function|const) (\w+)/g)
     ].map((m) => m[1]);
@@ -29,7 +29,7 @@ function load(file) {
         : load(path.resolve(path.dirname(file), s + '.js'))
       : require(s)
   );
-  cache.set(file, result);
+  if (!source) cache.set(file, result);
   return result;
 }
 function png(w = 60, h = 40) {
@@ -54,6 +54,8 @@ async function fixture() {
   await f.db.exec(sql);
   const profilesSql = fs.readFileSync('supabase-client-upload-profiles-v1.sql','utf8');
   await f.db.exec(profilesSql); await f.db.exec(profilesSql);
+  const uploadSql = fs.readFileSync('supabase-client-upload-limits-v1.sql', 'utf8');
+  await f.db.exec(uploadSql); await f.db.exec(uploadSql);
   Object.assign(process.env, {
     RESEND_API_KEY: 'test-provider',
     CLIENT_JOBS_EMAIL_FROM: 'print@test.example',
@@ -71,6 +73,13 @@ async function fixture() {
       if (mailFails) return new Response('{}', { status: 503 });
       emails.push(JSON.parse(options.body));
       return new Response('{"id":"test-mail"}');
+    }
+    if (u.pathname.startsWith('/storage/v1/object/upload/sign/client-job-sources/')) {
+      const name = u.pathname.slice('/storage/v1/object/upload/sign/client-job-sources/'.length);
+      if (options.method === 'POST') return Response.json({ url: `/object/upload/sign/client-job-sources/${name}?token=test-upload-only` });
+      if (options.method !== 'PUT' || u.searchParams.get('token') !== 'test-upload-only') return new Response('{}', { status: 403 });
+      if (objects.has(name)) return new Response('{}', { status: 409 });
+      objects.set(name, Buffer.from(options.body)); return new Response('{}');
     }
     if (u.pathname.startsWith('/storage/v1/object/client-job-sources')) {
       if (storageFails) return new Response('{}', { status: 503 });
@@ -490,7 +499,7 @@ async function run() {
     await f.close();
   }
 }
-module.exports = { fixture, png };
+module.exports = { fixture, png, load };
 if (require.main === module)
   run().catch((e) => {
     console.error(e);

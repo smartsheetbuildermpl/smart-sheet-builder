@@ -228,9 +228,9 @@ const jwt = (user) =>
     await customer.page.getByRole('button',{name:'Retry preview',exact:true}).click();
     await customer.page.locator('.client-preview canvas').waitFor();
     await customer.page.evaluate(() => {
-      const decode = Image.prototype.decode;
+      const decode = window.createImageBitmap;
       window.failArtworkDecode = true;
-      Image.prototype.decode = function() { if (window.failArtworkDecode) return Promise.reject(Error('Temporary artwork decode failure')); return decode.call(this); };
+      window.createImageBitmap = function(...args) { if (window.failArtworkDecode) return Promise.reject(Error('Temporary artwork decode failure')); return decode(...args); };
     });
     await customer.page.getByRole('button',{name:'Generate Print Preview',exact:true}).click();
     await customer.page.getByRole('button',{name:'Retry preview',exact:true}).waitFor();

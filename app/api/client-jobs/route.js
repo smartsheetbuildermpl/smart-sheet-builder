@@ -1,5 +1,6 @@
 import { accountActor, failure } from '../_lib/user-management';
 import { uploadProfileTemplates } from '../../lib/client-upload-profiles';
+import { outputProblem } from '../../lib/client-portal-limits';
 import {
   jobs,
   reply,
@@ -24,6 +25,11 @@ export async function GET(request) {
       const job = await jobs('get', { p_owner: user.id, p_job: uuid(id) });
       if (!job.confirmed_at)
         throw failure('The customer has not confirmed this job yet.', 409);
+      const selected = new URL(request.url).searchParams.get('exportSheet');
+      if (selected !== null) {
+        const issue = outputProblem(job.manifest, /^\d+$/.test(selected) ? Number(selected) : -1, job.assets);
+        if (issue) throw failure(issue, 400);
+      }
       return reply({
         job: { ...job, notification: undefined, link_hash: undefined }
       });
