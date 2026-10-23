@@ -5,7 +5,7 @@ const { chromium } = require('playwright');
 const { PNG } = require('pngjs');
 
 const hook = `
-window.dual={get designs(){return designs},get sheets(){return sheets},previewSource,updateDesignCanvas,refreshLayoutAfterImageEdit,
+window.dual={get designs(){return designs},get sheets(){return sheets},previewSource,preparePreview:interactivePreview.prepare,updateDesignCanvas,refreshLayoutAfterImageEdit,
   drawSheetCanvas,downloadPng,downloadTiff,getExportProfile,history:layoutHistory,
   signature:function(){return JSON.stringify(sheets.map(s=>s.placements.map(p=>[p.x,p.y,p.w,p.h,p.inst.rotation])))},
   seed:function(count){
@@ -89,9 +89,10 @@ function tags(bytes) {
     assert((await doc.evaluate(()=>usedSources.filter(s=>s[0]===4500&&s[1]===4500).length))>=3,'each format reads native source');
     assert.equal(await doc.evaluate(()=>usedSources.some(s=>s[0]===1600)),false,'no export sampled the proxy');
     // Active-source replacement regenerates its proxy; restoring original reuses its identity.
-    assert(await doc.evaluate(()=>{
+    assert(await doc.evaluate(async()=>{
       const d=dual.designs[0],old=d.trimmed.canvas,c=document.createElement('canvas');c.width=3200;c.height=2400;
       dual.updateDesignCanvas(d,{canvas:c,w:3200,h:2400});dual.refreshLayoutAfterImageEdit(d);
+      await dual.preparePreview(c,1600);
       const valid=dual.inspect().proxy.join() === '1600,1200' && dual.sheets[0].placements[0].inst.canvas===c;
       dual.updateDesignCanvas(d,{canvas:d.originalCanvas,w:4500,h:4500});dual.refreshLayoutAfterImageEdit(d);
       return valid&&d.trimmed.canvas===old&&dual.inspect().active.join()==='4500,4500';

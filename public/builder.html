@@ -361,6 +361,7 @@
           <button id="duplicateSelectedPieces" class="secondary" style="width:auto" disabled title="Duplicate selected pieces into available space">Duplicate selected</button>
           <button id="removeSelectedPieces" class="secondary" style="width:auto" disabled>Remove selected pieces</button>
           <span id="layoutHistoryStatus" role="status" aria-live="polite" style="font-size:12px"></span>
+          <span id="previewPreparation" role="status" aria-live="polite" style="font-size:12px;color:#526477" hidden>Preparing preview…</span>
         </div>
         <p id="manualModeNote" data-i18n="manualModeNote"></p>
         <p id="overlapWarning" data-i18n="overlapWarning"></p>
@@ -893,8 +894,8 @@ window.SmartSheetPreflight = (function () {
   var lowResInstanceIds = new Set();
   var manualMode = false;
   var sheetWidthPxGlobal = 0, dpiGlobal = 300;
-  var previewSources = new WeakMap();
   var previewBitmaps = new WeakSet();
+  var interactivePreview=createInteractivePreview();
   var currentMeasureUnit = 'in';
   var layoutDragActive = false;
   var layoutActionsPending = 0;
@@ -927,7 +928,7 @@ window.SmartSheetPreflight = (function () {
   // Geometry-only session history: source canvases are shared, never cloned.
   // Restoring geometry resolves the latest active image of each design, so
   // layout Undo cannot accidentally undo a background/optimization edit.
-  var editorDetails=new Set(),editorDetailFrame=0;
+  var editorDetails=new Set(),editorDetailFrame=0,editorViewId=0;
   var layoutHistory = (function(){
     var past=[],future=[],depth=0,restoring=false;
     function capture(){
@@ -1368,25 +1369,174 @@ window.SmartSheetPreflight = (function () {
     }
   }
 
+  // The worker sees bounded display tiles / alpha strips, never an encoded
+  // original or an export source. No second full-resolution decode is retained.
+  function composePreviewRegion(job,tiles,makeCanvas,existing){
+    var out=existing||makeCanvas(job.width,job.height),ctx=out.getContext('2d');ctx.setTransform(1,0,0,1,0,0);
+    ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+    ctx.scale(job.width/job.region.w,job.height/job.region.h);ctx.translate(-job.region.x,-job.region.y);
+    if(job.header){var h=job.header;ctx.save();ctx.fillStyle='#111111';ctx.textAlign='center';ctx.textBaseline='middle';ctx.font=h.font;ctx.fillText(h.name,h.x,h.y,h.maxWidth);ctx.restore();}
+    job.layers.forEach(function(layer){
+      var part=layer.part,lod=layer.lod;
+      var buffer=makeCanvas(Math.max(1,Math.round(part.w*lod)),Math.max(1,Math.round(part.h*lod))),b=buffer.getContext('2d');
+      b.imageSmoothingEnabled=true;b.imageSmoothingQuality='high';
+      layer.keys.forEach(function(key){var t=tiles.get(key);if(!t)throw new Error('Preview tile was evicted before composition.');
+        b.drawImage(t.bitmap,(t.x-t.crop.x)*t.bitmap.width/t.crop.w,(t.y-t.crop.y)*t.bitmap.height/t.crop.h,t.w*t.bitmap.width/t.crop.w,t.h*t.bitmap.height/t.crop.h,
+          (t.x-part.x)*lod,(t.y-part.y)*lod,t.w*lod,t.h*lod);
+      });
+      var p=layer.placement;ctx.save();ctx.translate(p.x+p.w/2,p.y+p.h/2);ctx.rotate(p.rotation*Math.PI/180);
+      if(p.vibrance)ctx.filter='saturate('+Math.max(0,100+p.vibrance)+'%)';
+      ctx.scale(p.baseW/layer.sourceW,p.baseH/layer.sourceH);
+      ctx.drawImage(buffer,part.x-layer.sourceW/2,part.y-layer.sourceH/2,part.w,part.h);ctx.restore();buffer.width=buffer.height=0;
+    });
+    return out;
+  }
+  function previewWorkerMain(){
+    var tiles=new Map(),bytes=0,limit=64*1024*1024,frame=null;
+    self.onmessage=function(event){var m=event.data;
+      try{
+        if(m.op==='discard'){if(frame)frame.width=frame.height=0;frame=null;self.postMessage({id:m.id,value:{}});return;}
+        if(m.op==='bounds'){
+          var data=new Uint8ClampedArray(m.buffer),left=m.width,right=-1,top=m.rows,bottom=-1;
+          for(var y=0;y<m.rows;y++){var offset=y*m.width*4+3;for(var x=0;x<m.width;x++,offset+=4){if(!data[offset])continue;if(x<left)left=x;if(x>right)right=x;if(y<top)top=y;if(y>bottom)bottom=y;}}
+          self.postMessage({id:m.id,value:{left:left,right:right,top:top,bottom:bottom}});return;
+        }
+        m.added.forEach(function(t){
+          // Materialize the crop in a bounded texture: a browser ImageBitmap
+          // subset must not keep an entire native backing store in the cache.
+          var bounded=new OffscreenCanvas(t.bitmap.width,t.bitmap.height);bounded.getContext('2d').drawImage(t.bitmap,0,0);t.bitmap.close();t.bitmap=bounded.transferToImageBitmap();bounded.width=bounded.height=0;
+          var old=tiles.get(t.key);if(old){bytes-=old.bitmap.width*old.bitmap.height*4;old.bitmap.close();}tiles.set(t.key,t);bytes+=t.bitmap.width*t.bitmap.height*4;
+        });
+        m.job.layers.forEach(function(l){l.keys.forEach(function(k){var t=tiles.get(k);if(t){tiles.delete(k);tiles.set(k,t);}});});
+        if(m.begin&&frame){frame.width=frame.height=0;frame=null;}
+        frame=composePreviewRegion(m.job,tiles,function(w,h){return new OffscreenCanvas(w,h);},frame);
+        var bitmap=m.end?frame.transferToImageBitmap():null;if(m.end){frame.width=frame.height=0;frame=null;}
+        var evicted=[];while(bytes>limit&&tiles.size){var key=tiles.keys().next().value,t=tiles.get(key);bytes-=t.bitmap.width*t.bitmap.height*4;t.bitmap.close();tiles.delete(key);evicted.push(key);}
+        self.postMessage({id:m.id,value:{bitmap:bitmap,evicted:evicted,bytes:bytes}},bitmap?[bitmap]:[]);
+      }catch(error){self.postMessage({id:m.id,error:error.message});}
+    };
+  }
+  function createInteractivePreview(){
+    var sources=new WeakMap(),nextSource=0,worker=null,rpcs=new Map(),nextRpc=0;
+    var resident=new Set(),fallbackTiles=new Map(),proxyLRU=new Map(),frames=new Map(),queue=new Map(),running=false;
+    var proxyQueue=[],proxyRunning=0,placeholder=document.createElement('canvas');placeholder.width=128;placeholder.height=64;previewBitmaps.add(placeholder);
+    placeholder.getContext('2d').fillStyle='#526477';placeholder.getContext('2d').font='12px Arial';placeholder.getContext('2d').fillText('Preparing preview…',4,34);
+    var proxyBytes=0,frameBytes=0,busy=0,metrics={bitmapPreparations:0,cacheHits:0,cancelled:0,workerFrames:0,tileBytes:0,tileEvictions:0,frameEvictions:0,proxyEvictions:0};
+    var proxyLimit=48*1024*1024,frameLimit=24*1024*1024;
+    function status(delta){busy+=delta;var el=document.getElementById('previewPreparation');if(el)el.hidden=busy<=0;}
+    function task(){return new Promise(function(resolve){setTimeout(resolve,0);});}
+    function pumpProxies(){while(proxyRunning<2&&proxyQueue.length){proxyRunning++;proxyQueue.shift()();}}
+    function scheduleProxy(work){return new Promise(function(resolve,reject){proxyQueue.push(async function(){try{resolve(await work());}catch(error){reject(error);}finally{proxyRunning--;pumpProxies();}});pumpProxies();});}
+    try{if(typeof Worker!=='undefined'&&typeof OffscreenCanvas!=='undefined'&&typeof createImageBitmap==='function'){
+      var url=URL.createObjectURL(new Blob(['var composePreviewRegion='+composePreviewRegion.toString()+';('+previewWorkerMain.toString()+')();'],{type:'text/javascript'}));worker=new Worker(url);URL.revokeObjectURL(url);
+      worker.onmessage=function(e){var reply=e.data,p=rpcs.get(reply.id);if(!p){if(reply.value&&reply.value.bitmap)reply.value.bitmap.close();return;}rpcs.delete(reply.id);if(reply.error)p.reject(new Error(reply.error));else p.resolve(reply.value);};
+      worker.onerror=function(){if(worker)worker.terminate();worker=null;resident.clear();rpcs.forEach(function(p){p.reject(new Error('Preview worker stopped.'));});rpcs.clear();};
+    }}catch(error){worker=null;}
+    function rpc(op,payload,transfer){return new Promise(function(resolve,reject){var id=++nextRpc;rpcs.set(id,{resolve:resolve,reject:reject});worker.postMessage(Object.assign({id:id,op:op},payload),transfer||[]);});}
+    function record(source){var r=sources.get(source);if(!r){r={id:++nextSource,levels:new Map()};sources.set(source,r);}return r;}
+    function touch(map,key,value){map.delete(key);map.set(key,value);}
+    function trimProxies(protectedEntry){while(proxyBytes>proxyLimit&&proxyLRU.size>1){var entry=Array.from(proxyLRU.values()).find(function(e){return e.ready&&e!==protectedEntry;});if(!entry)break;proxyLRU.delete(entry.key);entry.owner.levels.delete(entry.longest);proxyBytes-=entry.bytes;entry.canvas.width=entry.canvas.height=0;metrics.proxyEvictions++;}}
+    function proxyEntry(source,requested){
+      requested=requested==null?1600:requested;
+      var r=record(source),level=requested<=256?256:requested<=512?512:requested<=1024?1024:requested<=1600?1600:requested<=2400?2400:3072;
+      var longest=Math.min(Math.max(source.width,source.height),level);
+      var found=Array.from(r.levels.values()).filter(function(e){return e.longest>=longest;}).sort(function(a,b){return a.longest-b.longest;})[0];
+      if(found){touch(proxyLRU,found.key,found);return found;}
+      var scale=Math.min(1,longest/Math.max(source.width,source.height)),c=document.createElement('canvas');c.width=Math.max(1,Math.round(source.width*scale));c.height=Math.max(1,Math.round(source.height*scale));previewBitmaps.add(c);
+      var entry={key:r.id+':'+longest,owner:r,longest:longest,canvas:c,bytes:c.width*c.height*4,ready:false};r.levels.set(longest,entry);touch(proxyLRU,entry.key,entry);
+      // Queued levels allocate no pixel backing until a preparation slot opens.
+      // A single shared placeholder covers cache misses without a blank sheet.
+      status(1);entry.promise=scheduleProxy(async function(){var ctx=c.getContext('2d');try{
+        if(typeof createImageBitmap==='function'){var bitmap=await createImageBitmap(source,{resizeWidth:c.width,resizeHeight:c.height,resizeQuality:'high'});ctx.clearRect(0,0,c.width,c.height);ctx.drawImage(bitmap,0,0);bitmap.close();}
+        else{await task();ctx.clearRect(0,0,c.width,c.height);ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(source,0,0,c.width,c.height);}
+        entry.ready=true;entry.counted=true;proxyBytes+=entry.bytes;trimProxies(entry);if(typeof previewSourceReady==='function')previewSourceReady(source);return c;
+      }catch(error){r.levels.delete(longest);proxyLRU.delete(entry.key);if(entry.counted)proxyBytes-=entry.bytes;throw error;}finally{status(-1);}});
+      entry.promise.catch(function(error){console.error('[preview proxy]',error);});return entry;
+    }
+    function get(source,requested){proxyEntry(source,requested);var r=record(source),ready=Array.from(r.levels.values()).filter(function(e){return e.ready;}).sort(function(a,b){return b.longest-a.longest;})[0];if(ready){touch(proxyLRU,ready.key,ready);return ready.canvas;}return placeholder;}
+    async function bitmapTile(source,tile){
+      var c=tile.crop,w=Math.max(1,Math.round(c.w*tile.lod)),h=Math.max(1,Math.round(c.h*tile.lod));metrics.bitmapPreparations++;
+      if(typeof createImageBitmap==='function')return createImageBitmap(source,c.x,c.y,c.w,c.h,{resizeWidth:w,resizeHeight:h,resizeQuality:'high'});
+      await task();var canvas=document.createElement('canvas');canvas.width=w;canvas.height=h;var ctx=canvas.getContext('2d');ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';ctx.drawImage(source,c.x,c.y,c.w,c.h,0,0,w,h);return canvas;
+    }
+    function describe(sheet,region,width,height,header){
+      var layers=[],needed=new Map();
+      sheet.placements.forEach(function(p){
+        if(p.x+p.w<region.x||p.y+p.h<region.y||p.x>region.x+region.w||p.y>region.y+region.h)return;
+        var i=p.inst,source=i.canvas,r=record(source),angle=i.rotation*Math.PI/180,cos=Math.cos(angle),sin=Math.sin(angle),xs=[],ys=[];
+        [[region.x,region.y],[region.x+region.w,region.y],[region.x,region.y+region.h],[region.x+region.w,region.y+region.h]].forEach(function(c){var x=c[0]-p.x-p.w/2,y=c[1]-p.y-p.h/2;xs.push(((x*cos+y*sin)/i.baseW+.5)*source.width);ys.push(((-x*sin+y*cos)/i.baseH+.5)*source.height);});
+        var ratio=Math.max(width/region.w*i.baseW/source.width,height/region.h*i.baseH/source.height),lod=Math.min(1,Math.pow(2,Math.ceil(Math.log2(Math.max(1/64,ratio))))),span=512/lod;
+        var x=Math.max(0,Math.floor(Math.min.apply(null,xs)*lod-2)/lod),y=Math.max(0,Math.floor(Math.min.apply(null,ys)*lod-2)/lod);
+        var right=Math.min(source.width,Math.ceil(Math.max.apply(null,xs)*lod+2)/lod),bottom=Math.min(source.height,Math.ceil(Math.max.apply(null,ys)*lod+2)/lod);if(right<=x||bottom<=y)return;
+        var keys=[];
+        for(var ty=Math.floor(y/span)*span;ty<bottom;ty+=span)for(var tx=Math.floor(x/span)*span;tx<right;tx+=span){
+          var key=r.id+':'+lod+':'+tx+':'+ty,cx=Math.max(0,tx-2/lod),cy=Math.max(0,ty-2/lod),cw=Math.min(source.width,tx+span+2/lod)-cx,ch=Math.min(source.height,ty+span+2/lod)-cy;
+          keys.push(key);if(!needed.has(key))needed.set(key,{key:key,source:source,x:tx,y:ty,w:Math.min(span,source.width-tx),h:Math.min(span,source.height-ty),crop:{x:cx,y:cy,w:cw,h:ch},lod:lod});
+        }
+        layers.push({source:r.id,sourceW:source.width,sourceH:source.height,lod:lod,part:{x:x,y:y,w:right-x,h:bottom-y},keys:keys,placement:{x:p.x,y:p.y,w:p.w,h:p.h,baseW:i.baseW,baseH:i.baseH,rotation:i.rotation,vibrance:i.vibrance||0}});
+      });
+      var job={region:region,width:width,height:height,header:header,layers:layers},key=JSON.stringify(job);return {job:job,key:key,needed:needed};
+    }
+    function close(bitmap){if(bitmap.close)bitmap.close();else bitmap.width=bitmap.height=0;}
+    async function pump(){if(running)return;running=true;
+      try{while(queue.size){var channel=queue.keys().next().value,item=queue.get(channel);queue.delete(channel);var added=[];
+        try{
+          if(item.signal.aborted){metrics.cancelled++;item.resolve(null);continue;}
+          var request=item.request,cached=frames.get(request.key);if(cached){metrics.cacheHits++;touch(frames,request.key,cached);item.resolve(cached.bitmap);continue;}
+          var value,canvas=null,layers=request.job.layers;
+          // Stream one visible placement at a time. A crowded sheet cannot
+          // accumulate all native tiles before the LRU has a chance to evict.
+          for(var li=0;li<Math.max(1,layers.length);li++){
+            added=[];var layer=layers[li],keys=layer?layer.keys:[];
+            for(var key of keys){
+              if(item.signal.aborted)break;if(resident.has(key)){metrics.cacheHits++;continue;}
+              var tile=request.needed.get(key),bitmap=await bitmapTile(tile.source,tile),copy=Object.assign({},tile,{bitmap:bitmap});delete copy.source;added.push(copy);
+            }
+            if(item.signal.aborted){added.forEach(function(t){close(t.bitmap);});if(worker)await rpc('discard',{});if(canvas)close(canvas);break;}
+            var part=Object.assign({},request.job,{layers:layer?[layer]:[],header:li===0?request.job.header:null}),last=li===Math.max(1,layers.length)-1;
+            if(worker){value=await rpc('render',{job:part,added:added,begin:li===0,end:last},added.map(function(t){return t.bitmap;}));added.forEach(function(t){resident.add(t.key);});value.evicted.forEach(function(k){resident.delete(k);});metrics.tileEvictions+=value.evicted.length;metrics.tileBytes=value.bytes;if(last)metrics.workerFrames++;}
+            else{
+              await task();added.forEach(function(t){var bounded=document.createElement('canvas');bounded.width=t.bitmap.width;bounded.height=t.bitmap.height;bounded.getContext('2d').drawImage(t.bitmap,0,0);close(t.bitmap);t.bitmap=bounded;fallbackTiles.set(t.key,t);resident.add(t.key);metrics.tileBytes+=t.bitmap.width*t.bitmap.height*4;});
+              canvas=composePreviewRegion(part,fallbackTiles,function(w,h){var c=document.createElement('canvas');c.width=w;c.height=h;return c;},canvas);value={bitmap:canvas};
+              while(metrics.tileBytes>64*1024*1024&&fallbackTiles.size){var k=fallbackTiles.keys().next().value,t=fallbackTiles.get(k);metrics.tileBytes-=t.bitmap.width*t.bitmap.height*4;close(t.bitmap);fallbackTiles.delete(k);resident.delete(k);metrics.tileEvictions++;}
+            }
+          }
+          if(item.signal.aborted){if(value&&value.bitmap)close(value.bitmap);metrics.cancelled++;item.resolve(null);continue;}
+          previewBitmaps.add(value.bitmap);var bytes=value.bitmap.width*value.bitmap.height*4;frames.set(request.key,{bitmap:value.bitmap,bytes:bytes});frameBytes+=bytes;
+          while(frameBytes>frameLimit&&frames.size>1){var k=frames.keys().next().value,f=frames.get(k);frameBytes-=f.bytes;close(f.bitmap);frames.delete(k);metrics.frameEvictions++;}
+          if(item.signal.aborted){metrics.cancelled++;item.resolve(null);}else item.resolve(value.bitmap);
+        }catch(error){added.forEach(function(t){try{close(t.bitmap);}catch(ignore){}});item.reject(error);}
+      }}finally{running=false;}
+    }
+    function render(channel,request,signal){return new Promise(function(resolve,reject){
+      function cleanup(){signal.removeEventListener('abort',aborted);}
+      var item={request:request,signal:signal,resolve:function(value){cleanup();resolve(value);},reject:function(error){cleanup();reject(error);}};
+      function aborted(){if(queue.get(channel)===item){queue.delete(channel);metrics.cancelled++;item.resolve(null);}}
+      var previous=queue.get(channel);if(previous){metrics.cancelled++;previous.resolve(null);}queue.set(channel,item);signal.addEventListener('abort',aborted,{once:true});
+      if(signal.aborted)aborted();pump();
+    });}
+    async function trim(source,padding){
+      var w=source.width,h=source.height,ctx=source.getContext('2d',{willReadFrequently:true}),left=w,right=-1,top=h,bottom=-1;
+      for(var y=0;y<h;y+=128){var rows=Math.min(128,h-y),image=ctx.getImageData(0,y,w,rows),bounds;
+        if(worker)bounds=await rpc('bounds',{buffer:image.data.buffer,width:w,rows:rows},[image.data.buffer]);
+        else{await task();bounds={left:w,right:-1,top:rows,bottom:-1};for(var yy=0;yy<rows;yy++){var offset=yy*w*4+3;for(var x=0;x<w;x++,offset+=4){if(!image.data[offset])continue;if(x<bounds.left)bounds.left=x;if(x>bounds.right)bounds.right=x;if(yy<bounds.top)bounds.top=yy;if(yy>bounds.bottom)bounds.bottom=yy;}}}
+        if(bounds.right>=0){left=Math.min(left,bounds.left);right=Math.max(right,bounds.right);top=Math.min(top,y+bounds.top);bottom=Math.max(bottom,y+bounds.bottom);}
+      }
+      if(right<left||bottom<top)throw new Error(t('emptyTransparentImage'));
+      left=Math.max(0,left-padding);top=Math.max(0,top-padding);right=Math.min(w-1,right+padding);bottom=Math.min(h-1,bottom+padding);
+      var rect={x:left,y:top,w:right-left+1,h:bottom-top+1};if(rect.w===w&&rect.h===h)return {canvas:source,w:w,h:h,cropRect:rect,noChange:true};
+      var out=document.createElement('canvas');out.width=rect.w;out.height=rect.h;var output=out.getContext('2d');
+      for(var row=0;row<rect.h;row+=128){output.putImageData(ctx.getImageData(left,top+row,rect.w,Math.min(128,rect.h-row)),0,row);await task();}
+      return {canvas:out,w:rect.w,h:rect.h,cropRect:rect,noChange:false};
+    }
+    return {get:get,prepare:function(source,n){return proxyEntry(source,n).promise;},describe:describe,render:render,trim:trim,status:status,
+      stats:function(){return Object.assign({},metrics,{proxyBytes:proxyBytes,frameBytes:frameBytes,queued:queue.size,running:running,proxyRunning:proxyRunning,proxyQueued:proxyQueue.length,worker:!!worker});}};
+  }
+
   // Derived display assets never replace inst.canvas or design.trimmed.canvas.
   // Native canvas identity is the active-source version; edits create a new one.
   function previewSource(source, requested) {
-    requested = requested || 1600;
-    var longest = Math.min(Math.max(source.width, source.height), Math.max(1600, requested));
-    var cached = previewSources.get(source);
-    if (cached && Math.max(cached.width,cached.height) >= longest - 1) return cached;
-    var proxy = document.createElement('canvas');
-    // Always sample the native active source, never an older/smaller proxy.
-    var scale = Math.min(1, longest / Math.max(source.width, source.height));
-    proxy.width = Math.max(1, Math.round(source.width * scale));
-    proxy.height = Math.max(1, Math.round(source.height * scale));
-    var ctx = proxy.getContext('2d');
-    ctx.imageSmoothingEnabled = true;
-    ctx.imageSmoothingQuality = 'high';
-    ctx.drawImage(source, 0, 0, proxy.width, proxy.height);
-    previewBitmaps.add(proxy);
-    previewSources.set(source, proxy);
-    return proxy;
+    return interactivePreview.get(source,requested);
   }
   function requireFullResolution(source) {
     if (previewBitmaps.has(source)) throw new Error('Screen previews cannot be used for print export.');
@@ -1394,7 +1544,7 @@ window.SmartSheetPreflight = (function () {
   }
 
   function thumbnailUrl(canvas) {
-    canvas = previewSource(canvas);
+    canvas = previewSource(canvas,160);
     var c = document.createElement('canvas');
     var scale = Math.min(1, 160 / Math.max(canvas.width, canvas.height));
     c.width = Math.max(1, Math.round(canvas.width * scale));
@@ -1861,11 +2011,21 @@ window.SmartSheetPreflight = (function () {
   }
 
   async function createDesignFromFile(file) {
+    interactivePreview.status(1);
+    try {
     var sourceUrl = URL.createObjectURL(file);
     var img;
-    try { img = await loadImage(sourceUrl); } finally { URL.revokeObjectURL(sourceUrl); }
+    try {
+      img = await loadImage(sourceUrl);
+      // Finish the browser's deferred PNG decode before the native canvas copy.
+      // This is the same image resource, not a second decoded source or proxy.
+      if(img.decode)await img.decode();
+    } finally { URL.revokeObjectURL(sourceUrl); }
     var original = decodeImageCanvas(img);
-    var trimmed = trimTransparentMargins(original.canvas, 1);
+    // Same alpha > 0 bounds and exact RGBA strip copy as the synchronous tool
+    // path; only large main-builder uploads distribute the work across tasks.
+    var trimmed = original.w*original.h>4*1024*1024 ? await interactivePreview.trim(original.canvas,1) : trimTransparentMargins(original.canvas,1);
+    await interactivePreview.prepare(trimmed.canvas,1600);
     var dpi = parseFloat(dpiInput.value) || 300;
     return {
       id: designIdCounter++, file: file, trimmed: trimmed, aspect: trimmed.w / trimmed.h,
@@ -1874,6 +2034,7 @@ window.SmartSheetPreflight = (function () {
       trimRect: trimmed.cropRect, autoTrimApplied: !trimmed.noChange,
       bgTolerance: 42, wasEdited: false
     };
+    } finally { interactivePreview.status(-1); }
   }
 
   var uploadPreflightStatus = {pending:0, failed:0};
@@ -2251,10 +2412,19 @@ window.SmartSheetPreflight = (function () {
   }
   function drawSheetPreview(canvas, sheet) {
     previewBitmaps.add(canvas);
+    var recipe=JSON.stringify(sheetExportRecipe(sheet));
+    editorDetails.forEach(function(view){if(view.canvas===canvas&&view.recipe!==recipe){
+      clearTimeout(view.timer);if(view.controller)view.controller.abort();view.key=null;view.recipe=recipe;view.tile.hidden=true;canvas.style.visibility='';canvas.style.clipPath='';
+    }});
     var scale=Math.min(1,2400/Math.max(sheet.widthPx,sheet.heightPx));
     sheet.placements.forEach(function(p){previewSource(p.inst.canvas,Math.ceil(Math.max(p.inst.baseW,p.inst.baseH)*scale));});
     paintSheet(canvas, sheet, true);
     queueEditorDetails();
+  }
+  function previewSourceReady(source){
+    designs.forEach(function(d){if(d.trimmed.canvas===source){d.previewUrl=thumbnailUrl(source);var img=designList.querySelector('[data-design-id="'+d.id+'"] .design-thumb img');if(img)img.src=d.previewUrl;}});
+    if(layoutDragActive)return;
+    requestAnimationFrame(function(){editorDetails.forEach(function(view){if(view.canvas.isConnected&&view.sheet.placements.some(function(p){return p.inst.canvas===source;}))drawSheetPreview(view.canvas,view.sheet);});});
   }
   function drawSheetCanvas(canvas, sheet) {
     requireFullResolution(canvas);
@@ -2286,8 +2456,8 @@ window.SmartSheetPreflight = (function () {
       ctx.translate(p.x + p.w / 2, p.y + p.h / 2);
       ctx.rotate(inst.rotation * Math.PI / 180);
       // Export samples native pixels once. Only screen rendering uses proxies.
-      ctx.filter = 'saturate(' + Math.max(0, 100 + (inst.vibrance || 0)) + '%)';
-      ctx.drawImage(screenOnly ? previewSource(inst.canvas) : requireFullResolution(inst.canvas), -inst.baseW / 2, -inst.baseH / 2, inst.baseW, inst.baseH);
+      ctx.filter = screenOnly && !inst.vibrance ? 'none' : 'saturate(' + Math.max(0, 100 + (inst.vibrance || 0)) + '%)';
+      ctx.drawImage(screenOnly ? previewSource(inst.canvas,Math.ceil(Math.max(inst.baseW,inst.baseH)*scale)) : requireFullResolution(inst.canvas), -inst.baseW / 2, -inst.baseH / 2, inst.baseW, inst.baseH);
       ctx.restore();
     });
   }
@@ -2299,7 +2469,7 @@ window.SmartSheetPreflight = (function () {
     editorDetailFrame=requestAnimationFrame(function(){editorDetailFrame=0;editorDetails.forEach(refreshEditorDetail);});
   }
   function releaseEditorDetails(){
-    editorDetails.forEach(function(view){view.observer.disconnect();view.canvas.style.visibility='';view.tile.width=view.tile.height=0;});editorDetails.clear();
+    editorDetails.forEach(function(view){clearTimeout(view.timer);if(view.controller)view.controller.abort();if(view.stage.releasePreviewLens)view.stage.releasePreviewLens();view.observer.disconnect();view.canvas.style.visibility='';view.canvas.style.clipPath='';view.tile.width=view.tile.height=0;});editorDetails.clear();
   }
   function applyEditorZoom(){
     if(document.body.classList.contains('in-library-workspace'))return;
@@ -2313,37 +2483,43 @@ window.SmartSheetPreflight = (function () {
   function registerEditorDetail(stage,canvas,sheet){
     var tile=document.createElement('canvas');tile.className='sheet-preview-detail';tile.setAttribute('aria-hidden','true');tile.hidden=true;previewBitmaps.add(tile);
     stage.insertBefore(tile,stage.querySelector('.rotate-overlay'));
-    var view={stage:stage,canvas:canvas,sheet:sheet,tile:tile,observer:new ResizeObserver(queueEditorDetails)};
+    var view={stage:stage,canvas:canvas,sheet:sheet,tile:tile,recipe:JSON.stringify(sheetExportRecipe(sheet)),channel:'sheet-'+(++editorViewId),observer:new ResizeObserver(queueEditorDetails)};
     view.observer.observe(canvas);editorDetails.add(view);
-  }
-  function paintEditorRegion(canvas,sheet,region,width,height){
-    canvas.width=width;canvas.height=height;var ctx=canvas.getContext('2d');
-    ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
-    ctx.scale(width/region.w,height/region.h);ctx.translate(-region.x,-region.y);
-    var name=customerNameInput.value.trim();
-    if(name&&!sheet.hideCustomerName){ctx.fillStyle='#111111';ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='600 '+Math.max(14,Math.round(dpiGlobal*14/72))+'px Arial, sans-serif';ctx.fillText(name,sheet.widthPx/2,(sheet.headerHeightPx||Math.round(.36*dpiGlobal))/2,sheet.widthPx-Math.round(.4*dpiGlobal));}
-    sheet.placements.forEach(function(p){
-      if(p.x+p.w<region.x||p.y+p.h<region.y||p.x>region.x+region.w||p.y>region.y+region.h)return;
-      var inst=p.inst;ctx.save();ctx.translate(p.x+p.w/2,p.y+p.h/2);ctx.rotate(inst.rotation*Math.PI/180);
-      ctx.filter='saturate('+Math.max(0,100+(inst.vibrance||0))+'%)';
-      ctx.drawImage(requireFullResolution(inst.canvas),-inst.baseW/2,-inst.baseH/2,inst.baseW,inst.baseH);ctx.restore();
-    });
   }
   function refreshEditorDetail(view){
     var c=view.canvas,tile=view.tile,rect=c.getBoundingClientRect(),dpr=window.devicePixelRatio||1;
-    if(!c.isConnected||layoutDragActive||!rect.width||rect.width*dpr<=c.width+1&&rect.height*dpr<=c.height+1){tile.hidden=true;c.style.visibility='';return;}
+    function cancel(){clearTimeout(view.timer);if(view.controller)view.controller.abort();view.key=null;}
+    if(!c.isConnected||layoutDragActive||!rect.width||rect.width*dpr<=c.width+1&&rect.height*dpr<=c.height+1){cancel();tile.hidden=true;c.style.visibility='';c.style.clipPath='';return;}
     var left=Math.max(0,rect.left),top=Math.max(0,rect.top),right=Math.min(innerWidth,rect.right),bottom=Math.min(innerHeight,rect.bottom);
     for(var node=c.parentElement;node;node=node.parentElement){var style=getComputedStyle(node);if(/auto|scroll|hidden|clip/.test(style.overflowX+' '+style.overflowY)){var bounds=node.getBoundingClientRect();left=Math.max(left,bounds.left);top=Math.max(top,bounds.top);right=Math.min(right,bounds.right);bottom=Math.min(bottom,bounds.bottom);}}
-    if(right<=left||bottom<=top){tile.hidden=true;c.style.visibility='';return;}
+    if(right<=left||bottom<=top){cancel();tile.hidden=true;c.style.visibility='';c.style.clipPath='';return;}
     var x=Math.max(0,Math.floor(left-rect.left)),y=Math.max(0,Math.floor(top-rect.top));
     var w=Math.min(rect.width-x,Math.ceil(right-rect.left)-x),h=Math.min(rect.height-y,Math.ceil(bottom-rect.top)-y);
     var resolution=Math.min(dpr,2048/w,2048/h),sheet=view.sheet;
     var region={x:x/rect.width*sheet.widthPx,y:y/rect.height*sheet.heightPx,w:w/rect.width*sheet.widthPx,h:h/rect.height*sheet.heightPx};
-    paintEditorRegion(tile,sheet,region,Math.max(1,Math.round(w*resolution)),Math.max(1,Math.round(h*resolution)));
-    tile.style.left=x+'px';tile.style.top=y+'px';tile.style.width=w+'px';tile.style.height=h+'px';
-    tile.dataset.sheetRegion=JSON.stringify(region);tile.hidden=false;
-    // Avoid compositing semi-transparent artwork twice over the low-res sheet.
-    c.style.visibility='hidden';
+    var request=previewRegionRequest(sheet,region,Math.max(1,Math.round(w*resolution)),Math.max(1,Math.round(h*resolution)));
+    if(view.key===request.key)return;cancel();view.key=request.key;
+    var controller=new AbortController();view.controller=controller;
+    // Scroll/zoom immediately move cached pixels through CSS. Prepare only the
+    // latest settled viewport; superseded jobs never paint over a newer view.
+    view.timer=setTimeout(async function(){
+      interactivePreview.status(1);tile.setAttribute('aria-busy','true');
+      try{var bitmap=await interactivePreview.render(view.channel,request,controller.signal);
+        if(!bitmap||controller.signal.aborted||!c.isConnected)return;
+        tile.width=bitmap.width;tile.height=bitmap.height;tile.getContext('2d').drawImage(bitmap,0,0);
+        var l=region.x/sheet.widthPx*100,t=region.y/sheet.heightPx*100,r=(region.x+region.w)/sheet.widthPx*100,b=(region.y+region.h)/sheet.heightPx*100;
+        tile.style.left=l+'%';tile.style.top=t+'%';tile.style.width=(r-l)+'%';tile.style.height=(b-t)+'%';
+        tile.dataset.sheetRegion=JSON.stringify(region);tile.dataset.previewKey=request.key;tile.hidden=false;
+        // Keep the low-detail sheet visible outside the sharp tile without
+        // double-compositing semi-transparent pixels inside its rectangle.
+        c.style.visibility='';c.style.clipPath='polygon(evenodd,0 0,100% 0,100% 100%,0 100%,0 0,'+l+'% '+t+'%,'+l+'% '+b+'%,'+r+'% '+b+'%,'+r+'% '+t+'%,'+l+'% '+t+'%)';
+      }catch(error){if(!controller.signal.aborted){view.key=null;console.error('[sheet preview]',error);}}
+      finally{tile.setAttribute('aria-busy','false');interactivePreview.status(-1);}
+    },80);
+  }
+  function previewRegionRequest(sheet,region,width,height){
+    var name=customerNameInput.value.trim(),header=name&&!sheet.hideCustomerName?{name:name,font:'600 '+Math.max(14,Math.round(dpiGlobal*14/72))+'px Arial, sans-serif',x:sheet.widthPx/2,y:(sheet.headerHeightPx||Math.round(.36*dpiGlobal))/2,maxWidth:sheet.widthPx-Math.round(.4*dpiGlobal)}:null;
+    return interactivePreview.describe(sheet,region,width,height,header);
   }
   document.getElementById('editorZoom').addEventListener('change',applyEditorZoom);
   addEventListener('scroll',queueEditorDetails,true);
@@ -4014,7 +4190,10 @@ window.SmartSheetPreflight = (function () {
   document.getElementById('zoomSelect').addEventListener('change', function(){ zoomLevel = parseInt(this.value) || 3; });
 
   function attachMagnifier(stageEl, canvasEl, sheet) {
-    function moveLens(e) {
+    var latest=null,raf=0,timer=0,controller=null;
+    function moveLens(e){latest=e;if(!raf)raf=requestAnimationFrame(paintLens);}
+    function paintLens() {
+      raf=0;var e=latest;
       if(layoutDragActive){hideLens();return;}
       var rect = canvasEl.getBoundingClientRect();
       var relX = (e.clientX - rect.left) / rect.width;
@@ -4024,14 +4203,28 @@ window.SmartSheetPreflight = (function () {
       var srcSize = lensSize / zoomLevel * sheet.widthPx / rect.width;
       var sx = Math.max(0, Math.min(sheet.widthPx - srcSize, relX * sheet.widthPx - srcSize / 2));
       var sy = Math.max(0, Math.min(sheet.heightPx - srcSize, relY * sheet.heightPx - srcSize / 2));
-      previewBitmaps.add(lensCanvas);
-      paintEditorRegion(lensCanvas,sheet,{x:sx,y:sy,w:srcSize,h:srcSize},lensSize,lensSize);
+      clearTimeout(timer);if(controller)controller.abort();controller=new AbortController();var current=controller;
+      var region={x:sx,y:sy,w:srcSize,h:srcSize};
+      // Follow the pointer using only the already-cached screen raster. Native
+      // tiles sharpen the latest lens position after a short idle interval.
+      previewBitmaps.add(lensCanvas);lensCanvas.width=lensCanvas.height=lensSize;
+      lensCtx.imageSmoothingEnabled=true;lensCtx.imageSmoothingQuality='high';
+      lensCtx.drawImage(canvasEl,sx/sheet.widthPx*canvasEl.width,sy/sheet.heightPx*canvasEl.height,srcSize/sheet.widthPx*canvasEl.width,srcSize/sheet.heightPx*canvasEl.height,0,0,lensSize,lensSize);
       lensCtx.setTransform(1,0,0,1,0,0);lensCtx.globalCompositeOperation='destination-over';drawChecker(lensCtx,lensSize,lensSize,10);lensCtx.globalCompositeOperation='source-over';
       lens.style.display = 'block';
       lens.style.left = (e.clientX + 20) + 'px';
       lens.style.top = (e.clientY - 180) + 'px';
+      lens.setAttribute('aria-busy','true');
+      timer=setTimeout(async function(){try{
+        var bitmap=await interactivePreview.render('magnifier',previewRegionRequest(sheet,region,lensSize,lensSize),current.signal);
+        if(!bitmap||current.signal.aborted||layoutDragActive||!canvasEl.isConnected)return;
+        lensCanvas.width=lensCanvas.height=lensSize;lensCtx.drawImage(bitmap,0,0);
+        lensCtx.globalCompositeOperation='destination-over';drawChecker(lensCtx,lensSize,lensSize,10);lensCtx.globalCompositeOperation='source-over';lens.dataset.previewRegion=JSON.stringify(region);
+      }catch(error){if(!current.signal.aborted)console.error('[magnifier preview]',error);}
+      finally{if(!current.signal.aborted)lens.setAttribute('aria-busy','false');}},50);
     }
-    function hideLens(){ lens.style.display = 'none'; }
+    function hideLens(){clearTimeout(timer);cancelAnimationFrame(raf);raf=0;if(controller)controller.abort();if(lens){lens.style.display='none';lens.setAttribute('aria-busy','false');}}
+    stageEl.releasePreviewLens=hideLens;
     stageEl.addEventListener('pointermove', moveLens);
     stageEl.addEventListener('pointerdown', moveLens);
     stageEl.addEventListener('pointerleave', hideLens);
