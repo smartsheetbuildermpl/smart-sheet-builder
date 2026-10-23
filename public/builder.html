@@ -92,6 +92,7 @@
     background-color: #f4f3ee; line-height: 0;
   }
   .sheet-canvas { width: 100%; height: auto; display: block; cursor: crosshair; touch-action: none; }
+  .sheet-preview-detail { position:absolute; pointer-events:none; }
   .rotate-overlay { position: absolute; inset: 0; cursor: crosshair; touch-action: none; }
   .sheet-ruler-frame { position: relative; width: 100%; padding-top: 34px; padding-right: 42px; }
   .ruler-guide { position: absolute; pointer-events: none; z-index: 3; color: #333; font-size: 10px; line-height: 1; font-weight: 600; }
@@ -353,6 +354,7 @@
             <option value="4">4x</option>
             <option value="5">5x</option>
           </select>
+          <label style="margin:0">Sheet view <select id="editorZoom" aria-label="Sheet preview zoom" style="width:auto;padding:6px 10px"><option value="fit">Fit</option><option value="1">100%</option><option value="2">200%</option><option value="4">400%</option></select></label>
           <button id="rotateSelectedBtn" class="secondary" style="width:auto; padding:8px 12px; font-size:13px;" data-i18n="rotateSelected" disabled>I-rotate selected</button>
           <button id="layoutUndo" class="secondary layout-history-button" style="width:auto" disabled aria-label="Undo layout" title="Undo layout (Ctrl/Cmd+Z)"><span aria-hidden="true">↶</span> Undo</button>
           <button id="layoutRedo" class="secondary layout-history-button" style="width:auto" disabled aria-label="Redo layout" title="Redo layout (Ctrl/Cmd+Shift+Z or Ctrl+Y)"><span aria-hidden="true">↷</span> Redo</button>
@@ -925,10 +927,11 @@ window.SmartSheetPreflight = (function () {
   // Geometry-only session history: source canvases are shared, never cloned.
   // Restoring geometry resolves the latest active image of each design, so
   // layout Undo cannot accidentally undo a background/optimization edit.
+  var editorDetails=new Set(),editorDetailFrame=0;
   var layoutHistory = (function(){
     var past=[],future=[],depth=0,restoring=false;
     function capture(){
-      return {designs:designs.map(function(d){return {ref:d,qty:d.qty,widthIn:d.widthIn,heightIn:d.heightIn,addSizeKey:d.addSizeKey,addBatch:d.addBatch};}),
+      return {designs:designs.map(function(d){return {ref:d,qty:d.qty,widthIn:d.widthIn,heightIn:d.heightIn,addSizeKey:d.addSizeKey,addBatch:d.addBatch,autoFit:d.autoFit};}),
         instances:instances.map(function(i){var copy=Object.assign({},i);delete copy.canvas;if(i.placedSizeIn)copy.placedSizeIn=i.placedSizeIn.slice();return copy;}),
         sheets:sheets.map(function(s){var copy=Object.assign({},s,{placements:s.placements.map(function(p){return Object.assign({},p,{inst:p.inst.id});})});delete copy.renderCanvas;delete copy.exportUi;return copy;}),
         selected:Array.from(selectedInstanceIds),manual:manualMode,dpi:dpiGlobal,width:sheetWidthPxGlobal,
@@ -942,7 +945,9 @@ window.SmartSheetPreflight = (function () {
       undo.disabled=!past.length||busy();redo.disabled=!future.length||busy();
       undo.title='Undo layout'+(past.length?': '+past[past.length-1].label:'')+' (Ctrl/Cmd+Z)';
       redo.title='Redo layout'+(future.length?': '+future[future.length-1].label:'')+' (Ctrl/Cmd+Shift+Z or Ctrl+Y)';
+      document.querySelectorAll('[data-undo-fit]').forEach(function(button){button.disabled=busy()||!canUndoFit(Number(button.dataset.undoFit));});
     }
+    function canUndoFit(id){var d=designs.find(function(d){return d.id===id;}),entry=past[past.length-1];return !!(d&&d.autoFit&&entry&&entry.state.designs.some(function(old){return old.ref.id===id&&old.autoFit!==d.autoFit;}));}
     function trim(){
       while(past.length+future.length>32||past.concat(future).reduce(function(n,e){return n+e.state.instances.length;},0)>100000){if(past.length)past.shift();else future.shift();}
       // Deleted design references may retain originals for undo; cap those too.
@@ -963,7 +968,7 @@ window.SmartSheetPreflight = (function () {
       try {
         // Uploads are outside layout history, even when their pieces were placed.
         var extras=designs.filter(function(d){return !s.designs.some(function(old){return old.ref.id===d.id;});});
-        designs=s.designs.map(function(d){d.ref.qty=d.qty;d.ref.widthIn=d.widthIn;d.ref.heightIn=d.heightIn;d.ref.addSizeKey=d.addSizeKey;d.ref.addBatch=d.addBatch;d.ref.layoutFeedback='';return d.ref;}).concat(extras);
+        designs=s.designs.map(function(d){d.ref.qty=d.qty;d.ref.widthIn=d.widthIn;d.ref.heightIn=d.heightIn;d.ref.addSizeKey=d.addSizeKey;d.ref.addBatch=d.addBatch;d.ref.autoFit=d.autoFit;d.ref.layoutFeedback='';return d.ref;}).concat(extras);
         var byId=new Map();instances=s.instances.map(function(i){var d=designs.find(function(d){return d.id===i.designId;});var copy=Object.assign({},i,{canvas:d.trimmed.canvas,vibrance:d.vibrance});if(i.placedSizeIn)copy.placedSizeIn=i.placedSizeIn.slice();byId.set(i.id,copy);return copy;});
         sheets=s.sheets.map(function(sheet){return Object.assign({},sheet,{placements:sheet.placements.map(function(p){return Object.assign({},p,{inst:byId.get(p.inst)});})});});
         selectedInstanceIds=new Set(s.selected.filter(function(id){return sheets.some(function(sheet){return sheet.placements.some(function(p){return p.inst.id===id;});});}));
@@ -977,6 +982,7 @@ window.SmartSheetPreflight = (function () {
     }
     function travel(from,to,prefix){if(busy()||!from.length)return;var entry=from.pop();to.push({state:capture(),label:entry.label});restore(entry.state);trim();update();document.getElementById('layoutHistoryStatus').textContent=prefix+entry.label;}
     var api={capture:capture,record:record,update:update,undo:function(){travel(past,future,'Undid ');},redo:function(){travel(future,past,'Redid ');},
+      undoFit:function(id){if(canUndoFit(id))api.undo();},
       // Removing an uploaded asset must not resurrect it via layout Undo.
       forgetDesign:function(id){
         past.concat(future).forEach(function(e){var s=e.state,removed=new Set(s.instances.filter(function(i){return i.designId===id;}).map(function(i){return i.id;}));
@@ -1364,14 +1370,18 @@ window.SmartSheetPreflight = (function () {
 
   // Derived display assets never replace inst.canvas or design.trimmed.canvas.
   // Native canvas identity is the active-source version; edits create a new one.
-  function previewSource(source) {
+  function previewSource(source, requested) {
+    requested = requested || 1600;
+    var longest = Math.min(Math.max(source.width, source.height), Math.max(1600, requested));
     var cached = previewSources.get(source);
-    if (cached) return cached;
+    if (cached && Math.max(cached.width,cached.height) >= longest - 1) return cached;
     var proxy = document.createElement('canvas');
-    var scale = Math.min(1, 1600 / Math.max(source.width, source.height));
+    // Always sample the native active source, never an older/smaller proxy.
+    var scale = Math.min(1, longest / Math.max(source.width, source.height));
     proxy.width = Math.max(1, Math.round(source.width * scale));
     proxy.height = Math.max(1, Math.round(source.height * scale));
     var ctx = proxy.getContext('2d');
+    ctx.imageSmoothingEnabled = true;
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(source, 0, 0, proxy.width, proxy.height);
     previewBitmaps.add(proxy);
@@ -1692,6 +1702,13 @@ window.SmartSheetPreflight = (function () {
       sizeHelp.hidden = !differentSize;
     }
     refreshSizeHelp();fields.appendChild(sizeHelp);
+    if(design.autoFit){
+      var fitNotice=document.createElement('p');fitNotice.className='auto-fit-notice';fitNotice.style.fontSize='12px';
+      var requested=design.autoFit.requestedIn,fitted=design.autoFit.fittedIn;
+      fitNotice.textContent='Fitted to usable sheet area: '+requested.map(function(n){return Number(n.toFixed(2));}).join(' × ')+' in → '+fitted.map(function(n){return Number(n.toFixed(2));}).join(' × ')+' in. Original requested size is retained in placement history. ';
+      var undoFit=document.createElement('button');undoFit.type='button';undoFit.className='secondary';undoFit.style.width='auto';undoFit.textContent='Undo automatic fit';undoFit.dataset.undoFit=design.id;
+      undoFit.onclick=function(){layoutHistory.undoFit(design.id);};fitNotice.appendChild(undoFit);fields.appendChild(fitNotice);
+    }
     var resetImageBtn = document.createElement('button');
     resetImageBtn.type = 'button'; resetImageBtn.className = 'reset-image-btn'; resetImageBtn.textContent = t('resetImage');
     resetImageBtn.title = 'Discard all applied background, cleanup, and enhancement edits';
@@ -2080,6 +2097,38 @@ window.SmartSheetPreflight = (function () {
     });
   }
 
+  // Pre-placement size policy only; both existing packing algorithms receive
+  // the resulting physical rectangles unchanged. Never invoked by manual edits.
+  function fitAutomaticInstances(items,settings){
+    var edge=settings.autoEdgeAllowancePx,top=customerNameInput.value.trim()?Math.max(edge,settings.headerHeightPx):edge;
+    var width=settings.sheetWidthPx-2*edge,height=settings.sheetLengthPx-top-edge;
+    if(width<=0||height<=0)return false;
+    var changed=false;
+    items.forEach(function(inst){
+      if(inst.layoutLocked)return;
+      if(inst.baseW<=width&&inst.baseH<=height||settings.allowRotation&&inst.baseH<=width&&inst.baseW<=height)return;
+      var scale=Math.min(1,width/inst.baseW,height/inst.baseH);
+      if(!(scale>0&&scale<1))return;
+      var requested=inst.placedSizeIn||[inst.baseW/settings.dpi,inst.baseH/settings.dpi];
+      var fit={requestedIn:requested.slice(),fittedIn:[requested[0]*scale,requested[1]*scale]};
+      inst.baseW=Math.max(1,Math.floor(inst.baseW*scale+1e-7));inst.baseH=Math.max(1,Math.floor(inst.baseH*scale+1e-7));
+      inst.placedSizeIn=fit.fittedIn.slice();inst.autoFit=fit;
+      var design=designs.find(function(d){return d.id===inst.designId;});if(design)design.autoFit=fit;
+      changed=true;
+    });
+    return changed;
+  }
+  function automaticPlacementSettings(items,settings){
+    // Retain the historical header reservation for ordinary layouts. A blank
+    // header must not exclude artwork that fits the actual configured edge area.
+    if(customerNameInput.value.trim())return settings;
+    var edge=settings.autoEdgeAllowancePx,width=settings.sheetWidthPx-2*edge;
+    var height=settings.sheetLengthPx-edge*2,reserved=settings.sheetLengthPx-Math.max(edge,settings.headerHeightPx)-edge;
+    function fits(i,h){return i.baseW<=width&&i.baseH<=h||settings.allowRotation&&i.baseH<=width&&i.baseW<=h;}
+    return items.some(function(i){return !i.layoutLocked&&fits(i,height)&&!fits(i,reserved);})?
+      Object.assign({},settings,{headerHeightPx:edge,useBlankHeaderSpace:true}):settings;
+  }
+
   function prepareInstancesForArrange() {
     var locked = [];
     sheets.forEach(function(sheet){
@@ -2100,12 +2149,13 @@ window.SmartSheetPreflight = (function () {
       if (needed) next = next.concat(createInstancesForDesign(design, dpi, needed));
       if (!current.length) design.addSizeKey = key;
     });
+    if(fitAutomaticInstances(next,getSheetPixelSettings()))renderAllDesigns();
     instances = next;
     return lockedIds;
   }
 
   function repack(mode, preserveLocked) {
-    var settings = getSheetPixelSettings();
+    var settings = automaticPlacementSettings(instances,getSheetPixelSettings());
     var sheetWidthPx = settings.sheetWidthPx;
     var sheetLengthPx = settings.sheetLengthPx;
     var gapPx = settings.gapPx;
@@ -2149,7 +2199,8 @@ window.SmartSheetPreflight = (function () {
     var remaining = instances.filter(function(inst){ return !lockedIds.has(inst.id); });
 
     function fillSheet(sheet, packedHeight) {
-      var contentTopPx = Math.max(sheet.headerHeightPx || 0, edgePx);
+      var contentTopPx = settings.useBlankHeaderSpace ? edgePx : Math.max(sheet.headerHeightPx || 0, edgePx);
+      if(settings.useBlankHeaderSpace)sheet.headerHeightPx=edgePx;
       var contentWidth = Math.max(0, sheet.widthPx - (2 * edgePx));
       var contentHeight = Math.max(0, packedHeight - contentTopPx - edgePx);
       var occupied = sheet.placements.map(function(p){
@@ -2200,7 +2251,10 @@ window.SmartSheetPreflight = (function () {
   }
   function drawSheetPreview(canvas, sheet) {
     previewBitmaps.add(canvas);
+    var scale=Math.min(1,2400/Math.max(sheet.widthPx,sheet.heightPx));
+    sheet.placements.forEach(function(p){previewSource(p.inst.canvas,Math.ceil(Math.max(p.inst.baseW,p.inst.baseH)*scale));});
     paintSheet(canvas, sheet, true);
+    queueEditorDetails();
   }
   function drawSheetCanvas(canvas, sheet) {
     requireFullResolution(canvas);
@@ -2237,6 +2291,63 @@ window.SmartSheetPreflight = (function () {
       ctx.restore();
     });
   }
+
+  // Inspection is a bounded display-only raster of the visible sheet region.
+  // The full-sheet bitmap stays small; zoom never allocates an output canvas.
+  function queueEditorDetails(){
+    if(!editorDetails || editorDetailFrame)return;
+    editorDetailFrame=requestAnimationFrame(function(){editorDetailFrame=0;editorDetails.forEach(refreshEditorDetail);});
+  }
+  function releaseEditorDetails(){
+    editorDetails.forEach(function(view){view.observer.disconnect();view.canvas.style.visibility='';view.tile.width=view.tile.height=0;});editorDetails.clear();
+  }
+  function applyEditorZoom(){
+    if(document.body.classList.contains('in-library-workspace'))return;
+    var zoom=document.getElementById('editorZoom').value;
+    editorDetails.forEach(function(view){
+      var frame=view.canvas.closest('.sheet-ruler-frame'),wrap=frame.closest('.canvas-wrap');
+      if(zoom==='fit'){frame.style.width='';wrap.style.maxHeight='';}
+      else{var width=view.sheet.widthPx*Number(zoom);frame.style.width=(width+42)+'px';frame.style.width=(parseFloat(frame.style.width)+width-view.canvas.getBoundingClientRect().width)+'px';wrap.style.maxHeight='70vh';}
+    });queueEditorDetails();
+  }
+  function registerEditorDetail(stage,canvas,sheet){
+    var tile=document.createElement('canvas');tile.className='sheet-preview-detail';tile.setAttribute('aria-hidden','true');tile.hidden=true;previewBitmaps.add(tile);
+    stage.insertBefore(tile,stage.querySelector('.rotate-overlay'));
+    var view={stage:stage,canvas:canvas,sheet:sheet,tile:tile,observer:new ResizeObserver(queueEditorDetails)};
+    view.observer.observe(canvas);editorDetails.add(view);
+  }
+  function paintEditorRegion(canvas,sheet,region,width,height){
+    canvas.width=width;canvas.height=height;var ctx=canvas.getContext('2d');
+    ctx.imageSmoothingEnabled=true;ctx.imageSmoothingQuality='high';
+    ctx.scale(width/region.w,height/region.h);ctx.translate(-region.x,-region.y);
+    var name=customerNameInput.value.trim();
+    if(name&&!sheet.hideCustomerName){ctx.fillStyle='#111111';ctx.textAlign='center';ctx.textBaseline='middle';ctx.font='600 '+Math.max(14,Math.round(dpiGlobal*14/72))+'px Arial, sans-serif';ctx.fillText(name,sheet.widthPx/2,(sheet.headerHeightPx||Math.round(.36*dpiGlobal))/2,sheet.widthPx-Math.round(.4*dpiGlobal));}
+    sheet.placements.forEach(function(p){
+      if(p.x+p.w<region.x||p.y+p.h<region.y||p.x>region.x+region.w||p.y>region.y+region.h)return;
+      var inst=p.inst;ctx.save();ctx.translate(p.x+p.w/2,p.y+p.h/2);ctx.rotate(inst.rotation*Math.PI/180);
+      ctx.filter='saturate('+Math.max(0,100+(inst.vibrance||0))+'%)';
+      ctx.drawImage(requireFullResolution(inst.canvas),-inst.baseW/2,-inst.baseH/2,inst.baseW,inst.baseH);ctx.restore();
+    });
+  }
+  function refreshEditorDetail(view){
+    var c=view.canvas,tile=view.tile,rect=c.getBoundingClientRect(),dpr=window.devicePixelRatio||1;
+    if(!c.isConnected||layoutDragActive||!rect.width||rect.width*dpr<=c.width+1&&rect.height*dpr<=c.height+1){tile.hidden=true;c.style.visibility='';return;}
+    var left=Math.max(0,rect.left),top=Math.max(0,rect.top),right=Math.min(innerWidth,rect.right),bottom=Math.min(innerHeight,rect.bottom);
+    for(var node=c.parentElement;node;node=node.parentElement){var style=getComputedStyle(node);if(/auto|scroll|hidden|clip/.test(style.overflowX+' '+style.overflowY)){var bounds=node.getBoundingClientRect();left=Math.max(left,bounds.left);top=Math.max(top,bounds.top);right=Math.min(right,bounds.right);bottom=Math.min(bottom,bounds.bottom);}}
+    if(right<=left||bottom<=top){tile.hidden=true;c.style.visibility='';return;}
+    var x=Math.max(0,Math.floor(left-rect.left)),y=Math.max(0,Math.floor(top-rect.top));
+    var w=Math.min(rect.width-x,Math.ceil(right-rect.left)-x),h=Math.min(rect.height-y,Math.ceil(bottom-rect.top)-y);
+    var resolution=Math.min(dpr,2048/w,2048/h),sheet=view.sheet;
+    var region={x:x/rect.width*sheet.widthPx,y:y/rect.height*sheet.heightPx,w:w/rect.width*sheet.widthPx,h:h/rect.height*sheet.heightPx};
+    paintEditorRegion(tile,sheet,region,Math.max(1,Math.round(w*resolution)),Math.max(1,Math.round(h*resolution)));
+    tile.style.left=x+'px';tile.style.top=y+'px';tile.style.width=w+'px';tile.style.height=h+'px';
+    tile.dataset.sheetRegion=JSON.stringify(region);tile.hidden=false;
+    // Avoid compositing semi-transparent artwork twice over the low-res sheet.
+    c.style.visibility='hidden';
+  }
+  document.getElementById('editorZoom').addEventListener('change',applyEditorZoom);
+  addEventListener('scroll',queueEditorDetails,true);
+  addEventListener('resize',function(){requestAnimationFrame(applyEditorZoom);});
 
   function resizePlacementOnSheet(p, sheet, canvasEl, overlayEl, corner, e) {
     if (e.button !== 0 || layoutDragActive || layoutActionsPending) return;
@@ -2582,7 +2693,7 @@ window.SmartSheetPreflight = (function () {
       heightPx: settings.sheetLengthPx,
       headerHeightPx: settings.headerHeightPx
     };
-    sheetsContainer.innerHTML = '';
+    releaseEditorDetails();sheetsContainer.innerHTML = '';
     manualModeNote.style.display = 'none';
     overlapWarning.style.display = 'none';
     qualityWarning.style.display = 'none';
@@ -2612,14 +2723,16 @@ window.SmartSheetPreflight = (function () {
     sheetsContainer.appendChild(block);
     drawSheetPreview(canvas, sheet);
     renderOverlayFor(overlay, sheet, canvas, false);
-    attachMagnifier(stage, canvas);
+    registerEditorDetail(stage,canvas,sheet);
+    attachMagnifier(stage, canvas, sheet);
     if (window.smartSheetWorkspace) window.smartSheetWorkspace.refresh();
+    applyEditorZoom();
     lastLayoutSettings=captureValidLayoutSettings();
   }
 
   function renderAllSheets() {
     lastLayoutSettings=captureValidLayoutSettings();
-    sheetsContainer.innerHTML = '';
+    releaseEditorDetails();sheetsContainer.innerHTML = '';
     manualModeNote.style.display = manualMode ? 'block' : 'none';
     var interactive = true;
     sheets.forEach(function(sheet, idx){
@@ -2682,9 +2795,11 @@ window.SmartSheetPreflight = (function () {
       drawSheetPreview(canvas, sheet);
       sheet.renderCanvas = canvas;
       renderOverlayFor(overlay, sheet, canvas, interactive);
-      attachMagnifier(stage, canvas);
+      registerEditorDetail(stage,canvas,sheet);
+      attachMagnifier(stage, canvas, sheet);
     });
     if (window.smartSheetWorkspace) window.smartSheetWorkspace.refresh();
+    applyEditorZoom();
   }
 
   function refreshPrintReadiness() {
@@ -3517,7 +3632,7 @@ window.SmartSheetPreflight = (function () {
 
   function incrementalAutoArea(sheet, settings) {
     var edge = settings.autoEdgeAllowancePx;
-    var top = Math.max(sheet.headerHeightPx || settings.headerHeightPx, edge);
+    var top = settings.useBlankHeaderSpace ? edge : Math.max(sheet.headerHeightPx || settings.headerHeightPx, edge);
     return {
       left: edge,
       top: top,
@@ -3809,6 +3924,8 @@ window.SmartSheetPreflight = (function () {
     var missing = Math.max(0, design.qty - batchInstances.length);
     var created = missing ? createInstancesForDesign(Object.assign({}, design, { qty: missing }), settings.dpi) : [];
     pending = pending.concat(created);
+    fitAutomaticInstances(pending,settings);
+    settings=automaticPlacementSettings(pending,settings);
 
     var result = packIncrementalBatch(pending, settings);
 
@@ -3896,22 +4013,20 @@ window.SmartSheetPreflight = (function () {
   var zoomLevel = 3;
   document.getElementById('zoomSelect').addEventListener('change', function(){ zoomLevel = parseInt(this.value) || 3; });
 
-  function attachMagnifier(stageEl, canvasEl) {
+  function attachMagnifier(stageEl, canvasEl, sheet) {
     function moveLens(e) {
       if(layoutDragActive){hideLens();return;}
       var rect = canvasEl.getBoundingClientRect();
       var relX = (e.clientX - rect.left) / rect.width;
       var relY = (e.clientY - rect.top) / rect.height;
       if (relX < 0 || relX > 1 || relY < 0 || relY > 1) { hideLens(); return; }
-      var srcX = relX * canvasEl.width;
-      var srcY = relY * canvasEl.height;
       var lensSize = 160;
-      var srcSize = lensSize / zoomLevel;
-      var sx = Math.max(0, Math.min(canvasEl.width - srcSize, srcX - srcSize / 2));
-      var sy = Math.max(0, Math.min(canvasEl.height - srcSize, srcY - srcSize / 2));
-      lensCtx.clearRect(0, 0, lensSize, lensSize);
-      drawChecker(lensCtx, lensSize, lensSize, 10);
-      lensCtx.drawImage(canvasEl, sx, sy, srcSize, srcSize, 0, 0, lensSize, lensSize);
+      var srcSize = lensSize / zoomLevel * sheet.widthPx / rect.width;
+      var sx = Math.max(0, Math.min(sheet.widthPx - srcSize, relX * sheet.widthPx - srcSize / 2));
+      var sy = Math.max(0, Math.min(sheet.heightPx - srcSize, relY * sheet.heightPx - srcSize / 2));
+      previewBitmaps.add(lensCanvas);
+      paintEditorRegion(lensCanvas,sheet,{x:sx,y:sy,w:srcSize,h:srcSize},lensSize,lensSize);
+      lensCtx.setTransform(1,0,0,1,0,0);lensCtx.globalCompositeOperation='destination-over';drawChecker(lensCtx,lensSize,lensSize,10);lensCtx.globalCompositeOperation='source-over';
       lens.style.display = 'block';
       lens.style.left = (e.clientX + 20) + 'px';
       lens.style.top = (e.clientY - 180) + 'px';

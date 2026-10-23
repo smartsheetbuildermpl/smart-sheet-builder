@@ -83,13 +83,15 @@ function tiffTags(bytes) {
     await card.getByRole('spinbutton',{name:'Width',exact:true}).fill('22');await card.getByRole('spinbutton',{name:'Height',exact:true}).fill('39');
     assert.match(await card.locator('.source-quality').innerText(),/1155 × 2048 px.*52.5 PPI.*22 × 39 in.*Low resolution/);
     const unchanged=await t.doc.evaluate(()=>dtf39.nativeSamples());assert.deepEqual(unchanged.active,[1155,2048]);
-    await card.getByRole('button',{name:'Add to layout',exact:true}).click();await t.doc.waitForFunction(()=>!document.querySelector('.design-item button[title="Add the remaining copies into open space, keeping current pieces in place."]')?.disabled&&document.querySelector('.design-item [role=status]').textContent.includes('not placed'));
-    assert.match(await card.getByRole('status').innerText(),/22.8 × 38.8 in/);assert.equal(await t.doc.evaluate(()=>dtf39.sheets.length),0);
+    await card.getByRole('button',{name:'Add to layout',exact:true}).click();await t.doc.waitForFunction(()=>!document.querySelector('.design-item button[title="Add the remaining copies into open space, keeping current pieces in place."]')?.disabled&&dtf39.sheets.length===1);
+    assert.match(await card.locator('.auto-fit-notice').innerText(),/22 × 39 in → 21.89 × 38.8 in/);assert.equal(await t.doc.evaluate(()=>dtf39.sheets.length),1);
     await t.page.screenshot({path:path.join(out,'22x39-auto-fit-explanation.png')});
     for(const mode of ['standard','max-fill']){
       await t.frame.getByLabel('Arrange mode',{exact:true}).selectOption(mode);await t.frame.locator('#packBtn').click();await t.doc.waitForFunction(()=>!document.getElementById('packBtn').disabled);
-      assert.equal(await t.doc.evaluate(()=>dtf39.sheets.length),0);assert.match(await t.frame.locator('#statsOut').innerText(),/22.8 × 38.8 in/);
+      assert.equal(await t.doc.evaluate(()=>dtf39.sheets.length),1);assert.deepEqual(await t.doc.evaluate(()=>{const p=dtf39.sheets[0].placements[0];return [p.inst.baseW,p.inst.baseH];}),[6566,11640]);
     }
+    // Restore the pre-fit state before exercising edge-to-edge manual placement.
+    await t.doc.evaluate(()=>{while(dtf39.sheets.length)document.getElementById('layoutUndo').click();});
     // Exercise the existing manual API, then real drag and selected-size controls.
     await t.doc.evaluate(async()=>{var file=dtf39.designs[0].file;await smartSheetWorkspace.addFile(file,{sheetIndex:0,x:150,y:150});smartSheetWorkspace.setOpen(true);});
     let handle=t.frame.locator('.drag-handle').first();await handle.scrollIntoViewIfNeeded();let box=await handle.boundingBox();
