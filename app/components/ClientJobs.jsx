@@ -426,13 +426,22 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                         <option value="tarpaulin">Tarpaulin</option>
                       </select>
                     </label>
+                    <label>
+                      Media mode
+                      <select aria-label="Media mode" value={config.mediaMode || (config.machine === 'dtf' && !config.autoExtend ? 'continuous' : 'fixed')}
+                        onChange={e => setConfig({ ...config, mediaMode: e.target.value, leadIn: config.leadIn ?? config.edgeIn, trailIn: config.trailIn ?? config.edgeIn })}>
+                        <option value="fixed">Fixed sheet</option>
+                        <option value="continuous">Continuous roll</option>
+                      </select>
+                    </label>
+                    <p className="client-muted">Media mode changes apply only after saving and generating a new preview. Confirmed submissions stay locked.</p>
                     <div className="client-settings-grid">
                       {[
-                        ['widthIn', 'Sheet width (in)'],
-                        ['lengthIn', 'Sheet length (in)'],
+                        ['widthIn', config.mediaMode === 'continuous' ? 'Printable roll width (in)' : 'Sheet width (in)'],
+                        ...(config.mediaMode === 'continuous' ? [['leadIn', 'Lead allowance (in)'], ['trailIn', 'Trail allowance (in)']] : [['lengthIn', 'Sheet length (in)']]),
                         ['dpi', 'Output DPI'],
                         ['gapIn', 'Spacing (in)'],
-                        ['edgeIn', 'Auto-layout edge allowance (in)']
+                        ['edgeIn', config.mediaMode === 'continuous' ? 'Left/right allowance per side (in)' : 'Auto-layout edge allowance (in)']
                       ].map(([key, label]) => (
                         <label key={key}>
                           {label}
@@ -440,7 +449,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                             type="number"
                             step="any"
                             required
-                            value={config[key]}
+                            value={config[key] ?? config.edgeIn}
                             onChange={(e) =>
                               setConfig({
                                 ...config,
@@ -460,6 +469,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                         </label>
                       ))}
                     </div>
+                    {config.mediaMode === 'continuous' && <p className="client-muted">Meter segment: 39.37007874 in = 1 m. Length extends as needed. Meter lines are preview/accounting markers; artwork can cross them. Lead/trail allowance applies once to the entire job.</p>}
                     <label>
                       <input
                         type="checkbox"
@@ -470,7 +480,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                       />{' '}
                       Allow auto-rotate to fill gaps
                     </label>
-                    <label>
+                    {config.mediaMode !== 'continuous' && <label>
                       <input
                         type="checkbox"
                         checked={config.autoExtend}
@@ -478,9 +488,8 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                           setConfig({ ...config, autoExtend: e.target.checked })
                         }
                       />{' '}
-                      Create another sheet when full (DTF unchecked: continuous
-                      roll)
-                    </label>
+                      {config.mediaMode === 'fixed' ? 'Create another sheet when full' : 'Create another sheet when full (legacy DTF unchecked: continuous roll)'}
+                    </label>}
                     <p>
                       Artwork sizing: use uploaded artwork at 300 PPI, after
                       transparent-margin trimming.

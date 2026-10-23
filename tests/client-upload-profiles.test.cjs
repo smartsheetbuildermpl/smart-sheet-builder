@@ -13,7 +13,7 @@ const { fixture, png } = require('./client-jobs.test.cjs');
    const enabled=await act('enable',profile);assert.equal(enabled.status,200,enabled.message);
    const token=profile.url.split('/').at(-1);
    const info=await f.pub.GET(f.req('/api/client-upload/'+token),{params:{token}});const publicInfo=await info.json();
-   assert.deepEqual(Object.keys(publicInfo).sort(),['machine','profileName','shopName']);assert.equal(publicInfo.machine,profile.settings.machine);assert.equal(publicInfo.profileName,profile.name);
+   assert.deepEqual(Object.keys(publicInfo).sort(),['limits','machine','profileName','shopName']);assert.equal(publicInfo.machine,profile.settings.machine);assert.equal(publicInfo.profileName,profile.name);
    const created=await f.call('create',token);const bytes=png(600,300);const uploaded=await f.call('upload',token,created.submission,bytes);
    const quantities=uploaded.job.assets.map(a=>({id:a.id,qty:2,widthIn:1.5,heightIn:0.75}));
    for (const reference of [undefined,'','   ','bad\nname']) assert.equal((await f.call('preview',token,created.submission,{reference,quantities})).status,400);

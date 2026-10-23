@@ -1,13 +1,21 @@
 'use client';
 import { useEffect, useRef, useState } from 'react';
 import PrintLayoutLoading from './PrintLayoutLoading';
+import { METER_LENGTH_IN } from '../lib/client-roll-layout';
 export default function ClientJobPreview({ manifest, assets, urls, onBusyChange, onReadyChange }) {
   const box = useRef(null),
     [error, setError] = useState(''),
     [stage, setStage] = useState('Preparing artwork…'),
     [sheetIndex, setSheetIndex] = useState(0),
-    [attempt, setAttempt] = useState(0);
+    [attempt, setAttempt] = useState(0),
+    [rollView, setRollView] = useState(0);
   const selectedSheet = Math.min(sheetIndex, manifest.sheets.length - 1);
+  const roll = manifest.mediaMode === 'continuous' ? manifest.roll : null;
+  // At most two meters per display window. This never slices the manifest or
+  // original artwork; exports still receive the one continuous locked roll.
+  const windowLengthIn = 2 * METER_LENGTH_IN;
+  const viewCount = roll ? Math.ceil(roll.lengthIn / windowLengthIn) : 1;
+  const selectedView = Math.min(rollView, viewCount - 1);
   useEffect(() => {
     let cancelled = false;
     const images = [];
@@ -24,9 +32,13 @@ export default function ClientJobPreview({ manifest, assets, urls, onBusyChange,
     onReadyChange?.(false);
     box.current.replaceChildren();
     (async () => {
+      const sheet = manifest.sheets[selectedSheet];
+      const startY = roll ? selectedView * windowLengthIn * manifest.dpi : 0;
+      const viewHeight = roll ? Math.min(sheet.heightPx - startY, windowLengthIn * manifest.dpi) : sheet.heightPx;
+      const visiblePlacements = sheet.placements.filter(p => p.y < startY + viewHeight && p.y + p.h > startY);
       const sources = {};
       for (const a of assets.filter((a) =>
-        manifest.sheets[selectedSheet].placements.some((p) => p.assetId === a.id)
+        visiblePlacements.some((p) => p.assetId === a.id)
       )) {
         if (!urls[a.id])
           throw Error('An original image is unavailable. Reopen this job.');
@@ -53,18 +65,19 @@ export default function ClientJobPreview({ manifest, assets, urls, onBusyChange,
       for (const [i, s] of [[selectedSheet, manifest.sheets[selectedSheet]]]) {
         if (cancelled) return;
         const canvas = document.createElement('canvas'),
-          scale = Math.min(1, 1000 / s.widthPx, 1600 / s.heightPx);
+          scale = Math.min(1, 1000 / s.widthPx, 1600 / viewHeight);
         canvas.width = Math.round(s.widthPx * scale);
-        canvas.height = Math.round(s.heightPx * scale);
+        canvas.height = Math.round(viewHeight * scale);
         canvas.setAttribute(
           'aria-label',
-          `Read-only print preview, Sheet ${i + 1}`
+          roll ? `Read-only continuous roll preview, view ${selectedView + 1}` : `Read-only print preview, Sheet ${i + 1}`
         );
         canvas.setAttribute('role', 'img');
         const ctx = canvas.getContext('2d');
         ctx.scale(scale, scale);
+        ctx.translate(0, -startY);
         ctx.imageSmoothingQuality = 'high';
-        for (const p of s.placements) {
+        for (const p of visiblePlacements) {
           const a = assets.find((a) => a.id === p.assetId);
           ctx.save();
           ctx.translate(p.x + p.w / 2, p.y + p.h / 2);
@@ -83,8 +96,22 @@ export default function ClientJobPreview({ manifest, assets, urls, onBusyChange,
           ctx.restore();
         }
         const label = document.createElement('p');
-        label.textContent = `Sheet ${i + 1} · ${s.widthIn.toFixed(2)} × ${s.heightIn.toFixed(2)} in`;
-        box.current.append(label, canvas);
+        label.textContent = roll ? `Continuous roll · view ${(startY / manifest.dpi).toFixed(2)}–${((startY + viewHeight) / manifest.dpi).toFixed(2)} in (display window only)` : `Sheet ${i + 1} · ${s.widthIn.toFixed(2)} × ${s.heightIn.toFixed(2)} in`;
+        if (roll) {
+          const frame = document.createElement('div');
+          frame.className = 'client-roll-window';
+          frame.append(canvas);
+          const meterPx = METER_LENGTH_IN * manifest.dpi;
+          for (let meter = Math.max(1, Math.ceil(startY / meterPx)); meter * meterPx <= startY + viewHeight; meter++) {
+            const marker = document.createElement('div');
+            marker.className = 'client-meter-marker';
+            marker.style.top = `${(meter * meterPx - startY) / viewHeight * 100}%`;
+            const text = document.createElement('span');
+            text.textContent = `Meter ${meter}`;
+            marker.append(text); frame.append(marker);
+          }
+          box.current.append(label, frame);
+        } else box.current.append(label, canvas);
         await new Promise(resolve => setTimeout(resolve, 0));
       }
       images.forEach((img) => {
@@ -106,9 +133,16 @@ export default function ClientJobPreview({ manifest, assets, urls, onBusyChange,
         img.close();
       });
     };
-  }, [manifest, assets, urls, attempt, selectedSheet, onBusyChange, onReadyChange]);
+  }, [manifest, assets, urls, attempt, selectedSheet, selectedView, roll, windowLengthIn, onBusyChange, onReadyChange]);
   return (
     <>
+      {roll && <section className="client-roll-summary" aria-label="Roll usage estimate">
+        <p><strong>Estimated roll usage: {roll.meters.toFixed(6)} m</strong></p>
+        <p>{roll.fullMeters} full {roll.fullMeters === 1 ? 'meter' : 'meters'} + {roll.nextMeterPercent.toFixed(3)}% of the next meter ({roll.nextMeterLengthIn.toFixed(4)} in).</p>
+        <p>{roll.widthIn.toFixed(4)} in printable roll width · {roll.usableWidthIn.toFixed(4)} in usable artwork width · {roll.lengthIn.toFixed(4)} in actual used length · {roll.efficiency.toFixed(1)}% layout efficiency.</p>
+        <small>Actual physical usage only. Meter lines do not split artwork or add margins.</small>
+      </section>}
+      {roll && viewCount > 1 && <label>Roll preview view<select aria-label="Roll preview view" value={selectedView} onChange={e => setRollView(Number(e.target.value))}>{Array.from({ length: viewCount }, (_, i) => <option key={i} value={i}>View {i + 1} · {(i * 2).toFixed(0)}–{Math.min((i + 1) * 2, roll.meters).toFixed(3)} m</option>)}</select></label>}
       {manifest.sheets.length > 1 && <label>Preview sheet<select aria-label="Preview sheet" value={selectedSheet} onChange={e => setSheetIndex(Number(e.target.value))}>{manifest.sheets.map((_, i) => <option key={i} value={i}>Sheet {i + 1} of {manifest.sheets.length}</option>)}</select></label>}
       {stage && <PrintLayoutLoading stage={stage} />}
       <div className="client-preview" ref={box} hidden={Boolean(stage || error)} aria-busy={Boolean(stage)} />

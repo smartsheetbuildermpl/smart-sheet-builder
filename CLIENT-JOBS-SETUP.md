@@ -69,6 +69,18 @@ Verification: `node tests/client-portal-regression.test.cjs` (local app at port 
 
 ## Full-resolution quality
 
+### Profile media mode
+
+Shop portal settings now offer **Fixed sheet** and **Continuous roll**. Existing profiles keep their saved fixed-sheet behavior; new machine templates also start fixed. No existing profile, link or confirmed submission is rewritten. The pre-existing DTF `autoExtend: false` recipe remains on its legacy path until the owner explicitly selects a media mode. The explicit Fixed sheet mode uses fixed sheets even when additional-sheet creation is off.
+
+For Continuous roll, the profile retains its actual `widthIn` and `edgeIn` (allowance on each side), with separate `leadIn` and `trailIn` allowances, each initially the existing edge allowance. Spacing remains `gapIn`. Server validation stores the explicit mode, allowances and `segmentLengthIn: 39.37007874` in the existing settings JSON. No new schema migration or environment variable is required for roll mode. Upload-limit prerequisites from `supabase-client-upload-limits-v2.sql` remain required independently.
+
+Roll packing uses the existing horizontal-first packer with a sufficient vertical bound, then trims only the **roll length**, never the artwork. All requested copies stay in one locked continuous manifest. Width and the selected rotation setting are enforced. Lead/trail margins occur once; spacing occurs between pieces. Meter markers never add gaps or create print pages. For 23-inch roll width, 0.50-inch side/lead/trail allowances and 21.7033 × 38.56-inch artwork at 300 PPI: usable width = 22 inches, placement = 6511 × 11568 pixels (existing output-grid rounding), used length = 0.50 + 38.56 + 0.50 = **39.56 inches = 1.004824 m**, and output geometry = **6900 × 11868 pixels**. This is one full meter plus **0.4824%** / **0.18992126 inches** of the next meter. No trailing piece-spacing margin is added.
+
+Public and owner roll previews display the same physical usage and meter lines. Long previews use selectable windows up to two meters, a single canvas capped at 1000 × 1600 pixels and display-only source proxies. Switching a viewing window does not split or crop any stored placement or final artwork. Original bytes, private access, notifications, expiry, main-builder settings, and final export encoders are unchanged. The existing per-output allocation guards still apply to exceptionally long full-resolution exports; preview remains available with the existing honest output warning. Virtual meter lines are never exported.
+
+Run `node tests/client-roll-layout.test.cjs` (local app on port 3114) for baseline fixed/legacy parity, all four actual configured machine widths, the 1.004824 m fixture, multi-meter continuity, exact width rejection/rotation, one-time allowances, owner mode editing, immutable sources/snapshots, bounded public/owner previews, notifications and exact expiry. Screenshots are written to the reported temporary directory.
+
 `public/sheet-packing.js` contains the existing builder packer extracted unchanged. Both regular layout and server-generated client manifests use it. Original orientation comes first, left-to-right rows, rotation only as gap fallback. Spacing and the default 0.30-inch allowance stay separate; existing manual placement is untouched.
 
 The server finds nonzero-alpha bounds with the builder's one-native-pixel padding. Native cropped width/height divided by 300 determines physical artwork size. The manifest stores exact crop rectangles, source hashes, placement coordinates/rotations, output DPI, sheet pixels/inches and total physical sheet meters, including unused sheet area. Confirmation locks it.

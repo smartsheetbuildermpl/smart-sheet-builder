@@ -10,6 +10,7 @@ import { seal, unseal } from './export-security';
 import { publicAppOrigin } from './public-app-url';
 import { defaultDesignSize, validDesignSize } from '../../lib/client-design-size';
 import { MAX_SOURCE_PIXELS, MAX_SOURCE_SIDE, uploadLimits } from '../../lib/client-portal-limits';
+import { METER_LENGTH_IN, rollLayout } from '../../lib/client-roll-layout';
 
 export const BUCKET = 'client-job-sources';
 export const defaults = {
@@ -105,6 +106,8 @@ export function text(value, max = 120) {
 }
 export function settings(value) {
   const s = { ...defaults, ...value };
+  if (s.mediaMode !== undefined && !['fixed', 'continuous'].includes(s.mediaMode))
+    throw failure('Choose Fixed sheet or Continuous roll.', 400);
   s.shopName = text(s.shopName);
   s.email = text(s.email, 254);
   if (!s.shopName || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(s.email))
@@ -130,16 +133,29 @@ export function settings(value) {
       throw failure(`Invalid ${key}. Allowed range: ${min}–${max}.`, 400);
   if (s.maxTotalMiB < s.maxFileMiB)
     throw failure('The total upload limit must be at least the per-file limit.', 400);
-  if (s.machine !== 'dtf' && s.lengthIn > 39)
+  if (s.mediaMode !== 'continuous' && s.machine !== 'dtf' && s.lengthIn > 39)
     throw failure('This machine uses sheets up to 39 inches long.', 400);
   s.rotate = s.rotate === true;
   s.autoExtend = s.autoExtend !== false;
   if (
     s.widthIn <= 2 * s.edgeIn ||
-    s.lengthIn <= Math.max(0.36, s.edgeIn) + s.edgeIn
+    (s.mediaMode !== 'continuous' && s.lengthIn <= Math.max(0.36, s.edgeIn) + s.edgeIn)
   )
     throw failure('The edge allowance leaves no usable sheet area.', 400);
-  return Object.fromEntries(Object.keys(defaults).map((k) => [k, s[k]]));
+  const saved = Object.fromEntries(Object.keys(defaults).map((k) => [k, s[k]]));
+  // Missing mode preserves the exact legacy fixed/autoExtend contract. No
+  // existing JSON, link or confirmed manifest is rewritten on read.
+  if (s.mediaMode !== undefined) saved.mediaMode = s.mediaMode;
+  if (s.mediaMode === 'continuous') {
+    for (const key of ['leadIn', 'trailIn']) {
+      const amount = s[key] ?? s.edgeIn;
+      if (typeof amount !== 'number' || !Number.isFinite(amount) || amount < 0 || amount > 3)
+        throw failure(`Invalid ${key}. Allowed range: 0–3 inches.`, 400);
+      saved[key] = amount;
+    }
+    saved.segmentLengthIn = METER_LENGTH_IN;
+  }
+  return saved;
 }
 export function newLink() {
   const token = randomBytes(32).toString('base64url');
@@ -351,7 +367,11 @@ export function layout(assets, config) {
   }
   if (!items.length || items.length > 500)
     throw failure('A submission must contain 1–500 pieces.', 400);
-  const continuous = s.machine === 'dtf' && !s.autoExtend,
+  if (s.mediaMode === 'continuous') {
+    try { return rollLayout(items, s); }
+    catch (e) { throw failure(e.message, 400); }
+  }
+  const continuous = !s.mediaMode && s.machine === 'dtf' && !s.autoExtend,
     sheets = [];
   let remaining = items;
   while (remaining.length) {

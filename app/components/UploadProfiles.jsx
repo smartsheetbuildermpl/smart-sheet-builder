@@ -35,7 +35,7 @@ export default function UploadProfiles({ profiles, selectedId, busy, onEdit, onC
   return <section aria-label="Upload Profiles" className="client-upload-profiles">
     <div className="client-section-heading"><div><h2>Upload Profiles</h2><p>Each private link uses its own saved machine and layout settings.</p></div><button type="button" disabled={busy} onClick={onCreate}>Create new profile</button></div>
     <div className="client-profile-list">{profiles.map(p => <article className={`client-profile-row ${p.id === selectedId ? 'selected' : ''}`} key={p.id} aria-label={p.name}>
-      <div><h3>{p.name}</h3><small>{machineLabel(p.settings.machine)} · {p.settings.widthIn} × {p.settings.lengthIn} in · {p.settings.dpi} DPI</small></div>
+      <div><h3>{p.name}</h3><small>{machineLabel(p.settings.machine)} · {p.settings.mediaMode === 'continuous' ? `Continuous roll · ${p.settings.widthIn} in wide` : `${p.settings.widthIn} × ${p.settings.lengthIn} in · ${p.settings.mediaMode ? 'Fixed sheet' : p.settings.machine === 'dtf' && !p.settings.autoExtend ? 'Legacy continuous roll' : 'Fixed sheet'}`} · {p.settings.dpi} DPI</small></div>
       <span className={`client-status-badge ${p.active ? 'confirmed' : 'expired'}`}>{p.enabled ? p.active ? 'Active' : 'Setup required' : 'Disabled'}</span>
       <div className="client-profile-actions">
         <button type="button" className="secondary" aria-haspopup="dialog" disabled={busy} onClick={e => open(p.active && p.url ? 'share' : 'setup',p,e)}>Copy link</button>
