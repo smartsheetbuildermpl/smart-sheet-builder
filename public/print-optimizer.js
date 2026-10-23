@@ -1,6 +1,12 @@
 /* Local, full-resolution print preparation. No network or AI service. */
 (function(){
   'use strict';
+  var optimizerScriptURL=typeof document!=='undefined'&&document.currentScript?document.currentScript.src:null;
+  function processingPause(){
+    // A dedicated job is cancelled by terminating its worker. Avoid thousands
+    // of clamped 4ms timers there; the main-thread fallback still yields tasks.
+    return typeof WorkerGlobalScope!=='undefined'&&self instanceof WorkerGlobalScope?Promise.resolve():new Promise(function(r){setTimeout(r,0);});
+  }
   function bounds(data,w,h) {
     var b={x:w,y:h,right:-1,bottom:-1};
     for(var p=0;p<w*h;p++) if(data[p*4+3]) {
@@ -51,13 +57,13 @@
   // Eight-connected components preserve diagonals, thin lines, and every soft
   // pixel connected to artwork. Only isolated dots (up to four pixels) well
   // outside the union of larger components are candidates. No alpha threshold.
-  async function clean(source,cancelled) {
+  async function clean(source,cancelled,progress) {
     var w=source.width,h=source.height,n=w*h;
     var image=source.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h),data=image.data;
     var seen=new Uint8Array(n),queue=frontierQueue(n),dots=[];
     var core={x:w,y:h,right:-1,bottom:-1},removed=0;
     for(var p=0;p<n;p++) {
-      if(p%65536===0) { await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.'); }
+      if(p%65536===0) { if(progress)progress('Checking isolated outer pixels',p/n);await processingPause();if(cancelled&&cancelled())throw new Error('Cancelled.'); }
       if(seen[p]||!data[p*4+3]) continue;
       var end=0,tiny=[];queue.clear();queue.push(p);seen[p]=1;
       var box={x:w,y:h,right:-1,bottom:-1};
@@ -68,7 +74,7 @@
           var nx=x+dx,ny=y+dy,next=ny*w+nx;
           if(nx>=0&&nx<w&&ny>=0&&ny<h&&!seen[next]&&data[next*4+3]){seen[next]=1;queue.push(next);}
         }
-        if(start && start%65536===0) { await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.'); }
+        if(start && start%65536===0) { if(progress)progress('Checking artwork connectivity',null);await processingPause();if(cancelled&&cancelled())throw new Error('Cancelled.'); }
       }
       if(end<=4 && box.right-box.x<=1 && box.bottom-box.y<=1) dots.push(tiny);
       else {core.x=Math.min(core.x,box.x);core.y=Math.min(core.y,box.y);core.right=Math.max(core.right,box.right);core.bottom=Math.max(core.bottom,box.bottom);}
@@ -88,7 +94,7 @@
   }
   // Source-pixel exterior rings, not a global alpha cutoff. Balanced widens
   // matte detection; Strong also attenuates broad low-alpha blur tails.
-  async function cleanFringe(source,cancelled,strength,owned) {
+  async function cleanFringe(source,cancelled,strength,owned,progress) {
     strength=['safe','balanced','strong'].includes(strength)?strength:'balanced';
     var strong=strength==='strong',cfg=strong?
       {radius:14,maxAlpha:208,agreement:48,contrast:24,mix:.2,residual:32,slop:12,removeAlpha:64,retain:.1}:
@@ -96,18 +102,19 @@
     var w=source.width,h=source.height,n=w*h;
     var original=source.getContext('2d',{willReadFrequently:true}).getImageData(0,0,w,h),data=original.data;
     if(strength==='safe'){
-      var count=0;for(var p=0;p<n;p++){if(data[p*4+3])count++;if(p%262144===0){await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.');}}
+      var count=0;for(var p=0;p<n;p++){if(data[p*4+3])count++;if(p%262144===0){if(progress)progress('Verifying Safe cleanup',p/n);await processingPause();if(cancelled&&cancelled())throw new Error('Cancelled.');}}
       return {canvas:source,cleaned:0,removed:0,reduced:0,before:count,after:count,strength:strength};
     }
     var seen=new Uint8Array(n),distance=new Uint8Array(n),queue=frontierQueue(n);
     var end=0,cleaned=0,removed=0,reduced=0,before=0;
     var sliceStarted=performance.now();
-    async function pause(){await new Promise(function(r){setTimeout(r,0);});if(cancelled&&cancelled())throw new Error('Cancelled.');sliceStarted=performance.now();}
+    async function pause(){await processingPause();if(cancelled&&cancelled())throw new Error('Cancelled.');sliceStarted=performance.now();}
     function visit(p){if(!seen[p]&&data[p*4+3]===0){seen[p]=1;queue.push(p);}}
     function neighbors(p,fn){var x=p%w,y=Math.floor(p/w);for(var dy=-1;dy<=1;dy++)for(var dx=-1;dx<=1;dx++){var nx=x+dx,ny=y+dy;if((dx||dy)&&nx>=0&&nx<w&&ny>=0&&ny<h)fn(ny*w+nx);}}
     // Exterior transparency only: enclosed transparent holes are not seeds.
     for(var x=0;x<w;x++){visit(x);visit((h-1)*w+x);}
     for(var y=0;y<h;y++){visit(y*w);visit(y*w+w-1);}
+    if(progress)progress('Finding outside-connected transparency',null);
     for(var start=0;queue.length;start++){neighbors(queue.pop(),visit);if(start%4096===0&&performance.now()-sliceStarted>12)await pause();}
     // Exact capped Chebyshev distance to strong alpha, with two linear sweeps.
     // Balanced protects broad shadow components; a few distant connected
@@ -115,11 +122,11 @@
     for(var p=0;p<n;p++){distance[p]=data[p*4+3]>=240?0:cfg.radius+1;if(data[p*4+3])before++;if(p%262144===0)await pause();}
     for(var y=0;y<h;y++){
       for(var x=0;x<w;x++){var p=y*w+x,d=distance[p];if(x)d=Math.min(d,distance[p-1]+1);if(y){d=Math.min(d,distance[p-w]+1);if(x)d=Math.min(d,distance[p-w-1]+1);if(x+1<w)d=Math.min(d,distance[p-w+1]+1);}distance[p]=d;}
-      if(y%128===0)await pause();
+      if(y%128===0){if(progress)progress('Measuring protected artwork edges',y/h);await pause();}
     }
     for(var y=h-1;y>=0;y--){
       for(var x=w-1;x>=0;x--){var p=y*w+x,d=distance[p];if(x+1<w)d=Math.min(d,distance[p+1]+1);if(y+1<h){d=Math.min(d,distance[p+w]+1);if(x)d=Math.min(d,distance[p+w-1]+1);if(x+1<w)d=Math.min(d,distance[p+w+1]+1);}distance[p]=d;}
-      if(y%128===0)await pause();
+      if(y%128===0){if(progress)progress('Measuring protected artwork edges',1-y/h);await pause();}
     }
     function reference(p){
       var x=p%w,y=Math.floor(p/w),alpha=data[p*4+3],best=null,bestStep=cfg.radius+1;
@@ -185,7 +192,7 @@
       });
     }
     for(var seed=0;seed<n;seed++){
-      if(seed%65536===0)await pause();
+      if(seed%65536===0){if(progress)progress('Classifying edge cleanup',seed/n);await pause();}
       var alpha=data[seed*4+3];if(seen[seed]||!alpha||alpha>cfg.maxAlpha)continue;
       end=0;queue.clear();queue.push(seed);seen[seed]=2;var exterior=false,wide=0,matches=0;
       for(var start=0;queue.length;start++){
@@ -231,15 +238,15 @@
             if(seen[p]&16)stripe.data.fill(0,at,at+4);
             else {stripe.data[at+3]=Math.round(data[p*4+3]*cfg.retain);for(var c=0;c<3;c++)stripe.data[at+c]=Math.round(ref[c]);}
           }
-          ctx.putImageData(stripe,0,y);stripe=null;await pause();
+          ctx.putImageData(stripe,0,y);stripe=null;if(progress)progress('Rendering full-resolution candidate',(y+rows)/h);await pause();
         }
       }
       return {canvas:output||source,cleaned:cleaned,removed:removed,reduced:reduced,before:before,after:before-removed,strength:strength};
     }catch(error){releaseCanvas(output,source);throw error;}
   }
-  async function prepare(source,cancelled,strength){
-    var dots=await clean(source,cancelled),edge;
-    try {edge=await cleanFringe(dots.canvas,cancelled,strength,dots.canvas!==source);return {canvas:edge.canvas,removed:dots.removed,skipped:dots.skipped,fringe:edge};}
+  async function prepare(source,cancelled,strength,progress){
+    var dots=await clean(source,cancelled,progress),edge;
+    try {edge=await cleanFringe(dots.canvas,cancelled,strength,dots.canvas!==source,progress);return {canvas:edge.canvas,removed:dots.removed,skipped:dots.skipped,fringe:edge};}
     finally {if(!edge||edge.canvas!==dots.canvas)releaseCanvas(dots.canvas,source);}
   }
   function analyze(source,widthIn,heightIn,nativeScale) {
@@ -351,6 +358,93 @@
     complete=true;return finalCanvas;
     } finally {releaseCanvas(result,source);if(!complete)releaseCanvas(finalCanvas,source);}
   }
+  function abortError(){var error=new Error('Cancelled.');error.name='AbortError';return error;}
+  function releaseEntry(entry,original,adopted){
+    ['bitmap','originalPreview','candidatePreview'].forEach(function(k){if(entry[k])entry[k].close();});
+    if(entry.canvas!==adopted)releaseCanvas(entry.canvas,original);
+  }
+  function entryBytes(entry){return (entry.bitmap||entry.canvas?entry.width*entry.height*4:0)+['originalPreview','candidatePreview'].reduce(function(n,k){return n+(entry[k]?entry[k].width*entry[k].height*4:0);},0);}
+  function optimizerWorkerAvailable(){return typeof Worker==='function'&&typeof OffscreenCanvas==='function'&&!!optimizerScriptURL;}
+  function checkCandidateMemory(source,strength,factor){
+    // Native cleanup can use a dedicated worker's private buffers. Keep the
+    // existing resampling guard: a 2× candidate is four times the pixel area.
+    if(factor===1&&optimizerWorkerAvailable()&&source.width<=16384&&source.height<=16384&&source.width*source.height<=128*1024*1024){
+      var estimate=estimateMemory(source.width,source.height,strength,1,false);
+      if(estimate.bytes<=1536*1024*1024)return estimate;
+    }
+    return checkMemory(source.width,source.height,strength,factor,factor>1);
+  }
+  async function restoreCandidate(entry,original,signal,progress){
+    if(entry.canvas)return entry.canvas;
+    if(!entry.changed)return original;
+    var canvas=document.createElement('canvas');canvas.width=entry.width;canvas.height=entry.height;
+    // CPU-backed copies avoid uploading a 300 MiB native texture to the GPU
+    // on the first stripe; transfer/copy only the current bounded region.
+    canvas.getContext('2d',{willReadFrequently:true});
+    try{
+      for(var y=0;y<entry.height;y+=128){
+        if(signal.aborted)throw abortError();var rows=Math.min(128,entry.height-y);
+        canvas.getContext('2d').drawImage(entry.bitmap,0,y,entry.width,rows,0,y,entry.width,rows);
+        progress('Rendering full-resolution candidate',(y+rows)/entry.height);
+        await new Promise(function(r){setTimeout(r,0);});
+      }
+      return canvas;
+    }catch(error){releaseCanvas(canvas,original);throw error;}
+  }
+  async function processCandidate(original,settings,signal,progress){
+    if(optimizerWorkerAvailable()){
+      var entry=await new Promise(function(resolve,reject){
+      var worker=new Worker(new URL('print-optimizer-worker.js',optimizerScriptURL)),settled=false;
+      function finish(error,entry){if(settled){if(entry)releaseEntry(entry,original);return;}settled=true;signal.removeEventListener('abort',abort);worker.terminate();if(error)reject(error);else resolve(entry);}
+      function abort(){finish(abortError());}signal.addEventListener('abort',abort,{once:true});
+      if(signal.aborted){abort();return;}
+      var y=0;
+      function sendStripe(){
+        if(signal.aborted){abort();return;}
+        if(y>=original.height){worker.postMessage(Object.assign({},settings,{type:'run',factor:1}));return;}
+        try{var rows=Math.min(128,original.height-y),stripe=original.getContext('2d',{willReadFrequently:true}).getImageData(0,y,original.width,rows);
+          progress('Preparing full-resolution artwork',(y+rows)/original.height);
+          worker.postMessage({type:'stripe',y:y,rows:rows,buffer:stripe.data.buffer},[stripe.data.buffer]);y+=rows;
+        }catch(error){finish(error);}
+      }
+      worker.onerror=function(event){event.preventDefault();finish(new Error('Background processing could not start. Retry or Cancel; nothing was applied.'));};
+      worker.onmessage=function(event){var m=event.data;if(m.type==='initialized'||m.type==='stripe-ready')sendStripe();
+        else if(m.type==='progress')progress(m.step,m.fraction);
+        else if(m.type==='complete')finish(null,m.entry);else if(m.type==='error')finish(new Error(m.message));};
+      worker.postMessage({type:'init',width:original.width,height:original.height});
+      });
+      // Keep the established DOM-canvas enhancement intermediates: Chromium's
+      // OffscreenCanvas readback can round soft-edge colors differently. The
+      // resampler already yields by rows; native cleanup stays off-thread.
+      if(settings.factor>1){
+        var cleaned=null,enhanced=null;
+        try{
+          cleaned=await restoreCandidate(entry,original,signal,progress);
+          enhanced=await forceEnhance(cleaned,function(text){var m=text.match(/(\d+)%/);progress(text.replace(/:\s*\d+%/,''),m?Number(m[1])/100:null);},function(){return signal.aborted;});
+          if(signal.aborted)throw abortError();
+          if(entry.bitmap)entry.bitmap.close();entry.bitmap=null;if(entry.candidatePreview)entry.candidatePreview.close();entry.candidatePreview=null;
+          entry.canvas=enhanced;entry.width=enhanced.width;entry.height=enhanced.height;entry.factor=settings.factor;entry.changed=true;enhanced=null;
+        }catch(error){releaseEntry(entry,original);throw error;}
+        finally{releaseCanvas(cleaned,original);releaseCanvas(enhanced,original);}
+      }
+      return entry;
+    }
+    // Compatible fallback keeps the existing yielding algorithms and guards.
+    var result=null,candidate=null;
+    try{
+      result=await prepare(original,function(){return signal.aborted;},settings.strength,progress);candidate=result.canvas;
+      var info=analyze(candidate,settings.widthIn,settings.heightIn,settings.nativeScale),changedPixels=0;
+      if(candidate!==original)for(var y=0;y<original.height;y+=64){
+        if(signal.aborted)throw abortError();var rows=Math.min(64,original.height-y),a=original.getContext('2d').getImageData(0,y,original.width,rows).data,b=candidate.getContext('2d').getImageData(0,y,original.width,rows).data;
+        for(var i=0;i<a.length;i+=4)if(a[i]!==b[i]||a[i+1]!==b[i+1]||a[i+2]!==b[i+2]||a[i+3]!==b[i+3])changedPixels++;
+        progress('Verifying changed pixels',(y+rows)/original.height);await new Promise(function(r){setTimeout(r,0);});
+      }
+      if(settings.factor>1){var cleaned=candidate;candidate=await forceEnhance(cleaned,function(text){var m=text.match(/(\d+)%/);progress(text.replace(/:\s*\d+%/,''),m?Number(m[1])/100:null);},function(){return signal.aborted;});releaseCanvas(cleaned,original);}
+      var changed=settings.factor>1||changedPixels>0;
+      var entry={width:candidate.width,height:candidate.height,canvas:changed?candidate:null,changed:changed,changedPixels:changedPixels,info:info,removed:result.removed,skipped:result.skipped,fringe:{cleaned:result.fringe.cleaned,removed:result.fringe.removed,reduced:result.fringe.reduced,strength:result.fringe.strength},factor:settings.factor};
+      if(changed)candidate=null;return entry;
+    }finally{releaseCanvas(candidate,original);if(result&&(!entry||entry.canvas!==result.canvas))releaseCanvas(result.canvas,original);}
+  }
   async function open(options) {
     if(document.querySelector('.print-optimizer'))return;
     var prior=document.activeElement,dialog=document.createElement('dialog'),closed=false,candidate=null,cleanup=null,info=null,factor=1,changed=false,busy=true;
@@ -359,9 +453,10 @@
     dialog.innerHTML=[
       '<header><h2>Optimize for Print</h2><button type="button" data-close aria-label="Close print optimizer">×</button></header>',
       '<p class="print-result" role="status">Analyzing full-resolution artwork…</p>',
-      '<label class="print-edge-strength">Edge cleanup strength <select data-edge-strength aria-describedby="print-edge-hint" disabled><option value="safe">Safe</option><option value="balanced" selected>Balanced</option><option value="strong">Strong</option></select></label>',
+      '<div class="print-progress" data-progress hidden><div class="print-progress-track" role="progressbar" aria-label="Optimization processing" aria-valuemin="0" aria-valuemax="100"><span></span></div><small data-progress-value></small></div>',
+      '<label class="print-edge-strength">Edge cleanup strength <select data-edge-strength aria-describedby="print-edge-hint"><option value="safe">Safe</option><option value="balanced" selected>Balanced</option><option value="strong">Strong</option></select></label>',
       '<p id="print-edge-hint">Safe: isolated dots only. Balanced: likely connected edge halo. Strong: tighter blur/matte cleanup; may reduce soft outer shadows.</p>',
-      '<label class="print-edge-strength">Image enhancement <select data-enhancement disabled><option value="auto" selected>Auto / Print-safe</option><option value="force">Force smooth enhance</option></select></label>',
+      '<label class="print-edge-strength">Image enhancement <select data-enhancement><option value="auto" selected>Auto / Print-safe</option><option value="force">Force smooth enhance</option></select></label>',
       '<p>Smooth enhancement improves jagged edges but cannot recreate lost original detail.</p>',
       '<p>Auto / Print-safe keeps the active source resolution. Only Force smooth enhance creates a 2× working image.</p>',
       '<p class="print-detail">Scroll or drag to pan both views. Hover or tap to inspect matching pixels; press Enter in a pane to inspect its center. Zoom uses optimized pixels, aligned to the same print area. Smooth upscale does not restore lost detail.</p>',
@@ -371,14 +466,14 @@
     ].join('');
     var $=function(s){return dialog.querySelector(s);},status=$('.print-result'),apply=$('[data-apply]'),strength=$('[data-edge-strength]'),enhancement=$('[data-enhancement]');
     var comparison=createComparison($('.print-comparison'));
-    var adopted=false;
+    var adopted=false,controller=null,activeWork=Promise.resolve(),revision=0,cache=new Map(),cacheBytes=0;
+    var cacheLimit=1024*1024*1024,currentEntry=null;
     function discard(){
       var owned=new Set([candidate,cleanup&&cleanup.canvas,cleanup&&cleanup.fringe.canvas]);
-      owned.forEach(function(c){if(!(adopted&&c===candidate))releaseCanvas(c,original);});
+      owned.forEach(function(c){if(!(adopted&&c===candidate)&&!Array.from(cache.values()).some(function(e){return e.canvas===c;}))releaseCanvas(c,original);});
       candidate=null;cleanup=null;
     }
-    function close(){closed=true;comparison.destroy();if(!busy)discard();dialog.close();dialog.remove();if(prior&&prior.isConnected)prior.focus({preventScroll:true});}
-    function cancelled(){return closed;}
+    function close(){closed=true;revision++;if(controller)controller.abort();comparison.destroy();cache.forEach(function(e){releaseEntry(e,original,adopted?candidate:null);});cache.clear();cacheBytes=0;discard();dialog.close();dialog.remove();if(prior&&prior.isConnected)prior.focus({preventScroll:true});}
     function message(text){if(!closed)status.textContent=text;}
     function sourceSummary(){return (info.ppi<300?'Low source quality: ':'Print-ready: effective source ')+Math.round(info.ppi)+' PPI.'+(info.ppi>=300?' No upscale needed.':' A higher-resolution original gives better detail.');}
     function summary(){
@@ -391,38 +486,55 @@
       else if(!cleanup.fringe.cleaned)result+=' No removable edge fringe detected in this mode.';
       if(cleanup.skipped)result+=' Dense detached detail preserved.';
       if(enhancement.value==='auto')result+=' Native resolution retained.';
+      result+=' Cleanup changed '+currentEntry.changedPixels.toLocaleString()+' source pixels.';
       return result;
     }
-    function ready(){busy=false;strength.disabled=false;enhancement.disabled=false;apply.disabled=false;apply.textContent=changed?'Apply optimization':'Close — no changes';message(summary());}
-    async function regenerateCleanup(){
-      busy=true;changed=false;apply.disabled=true;apply.textContent='Apply optimization';strength.disabled=true;enhancement.disabled=true;
-      $('[data-retry]').hidden=true;comparison.clear();discard();
-      try {
-        if(!Number.isFinite(options.widthIn)||!Number.isFinite(options.heightIn)||options.widthIn<=0||options.heightIn<=0)throw new Error('Enter a valid print width and height before optimizing.');
-        // Auto never resamples, even at low effective PPI. Enhancement requires
-        // the explicit Force choice and always starts from this session's source.
-        factor=enhancement.value==='force'?2:1;
-        var estimate=checkMemory(original.width,original.height,strength.value,factor,enhancement.value==='force');
-        dialog.dataset.estimatedPeakBytes=estimate.bytes;
-        message('Preparing '+strength.options[strength.selectedIndex].text+' edge cleanup at '+original.width+' × '+original.height+' px…');
-        // Every mode starts from the session original, never from a previously
-        // cleaned preview. Switching strengths cannot accumulate erasure.
-        cleanup=await prepare(original,cancelled,strength.value);if(closed)return;
-        info=analyze(cleanup.canvas,options.widthIn,options.heightIn,options.nativeScale);
-        candidate=cleanup.canvas;
-        if(factor>1){
-          candidate=await forceEnhance(cleanup.canvas,message,cancelled);
-          releaseCanvas(cleanup.canvas,original);cleanup.canvas=candidate;cleanup.fringe.canvas=candidate;
+    function updateProgress(step,fraction){
+      if(closed)return;var bar=$('[role="progressbar"]'),known=Number.isFinite(fraction),percent=known?Math.max(0,Math.min(100,Math.floor(fraction*100))):null;
+      $('[data-progress]').hidden=false;bar.classList.toggle('is-indeterminate',!known);
+      if(known){bar.setAttribute('aria-valuenow',percent);bar.firstElementChild.style.width=percent+'%';}else{bar.removeAttribute('aria-valuenow');bar.firstElementChild.style.width='';}
+      bar.setAttribute('aria-valuetext',step+(known?' · '+percent+'% of this step':''));
+      $('[data-progress-value]').textContent=step+(known?' · '+percent+'% of this step':'');message(step+'…');
+    }
+    function remember(key,entry){
+      var bytes=entryBytes(entry);
+      while(cache.size&&(cacheBytes+bytes>cacheLimit||cache.size>=6)){var oldKey=cache.keys().next().value,old=cache.get(oldKey);cacheBytes-=entryBytes(old);releaseEntry(old,original);cache.delete(oldKey);}
+      cache.set(key,entry);cacheBytes+=bytes;
+    }
+    function regenerateCleanup(){
+      if(controller)controller.abort();controller=new AbortController();var signal=controller.signal,id=++revision;
+      busy=true;changed=false;apply.disabled=true;apply.textContent='Apply optimization';dialog.setAttribute('aria-busy','true');dialog.dataset.cacheHit='false';
+      $('[data-retry]').hidden=true;comparison.clear();discard();currentEntry=null;
+      var settings={strength:strength.value,enhancement:enhancement.value,factor:enhancement.value==='force'?2:1,widthIn:options.widthIn,heightIn:options.heightIn,nativeScale:options.nativeScale};
+      var key=JSON.stringify([settings.strength,settings.enhancement,settings.factor]);
+      var label={safe:'Safe',balanced:'Balanced',strong:'Strong'}[settings.strength];
+      updateProgress(settings.factor>1?'Preparing 2× smooth enhancement':'Preparing '+label+' edge cleanup preview',null);
+      var previous=activeWork;
+      activeWork=(async function(){
+        var rendered=null;
+        try{
+          // Serialize fallback work too; aborting never leaves two native jobs running.
+          await previous.catch(function(){});await new Promise(function(r){setTimeout(r,0);});
+          if(signal.aborted)throw abortError();
+          if(!Number.isFinite(options.widthIn)||!Number.isFinite(options.heightIn)||options.widthIn<=0||options.heightIn<=0)throw new Error('Enter a valid print width and height before optimizing.');
+          var estimate=checkCandidateMemory(original,settings.strength,settings.factor);dialog.dataset.estimatedPeakBytes=estimate.bytes;
+          var hit=cache.has(key),entry=cache.get(key);
+          dialog.dataset.cacheHit=String(hit);dialog.dataset.processingBackend=optimizerWorkerAvailable()?'worker':'yielding fallback';
+          function progress(step,fraction){if(!closed&&id===revision&&!signal.aborted)updateProgress(step,fraction);}
+          var started=performance.now();
+          if(!entry){entry=await processCandidate(original,settings,signal,progress);if(signal.aborted){releaseEntry(entry,original);entry=null;throw abortError();}entry.processingMs=performance.now()-started;remember(key,entry);}
+          else {cache.delete(key);cache.set(key,entry);}
+          rendered=await restoreCandidate(entry,original,signal,progress);
+          if(closed||signal.aborted||id!==revision)throw abortError();
+          candidate=rendered;rendered=null;currentEntry=entry;info=entry.info;factor=entry.factor;changed=entry.changed;cleanup={removed:entry.removed,skipped:entry.skipped,fringe:entry.fringe};
+          comparison.setImages(original,candidate,[entry.originalPreview,entry.candidatePreview]);busy=false;apply.disabled=false;apply.textContent=changed?'Apply optimization':'Close — no changes';
+          $('[data-progress]').hidden=true;dialog.setAttribute('aria-busy','false');dialog.dataset.processingMs=entry.processingMs;dialog.dataset.restoreMs=performance.now()-started;
+          message(summary()+(hit?' Completed candidate restored from cache.':''));
+        }catch(error){
+          releaseCanvas(rendered,original);
+          if(!closed&&id===revision&&!signal.aborted){busy=false;discard();comparison.clear();apply.disabled=true;$('[data-retry]').hidden=false;$('[data-progress]').hidden=true;dialog.setAttribute('aria-busy','false');message('Optimization failed: '+error.message+' Nothing was applied. Retry, change the selected option, or Cancel.');}
         }
-        if(closed)return;
-        changed=!(await samePreviewPixels(original,candidate,cancelled));if(closed)return;
-        comparison.setImages(original,candidate);ready();
-      }catch(error){
-        discard();comparison.clear();
-        if(!closed){busy=false;strength.disabled=false;enhancement.disabled=false;
-          apply.disabled=true;$('[data-retry]').hidden=false;
-          message('Optimization failed: '+error.message+' Nothing was applied. Retry, change the selected option, or Cancel.');}
-      }finally{if(closed){busy=false;discard();}}
+      })();return activeWork;
     }
     $('[data-close]').onclick=$('[data-cancel]').onclick=close;
     dialog.oncancel=function(e){e.preventDefault();close();};
@@ -445,7 +557,7 @@
       '<section class="print-after"><h3>Optimized preview <small data-candidate-size></small></h3><div class="print-viewport" tabindex="0" role="region" aria-label="Optimized preview; pan linked to original"><div class="print-surface"><canvas class="print-image"></canvas></div></div></section>',
       '<div class="print-divider" role="slider" tabindex="0" aria-label="Swipe comparison divider" aria-valuemin="0" aria-valuemax="100" aria-valuenow="50"><span>↔</span></div>'].join('');
     var panes=Array.from(root.querySelectorAll('.print-viewport')),surfaces=Array.from(root.querySelectorAll('.print-surface')),canvases=Array.from(root.querySelectorAll('.print-image'));
-    var divider=root.querySelector('.print-divider'),images=null,zoom=0,scale=1,split=50,mode='side',point=null,drag=null,closed=false,scrollLock=false,layout=[];
+    var divider=root.querySelector('.print-divider'),images=null,displayImages=null,zoom=0,scale=1,split=50,mode='side',point=null,drag=null,closed=false,scrollLock=false,layout=[];
     var lenses=panes.map(function(p){var lens=document.createElement('div');lens.className='print-lens';lens.hidden=true;lens.innerHTML='<canvas width="128" height="128"></canvas><output></output>';p.parentNode.appendChild(lens);return lens;});
     function activePanes(){return mode==='swipe'?[panes[0]]:panes;}
     function clip(){
@@ -494,8 +606,9 @@
         var density=Math.min(1,1024/width,1024/height);
         c.width=Math.max(1,Math.ceil(width*density));c.height=Math.max(1,Math.ceil(height*density));
         c.style.width=width+'px';c.style.height=height+'px';c.style.left=(l.left+x)+'px';c.style.top=(l.top+y)+'px';
-        var ctx=c.getContext('2d');ctx.imageSmoothingEnabled=!zoom;ctx.imageSmoothingQuality='high';
-        ctx.drawImage(im,x/l.width*im.width,y/l.height*im.height,width/l.width*im.width,height/l.height*im.height,0,0,c.width,c.height);
+        var ctx=c.getContext('2d',{willReadFrequently:true});ctx.imageSmoothingEnabled=!zoom;ctx.imageSmoothingQuality='high';
+        var display=!zoom&&displayImages&&displayImages[i]?displayImages[i]:im;
+        ctx.drawImage(display,x/l.width*display.width,y/l.height*display.height,width/l.width*display.width,height/l.height*display.height,0,0,c.width,c.height);
         c.dataset.sourceX=x/l.width*im.width;c.dataset.sourceY=y/l.height*im.height;
       });
     }
@@ -521,9 +634,9 @@
     divider.onpointermove=function(e){if(divider.hasPointerCapture(e.pointerId))moveDivider(e);};
     divider.onkeydown=function(e){if(!['ArrowLeft','ArrowRight','Home','End'].includes(e.key))return;e.preventDefault();split=e.key==='Home'?0:e.key==='End'?100:Math.max(0,Math.min(100,split+(e.key==='ArrowLeft'?-1:1)*(e.shiftKey?10:1)));clip();};
     var observer=new ResizeObserver(geometry);panes.forEach(function(p){observer.observe(p);});
-    function clear(){images=null;layout=[];canvases.forEach(function(c){c.width=0;c.height=0;});hideLens();}
+    function clear(){images=null;displayImages=null;layout=[];canvases.forEach(function(c){c.width=0;c.height=0;});hideLens();}
     return {
-      setImages:function(original,candidate){images=[original,candidate];images.forEach(function(im,i){var c=canvases[i];if(im.width<=1024&&im.height<=1024){c.width=im.width;c.height=im.height;c.getContext('2d').drawImage(im,0,0);}else{c.width=0;c.height=0;}});root.querySelector('[data-original-size]').textContent=original.width+' × '+original.height+' px';root.querySelector('[data-candidate-size]').textContent=candidate.width+' × '+candidate.height+' px';root.querySelector('[data-swipe-size]').textContent=candidate.width+' × '+candidate.height+' px';geometry();},
+      setImages:function(original,candidate,display){images=[original,candidate];displayImages=display;images.forEach(function(im,i){var c=canvases[i];if(im.width<=1024&&im.height<=1024){c.width=im.width;c.height=im.height;c.getContext('2d').drawImage(im,0,0);}else{c.width=0;c.height=0;}});root.querySelector('[data-original-size]').textContent=original.width+' × '+original.height+' px';root.querySelector('[data-candidate-size]').textContent=candidate.width+' × '+candidate.height+' px';root.querySelector('[data-swipe-size]').textContent=candidate.width+' × '+candidate.height+' px';geometry();},
       setZoom:function(value){zoom=value;geometry();},
       setMode:function(value){mode=value;root.classList.toggle('is-swipe',mode==='swipe');if(mode==='swipe')surfaces[0].appendChild(canvases[1]);else{surfaces[1].appendChild(canvases[1]);canvases.forEach(function(c){c.style.clipPath='';});}geometry();},
       clear:clear,

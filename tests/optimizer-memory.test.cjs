@@ -13,7 +13,7 @@ const reference=execFileSync('git',['show','3ffdc5b:public/print-optimizer.js'],
     await page.route('http://localhost:4195/**',r=>{
       const name=new URL(r.request().url()).pathname;
       if(name==='/reference.js')return r.fulfill({body:reference,contentType:'text/javascript'});
-      if(/^\/print-optimizer\.(js|css)$/.test(name))return r.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('js')?'text/javascript':'text/css'});
+      if(/^\/print-optimizer(?:-worker)?\.(js|css)$/.test(name))return r.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('js')?'text/javascript':'text/css'});
       return r.fulfill({body:'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/print-optimizer.css"><script src="/reference.js"></script><script src="/print-optimizer.js"></script>',contentType:'text/html'});
     });
     await page.goto('http://localhost:4195');
@@ -91,6 +91,7 @@ const reference=execFileSync('git',['show','3ffdc5b:public/print-optimizer.js'],
     await page.evaluate(()=>{applied.c.width=0;applied=null;});
     // Oversized cleanup fails before any source pixel read or processing.
     await page.evaluate(()=>{
+      window.nativeWorker=window.Worker;window.Worker=undefined;
       const big=document.createElement('canvas');big.width=big.height=5000;window.bigSource=big;window.bigReads=0;
       big.getContext=()=>{bigReads++;throw Error('Unexpected read before preflight');};
       PrintOptimizer.open({canvas:big,widthIn:4096/300,heightIn:4096/300,apply(){throw Error('Invalid apply');}});
@@ -100,6 +101,7 @@ const reference=execFileSync('git',['show','3ffdc5b:public/print-optimizer.js'],
     assert.match(await page.locator('.print-result').innerText(),/Balanced edge cleanup cannot process 5000 × 5000 px/);
     assert.doesNotMatch(await page.locator('.print-result').innerText(),/pixels cleaned/);
     await page.locator('[data-cancel]').click();await page.evaluate(()=>{bigSource.width=0;});
+    await page.evaluate(()=>{window.Worker=nativeWorker;});
     // Native 4096 now fits every cleanup mode without weaker classification.
     await page.evaluate(()=>{
       window.safe4096=fixture(4096);window.safe4096Applied=null;

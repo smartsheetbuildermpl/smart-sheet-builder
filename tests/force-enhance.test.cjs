@@ -11,7 +11,7 @@ const {chromium}=require('playwright');
     page.on('pageerror',e=>errors.push(e.message));
     await page.route('http://localhost:4194/**',r=>{
       const name=new URL(r.request().url()).pathname;
-      if(/^\/print-optimizer\.(js|css)$/.test(name))return r.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('js')?'text/javascript':'text/css'});
+      if(/^\/print-optimizer(?:-worker)?\.(js|css)$/.test(name))return r.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('js')?'text/javascript':'text/css'});
       return r.fulfill({body:'<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width"><link rel="stylesheet" href="/print-optimizer.css"><script src="/print-optimizer.js"></script>',contentType:'text/html'});
     });
     await page.goto('http://localhost:4194');

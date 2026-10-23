@@ -25,7 +25,7 @@ function tiff(bytes) {
     await require('./preflight-review-helper.cjs')(page);
     await page.route('http://localhost:4187/**',route=>{
       const name=new URL(route.request().url()).pathname;
-      if(/^\/(background-editor|sheet-workspace|print-optimizer|export-delivery|sheet-packing|builder-shell|workspace-theme)\.(js|css)$/.test(name))return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
+      if(/^\/(background-editor|sheet-workspace|print-optimizer(?:-worker)?|export-delivery|sheet-packing|builder-shell|workspace-theme)\.(js|css)$/.test(name))return route.fulfill({body:fs.readFileSync('public'+name),contentType:name.endsWith('.js')?'text/javascript':'text/css'});
       return route.fulfill({body:html,contentType:'text/html'});
     });
     await page.goto('http://localhost:4187/builder.html');
