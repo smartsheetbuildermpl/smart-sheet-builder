@@ -71,13 +71,14 @@ function alphaCrop(buffer, padding = 1) {
     await frame.locator('#fileInput').waitFor();
     const validation = await doc.evaluate(() => {
       const empty = document.createElement('canvas'); empty.width = empty.height = 4500;
-      let emptyRejected = false, sideRejected = false;
+      let emptyRejected = false, sideRejected = false, productionAccepted = true;
       try { largeUploadTest.trimTransparentMargins(empty, 1); } catch (error) { emptyRejected = /transparent|empty/i.test(error.message); }
-      try { largeUploadTest.assertNativeImageDimensions(8193, 1, 'PNG upload'); } catch (error) { sideRejected = /8192/.test(error.message); }
+      try { largeUploadTest.assertNativeImageDimensions(6900, 11700, 'PNG upload'); } catch { productionAccepted = false; }
+      try { largeUploadTest.assertNativeImageDimensions(32768, 1, 'PNG upload'); } catch (error) { sideRejected = /32767/.test(error.message); }
       empty.width = empty.height = 1;
-      return { emptyRejected, sideRejected };
+      return { emptyRejected, sideRejected, productionAccepted };
     });
-    assert.deepEqual(validation, { emptyRejected: true, sideRejected: true }, 'empty-image and 8192-per-side validation remain active');
+    assert.deepEqual(validation, { emptyRejected: true, sideRejected: true, productionAccepted: true }, 'production PNG dimensions are accepted; empty and unsupported source dimensions remain rejected');
 
     let buffer, name;
     if (process.env.LARGE_PNG_PATH) {
