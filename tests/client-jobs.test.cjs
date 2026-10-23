@@ -56,6 +56,8 @@ async function fixture() {
   await f.db.exec(profilesSql); await f.db.exec(profilesSql);
   const uploadSql = fs.readFileSync('supabase-client-upload-limits-v1.sql', 'utf8');
   await f.db.exec(uploadSql); await f.db.exec(uploadSql);
+  const uploadLimitsV2Sql = fs.readFileSync('supabase-client-upload-limits-v2.sql', 'utf8');
+  await f.db.exec(uploadLimitsV2Sql); await f.db.exec(uploadLimitsV2Sql);
   Object.assign(process.env, {
     RESEND_API_KEY: 'test-provider',
     CLIENT_JOBS_EMAIL_FROM: 'print@test.example',

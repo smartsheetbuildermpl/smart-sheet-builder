@@ -1,8 +1,39 @@
 // Portal-only limits. Preview geometry never allocates an output-sized bitmap.
-export const MAX_UPLOAD_BYTES = 32 * 1024 * 1024;
+// Values are saved with each upload profile so shops can set a smaller limit
+// when their workflow requires it. These are safe fallbacks for old profiles.
+export const DEFAULT_MAX_UPLOAD_MIB = 50;
+export const DEFAULT_MAX_TOTAL_UPLOAD_MIB = 150;
+export const MAX_UPLOAD_FILES = 10;
+export const MAX_UPLOAD_PIECES = 500;
+export const MAX_UPLOAD_BYTES = DEFAULT_MAX_UPLOAD_MIB * 1024 * 1024;
+export const MAX_TOTAL_UPLOAD_BYTES = DEFAULT_MAX_TOTAL_UPLOAD_MIB * 1024 * 1024;
 export const PROXY_UPLOAD_BYTES = 4 * 1024 * 1024;
-export function uploadProblem(name, size, reason) {
-  return `${name || 'PNG'} (${(size / 1048576).toFixed(2)} MiB; limit 32 MiB per file / submission): ${reason}`;
+export const MAX_SOURCE_SIDE = 32767;
+export const MAX_SOURCE_PIXELS = 128000000;
+
+const mib = (bytes) => `${(bytes / 1048576).toFixed(2)} MiB`;
+const boundedMiB = (value, fallback, maximum) =>
+  Number.isInteger(value) && value >= 1 && value <= maximum ? value : fallback;
+
+export function uploadLimits(settings = {}) {
+  const fileMiB = boundedMiB(settings.maxFileMiB, DEFAULT_MAX_UPLOAD_MIB, 100);
+  const totalMiB = Math.max(
+    fileMiB,
+    boundedMiB(settings.maxTotalMiB, DEFAULT_MAX_TOTAL_UPLOAD_MIB, 300)
+  );
+  return {
+    maxFileMiB: fileMiB,
+    maxTotalMiB: totalMiB,
+    maxFileBytes: fileMiB * 1024 * 1024,
+    maxTotalBytes: totalMiB * 1024 * 1024,
+    maxFiles: MAX_UPLOAD_FILES,
+    maxPieces: MAX_UPLOAD_PIECES
+  };
+}
+
+export function uploadProblem(name, size, reason, limits = uploadLimits(), usedBytes = 0) {
+  const remaining = Math.max(0, limits.maxTotalBytes - Math.max(0, usedBytes));
+  return `${name || 'PNG'} (${mib(size)}; per-file limit ${limits.maxFileMiB} MiB; ${mib(remaining)} remaining of ${limits.maxTotalMiB} MiB per submission): ${reason}`;
 }
 export function outputProblem(manifest, index, assets = []) {
   const sheet = manifest?.sheets?.[index];

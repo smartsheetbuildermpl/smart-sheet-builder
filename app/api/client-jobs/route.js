@@ -1,6 +1,6 @@
 import { accountActor, failure } from '../_lib/user-management';
 import { uploadProfileTemplates } from '../../lib/client-upload-profiles';
-import { outputProblem } from '../../lib/client-portal-limits';
+import { outputProblem, uploadLimits } from '../../lib/client-portal-limits';
 import {
   jobs,
   reply,
@@ -49,7 +49,8 @@ export async function GET(request) {
     try { origin = publicOrigin(request); } catch { /* Report in setupIssues, do not fabricate a link. */ }
     const visibleProfiles = profiles.map(p => {
       const token = linkToken(p), active = Boolean(p.enabled && token && setupIssues.length === 0);
-      return { id: p.id, name: p.name, template: p.template_key, settings: p.settings, enabled: p.enabled, active,
+      const profileSettings = settings(p.settings);
+      return { id: p.id, name: p.name, template: p.template_key, settings: profileSettings, limits: uploadLimits(profileSettings), enabled: p.enabled, active,
         status: active ? 'active' : 'setup_required', url: token && origin ? `${origin}/client-upload/${token}` : '' };
     });
     return reply({

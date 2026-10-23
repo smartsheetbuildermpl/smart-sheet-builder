@@ -4,7 +4,7 @@ import ClientJobPreview from '../../components/ClientJobPreview';
 import PrintLayoutLoading from '../../components/PrintLayoutLoading';
 import { machineLabel } from '../../lib/client-upload-profiles';
 import { defaultDesignSize, validDesignSize, MAX_REQUESTED_SIZE_IN } from '../../lib/client-design-size';
-import { MAX_UPLOAD_BYTES, PROXY_UPLOAD_BYTES, uploadProblem, outputProblem } from '../../lib/client-portal-limits';
+import { PROXY_UPLOAD_BYTES, uploadLimits, uploadProblem, outputProblem } from '../../lib/client-portal-limits';
 
 const pngSignature = [137, 80, 78, 71, 13, 10, 26, 10];
 const activeUploadStates = new Set(['Preparing upload', 'Uploading', 'Processing']);
@@ -50,7 +50,7 @@ export default function ClientUpload({ params }) {
       .then(async (r) => {
         const d = await r.json().catch(() => ({ code: 'portal_configuration_error', message: 'The upload portal is not deployed or could not be reached. Please contact the shop.' }));
         if (!r.ok) throw Object.assign(Error(d.message), { code: d.code });
-        if (live) { setShop(d.shopName); setUploadProfile({name:d.profileName || 'Legacy / Default Profile',machine:d.machine}); }
+        if (live) { setShop(d.shopName); setUploadProfile({name:d.profileName || 'Legacy / Default Profile',machine:d.machine,limits:d.limits || uploadLimits()}); }
       })
       .catch((e) => {
         if (live) { setError(e.message); setErrorCode(e.code || 'portal_configuration_error'); }
@@ -118,13 +118,14 @@ export default function ClientUpload({ params }) {
   }
 
   async function validatePng(file) {
-    const invalid = reason => Error(uploadProblem(file.name, file.size, reason));
-    if (!/\.png$/i.test(file.name) || file.size > MAX_UPLOAD_BYTES) throw invalid('Choose a static PNG within the upload limit.');
+    const limits = uploadProfile?.limits || uploadLimits();
+    const invalid = reason => Error(uploadProblem(file.name, file.size, reason, limits, currentUploadedBytes()));
+    if (!/\.png$/i.test(file.name) || file.size > limits.maxFileBytes) throw invalid('Choose a static PNG within the per-file upload limit.');
     const sig = new Uint8Array(await file.slice(0, 33).arrayBuffer());
     if (sig.length < 33 || !pngSignature.every((byte, index) => sig[index] === byte)) throw invalid('This file is not a PNG.');
     const header = new DataView(sig.buffer), w = header.getUint32(16), h = header.getUint32(20);
-    if (!w || !h || w > 8192 || h > 8192 || w * h > 16777216 || sig[24] !== 8) {
-      throw invalid('Use an 8-bit PNG up to 16 megapixels and 8192 pixels per side. The source will not be downscaled.');
+    if (!w || !h || w > 32767 || h > 32767 || w * h > 128000000 || sig[24] !== 8) {
+      throw invalid('Use an 8-bit PNG within the portal source safety limit (128 megapixels and 32767 pixels per side). The source will not be downscaled.');
     }
     // Full CRC/decode/alpha validation is authoritative on the server. Do not
     // decode a full-size client bitmap merely to upload untouched file bytes.
@@ -175,6 +176,7 @@ export default function ClientUpload({ params }) {
       patchUpload(id, { state: 'Ready', assetId: asset.id });
     } catch (e) {
       patchUpload(id, { state: 'Failed', error: e.message || 'Upload failed. Check your connection and retry.' });
+      setMessage('Upload failed. Review the file details and retry. Other ready designs can still be previewed.');
     }
   }
 
@@ -210,6 +212,11 @@ export default function ClientUpload({ params }) {
   }
 
   const hasUploadsInFlight = Object.values(uploads).some((entry) => activeUploadStates.has(entry.state));
+  function currentUploadedBytes() {
+    return (job?.assets || []).reduce((total, asset) => total + (Number(asset.bytes) || 0), 0);
+  }
+  const limits = uploadProfile?.limits || uploadLimits();
+  const remainingUploadBytes = Math.max(0, limits.maxTotalBytes - currentUploadedBytes());
   const invalidReference = !reference.trim() || /[\u0000-\u001f\u007f]/.test(reference);
   function designSize(asset) { return sizes[asset.id] || { ...defaultDesignSize(asset), lockAspect: true }; }
   function changeSize(asset, field, value) {
@@ -255,7 +262,7 @@ export default function ClientUpload({ params }) {
         <label>Project / Client Name *<input required placeholder="Example: Mikael – Company Uniform" value={reference} maxLength={120} disabled={busy} aria-invalid={invalidReference} aria-describedby={invalidReference ? 'client-project-error' : undefined} onChange={(e) => { setReference(e.target.value); setDirty(true); }} /></label>
         {invalidReference && <span id="client-project-error" className="client-project-error">Enter a Project / Client Name to preview and submit your gang sheet.</span>}
         <label className="client-drop">Upload designs<input ref={fileInput} type="file" accept="image/png,.png" multiple disabled={busy || !shop} onChange={(e) => { upload(Array.from(e.target.files)); e.target.value = ''; }} /></label>
-        <p className="client-muted">Static 8-bit PNG · up to 32 MiB each · 10 files / 32 MiB total · 500 pieces. Unconfirmed uploads expire after 2 hours.</p>
+        <p className="client-muted">Static 8-bit PNG · up to {limits.maxFileMiB} MiB each · {limits.maxFiles} files / {limits.maxTotalMiB} MiB total · {limits.maxPieces} pieces. {Math.max(0, remainingUploadBytes / 1048576).toFixed(2)} MiB submission allowance remaining. Unconfirmed uploads expire after 2 hours.</p>
         {[...(job?.assets || []).map((asset) => ({ asset, entry: uploadByAsset[asset.id] })), ...pendingEntries.map((entry) => ({ entry }))].map(({ asset, entry }) => {
           const id = asset?.id || entry.id, name = asset?.name || entry.name, state = entry?.state || 'Ready', ready = Boolean(asset) && state === 'Ready';
           const size = asset ? designSize(asset) : null;

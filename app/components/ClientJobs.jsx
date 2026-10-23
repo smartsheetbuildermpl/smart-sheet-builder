@@ -450,6 +450,15 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                           />
                         </label>
                       ))}
+                      {[
+                        ['maxFileMiB', 'Per-file upload limit (MiB)'],
+                        ['maxTotalMiB', 'Submission upload limit (MiB)']
+                      ].map(([key, label]) => (
+                        <label key={key}>
+                          {label}
+                          <input type="number" min="1" max={key === 'maxFileMiB' ? 100 : 300} step="1" required value={config[key] ?? (key === 'maxFileMiB' ? 50 : 150)} onChange={(e) => setConfig({ ...config, [key]: Number(e.target.value) })} />
+                        </label>
+                      ))}
                     </div>
                     <label>
                       <input
@@ -476,6 +485,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                       Artwork sizing: use uploaded artwork at 300 PPI, after
                       transparent-margin trimming.
                     </p>
+                    <p className="client-muted">Upload limits are enforced by the portal server and private storage. New profiles default to 50 MiB per PNG and 150 MiB per submission.</p>
                     {!!data?.setupIssues?.length && (
                       <div className="client-error">
                         <p>Complete these server settings before enabling this link:</p>

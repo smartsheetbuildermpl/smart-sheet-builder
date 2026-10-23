@@ -1,6 +1,6 @@
 import { failure, rpc } from '../../_lib/user-management';
 import { defaultDesignSize, validDesignSize } from '../../../lib/client-design-size';
-import { MAX_UPLOAD_BYTES, PROXY_UPLOAD_BYTES, uploadProblem } from '../../../lib/client-portal-limits';
+import { PROXY_UPLOAD_BYTES, uploadLimits, uploadProblem } from '../../../lib/client-portal-limits';
 import {
   jobs,
   reply,
@@ -42,12 +42,27 @@ async function bytes(request, limit = PROXY_UPLOAD_BYTES) {
   }
   return Buffer.concat(chunks);
 }
+function activeAssets(job) {
+  return job.assets.filter((asset) => !asset.deleted);
+}
+function reserveCheck(job, portal, name, size) {
+  const limits = uploadLimits(portal.settings);
+  const assets = activeAssets(job);
+  const usedBytes = assets.reduce((total, asset) => total + (Number(asset.bytes) || 0), 0);
+  if (assets.length >= limits.maxFiles)
+    throw failure(uploadProblem(name, size, `A submission can contain up to ${limits.maxFiles} PNG files.`, limits, usedBytes), 400);
+  if (!Number.isInteger(size) || size < 33 || size > limits.maxFileBytes)
+    throw failure(uploadProblem(name, Number(size) || 0, 'Choose a valid static PNG within the per-file upload limit.', limits, usedBytes), 400);
+  if (usedBytes + size > limits.maxTotalBytes)
+    throw failure(uploadProblem(name, size, 'This file exceeds the remaining submission allowance. Remove a file or upload a smaller PNG.', limits, usedBytes), 400);
+  return { limits, usedBytes };
+}
 export async function GET(request, { params }) {
   try {
     await rate(request, 'public-view', 240);
     const { portal } = await publicActor(request, params.token, false);
     publicOrigin(request);
-    return reply({ shopName: portal.settings.shopName, profileName: portal.name, machine: portal.settings.machine });
+    return reply({ shopName: portal.settings.shopName, profileName: portal.name, machine: portal.settings.machine, limits: uploadLimits(portal.settings) });
   } catch (e) {
     return errorReply(e);
   }
@@ -75,12 +90,13 @@ export async function POST(request, { params }) {
         name = text(
           decodeURIComponent(request.headers.get('x-file-name') || 'design.png')
         );
-      await jobs('reserve', {
+      const { limits, usedBytes } = reserveCheck(job, portal, name, data.length);
+      await rpc('ssb_client_upload_reserve', {
         ...args,
         p_data: { id, path, name, bytes: data.length, ready: false, qty: 1 }
       });
       try {
-        const decoded = decodePng(data);
+        const decoded = decodePng(data, limits);
         await storage('POST', path, data);
         const updated = await jobs('ready', {
           ...args,
@@ -90,7 +106,7 @@ export async function POST(request, { params }) {
       } catch (e) {
         await removePaths([path]).catch(() => {});
         await jobs('remove', { ...args, p_data: { id } }).catch(() => {});
-        if (e.status === 400) e.message = uploadProblem(name, data.length, e.message);
+        if (e.status === 400) e.message = uploadProblem(name, data.length, e.message, limits, usedBytes);
         throw e;
       }
     }
@@ -98,8 +114,9 @@ export async function POST(request, { params }) {
     if (action === 'upload-start') {
       if (job.confirmed_at) throw failure('This submission is locked.', 409);
       const id = uuid(body.id), name = text(body.name), size = body.bytes;
-      if (!Number.isInteger(size) || size < 33 || size > MAX_UPLOAD_BYTES || !/\.png$/i.test(name))
-        throw failure(uploadProblem(name, Number(size) || 0, 'Choose a valid static PNG within the upload limit.'), 400);
+      const { limits } = reserveCheck(job, portal, name, size);
+      if (!/\.png$/i.test(name))
+        throw failure(uploadProblem(name, Number(size) || 0, 'Choose a static PNG file.', limits), 400);
       const path = `${job.id}/${id}.png`;
       const reserved = await rpc('ssb_client_upload_reserve', { ...args, p_data: { id, path, name, bytes: size, ready: false, qty: 1, directUpload: true,
         uploadCleanupAfter: new Date(new Date(job.expires_at).getTime() + 2 * 3600000).toISOString() } });
@@ -111,14 +128,15 @@ export async function POST(request, { params }) {
       const asset = job.assets.find(a => a.id === uuid(body.id) && a.directUpload && !a.deleted);
       if (!asset) throw failure('Upload reservation is unavailable. Re-add this file.', 400);
       if (asset.ready) return reply({ job: publicJob(job) });
-      const data = await bytes(await storage('GET', asset.path), MAX_UPLOAD_BYTES);
+      const limits = uploadLimits(portal.settings);
+      const data = await bytes(await storage('GET', asset.path), limits.maxFileBytes);
       try {
         if (data.length !== asset.bytes) throw failure('The stored file size does not match the selected original. Retry the upload.', 400);
-        const decoded = decodePng(data);
+        const decoded = decodePng(data, limits);
         const updated = await jobs('ready', { ...args, p_data: { id: asset.id, ...decoded } });
         return reply({ job: publicJob(updated) });
       } catch (e) {
-        if (e.status === 400) e.message = uploadProblem(asset.name, data.length, e.message);
+        if (e.status === 400) e.message = uploadProblem(asset.name, data.length, e.message, limits);
         throw e;
       }
     }

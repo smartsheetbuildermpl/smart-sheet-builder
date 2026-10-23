@@ -10,6 +10,7 @@ const base = process.env.SMART_SHEET_TEST_URL || 'http://localhost:3114';
 const out = fs.mkdtempSync(path.join(os.tmpdir(), 'portal-regression-'));
 const sha = bytes => createHash('sha256').update(bytes).digest('hex');
 const baseline = file => execFileSync('git', ['show', `8000b97:${file}`], { encoding: 'utf8' });
+const comparableManifest = manifest => ({ ...manifest, config: Object.fromEntries(Object.entries(manifest.config).filter(([key]) => !['maxFileMiB','maxTotalMiB'].includes(key))) });
 (async () => {
   const f = await fixture(); let browser;
   try {
@@ -19,7 +20,7 @@ const baseline = file => execFileSync('git', ['show', `8000b97:${file}`], { enco
     for (const [widthIn, heightIn] of [[5,5],[4,3]]) {
       const assets = [{ ...source, widthIn, heightIn }];
       const before = old.layout(assets, config), after = f.lib.layout(assets, config);
-      assert.deepEqual(after, before, 'ordinary baseline/current placements and physical dimensions identical');
+      assert.deepEqual(comparableManifest(after), before, 'ordinary baseline/current placements and physical dimensions identical');
       assert.equal(after.sheets.length, 1); assert.equal(after.totalPieces, 10);
       assert.equal(after.sheets[0].widthPx, 6900); assert.equal(after.sheets[0].heightPx, 11700);
       console.log(`${widthIn} x ${heightIn} x 10: baseline and fixed = 1 sheet, 6900 x 11700, 80.73 MP`);

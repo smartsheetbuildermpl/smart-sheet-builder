@@ -9,7 +9,7 @@ import { rpc, failure } from './user-management';
 import { seal, unseal } from './export-security';
 import { publicAppOrigin } from './public-app-url';
 import { defaultDesignSize, validDesignSize } from '../../lib/client-design-size';
-import { MAX_UPLOAD_BYTES } from '../../lib/client-portal-limits';
+import { MAX_SOURCE_PIXELS, MAX_SOURCE_SIDE, uploadLimits } from '../../lib/client-portal-limits';
 
 export const BUCKET = 'client-job-sources';
 export const defaults = {
@@ -22,7 +22,9 @@ export const defaults = {
   gapIn: 0.3,
   edgeIn: 0.5,
   rotate: true,
-  autoExtend: true
+  autoExtend: true,
+  maxFileMiB: 50,
+  maxTotalMiB: 150
 };
 export const hash = (value) => createHash('sha256').update(value).digest('hex');
 export async function jobs(action, args = {}) {
@@ -59,7 +61,7 @@ export function errorReply(e) {
   if (mapped) return reply({ code: mapped[1], message: mapped[2] }, mapped[0]);
   const legacyLookup = e.data?.code === 'P0002' && e.message === 'Upload link unavailable. Ask the shop for a new link.';
   if (legacyLookup || (e.data?.code === '42501' && /^permission denied/i.test(e.message)) || ['PGRST202', 'PGRST205', '42P01', '42883', '42703'].includes(e.data?.code)) {
-    console.error('[client-portal-schema]', e.data?.code, 'Apply supabase-client-jobs-v1.sql, supabase-client-upload-profiles-v1.sql, then supabase-client-upload-limits-v1.sql in the same project as NEXT_PUBLIC_SUPABASE_URL; reload PostgREST schema.');
+    console.error('[client-portal-schema]', e.data?.code, 'Apply supabase-client-jobs-v1.sql, supabase-client-upload-profiles-v1.sql, supabase-client-upload-limits-v1.sql, then supabase-client-upload-limits-v2.sql in the same project as NEXT_PUBLIC_SUPABASE_URL; reload PostgREST schema.');
     return reply({ code: 'portal_setup_required', message: 'The upload portal needs a server database update. Please contact the shop; replacing the link will not fix this.' }, 503);
   }
   const code = e.data?.code,
@@ -123,6 +125,11 @@ export function settings(value) {
       s[key] > max
     )
       throw failure(`Invalid ${key}. Allowed range: ${min}–${max}.`, 400);
+  for (const [key, min, max] of [['maxFileMiB', 1, 100], ['maxTotalMiB', 1, 300]])
+    if (!Number.isInteger(s[key]) || s[key] < min || s[key] > max)
+      throw failure(`Invalid ${key}. Allowed range: ${min}–${max}.`, 400);
+  if (s.maxTotalMiB < s.maxFileMiB)
+    throw failure('The total upload limit must be at least the per-file limit.', 400);
   if (s.machine !== 'dtf' && s.lengthIn > 39)
     throw failure('This machine uses sheets up to 39 inches long.', 400);
   s.rotate = s.rotate === true;
@@ -216,9 +223,10 @@ export function publicJob(job) {
     meters: job.meters,
     assets: job.assets
       .filter((a) => a.ready)
-      .map(({ id, name, width, height, crop, qty, widthIn, heightIn }) => ({
+      .map(({ id, name, bytes, width, height, crop, qty, widthIn, heightIn }) => ({
         id,
         name,
+        bytes,
         width,
         height,
         crop,
@@ -229,27 +237,27 @@ export function publicJob(job) {
     manifest: job.manifest ? { ...job.manifest, config: undefined, profile: undefined } : null
   };
 }
-export function decodePng(bytes) {
+export function decodePng(bytes, limits = uploadLimits()) {
   if (
-    bytes.length > MAX_UPLOAD_BYTES ||
+    bytes.length > limits.maxFileBytes ||
     bytes.length < 33 ||
     !bytes
       .subarray(0, 8)
       .equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10])) ||
     bytes.toString('ascii', 12, 16) !== 'IHDR'
   )
-    throw failure('Upload a valid static PNG up to 32 MiB.', 400);
+    throw failure(`Upload a valid static PNG up to ${limits.maxFileMiB} MiB.`, 400);
   const width = bytes.readUInt32BE(16),
     height = bytes.readUInt32BE(20);
   if (
     !width ||
     !height ||
-    width > 8192 ||
-    height > 8192 ||
-    width * height > 16777216
+    width > MAX_SOURCE_SIDE ||
+    height > MAX_SOURCE_SIDE ||
+    width * height > MAX_SOURCE_PIXELS
   )
     throw failure(
-      `PNG ${width} × ${height} exceeds the portal limit: 16 megapixels, 8192 pixels per side. The source is never downscaled.`,
+      `PNG ${width} × ${height} exceeds the portal source safety limit: ${(MAX_SOURCE_PIXELS / 1000000).toFixed(0)} megapixels, ${MAX_SOURCE_SIDE} pixels per side. The source is never downscaled.`,
       400
     );
   if (bytes[24] !== 8)
