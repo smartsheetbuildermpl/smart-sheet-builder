@@ -38,6 +38,13 @@ export function uploadProblem(name, size, reason, limits = uploadLimits(), usedB
 export function outputProblem(manifest, index, assets = []) {
   const sheet = manifest?.sheets?.[index];
   if (!sheet) return 'The selected print sheet is unavailable. Reopen this submission.';
+  // Continuous rolls use the private scanline/strip renderer rather than
+  // decoding distinct sources or the whole roll into browser canvases.
+  if (manifest.mediaMode === 'continuous') {
+    if (![sheet.widthPx,sheet.heightPx].every(n => Number.isSafeInteger(n) && n > 0 && n <= 2147483647) || sheet.widthPx > 37800)
+      return 'The continuous roll job dimensions exceed this renderer’s supported width (37800 pixels) or PNG/TIFF dimension range. Contact the shop; no reduced file will be created.';
+    return '';
+  }
   const pixels = sheet.widthPx * sheet.heightPx;
   if (!Number.isSafeInteger(pixels) || pixels <= 0 || pixels > 128000000 || sheet.widthPx > 32767 || sheet.heightPx > 32767) {
     return `Sheet ${index + 1} of ${manifest.sheets.length}: ${sheet.widthIn} × ${sheet.heightIn} in at ${manifest.dpi} PPI (${sheet.widthPx} × ${sheet.heightPx} px, ${(pixels / 1000000).toFixed(2)} MP). Final output supports 128 MP and 32767 pixels per side, per sheet. The preview is available; ask the shop to review its sheet preset before submitting a revised layout. Original artwork has not been reduced.`;

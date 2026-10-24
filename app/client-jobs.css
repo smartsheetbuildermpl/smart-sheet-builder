@@ -161,6 +161,11 @@
 .client-roll-summary { border:1px solid #d5e0e4; border-radius:7px; padding:10px 12px; margin:10px 0; background:#f8fcfd; }
 .client-roll-summary p { margin:4px 0; }
 .client-roll-window { position:relative; width:fit-content; max-width:100%; }
+.client-preview { width:100%; min-width:0; }
+.client-roll-window { margin-inline:auto; }
+.client-preview > canvas { margin-inline:auto; }
+.client-roll-summary { max-width:850px; margin-inline:auto; }
+.client-render-progress { padding:10px 12px; background:#edf8fc; border:1px solid #b9ccd4; border-radius:7px; }
 .client-roll-window canvas { display:block; }
 .client-meter-marker { position:absolute; left:0; right:0; border-top:1px dashed #426b7a; pointer-events:none; }
 .client-meter-marker span { position:absolute; right:4px; bottom:2px; padding:2px 5px; background:#fff; color:#244956; font-size:11px; }
@@ -353,9 +358,11 @@
   padding: 10px 0;
 }
 .client-owner-grid {
-  grid-template-columns: minmax(0, 1.55fr) minmax(320px, 0.85fr);
+  grid-template-columns: minmax(0, 1fr);
   gap: 16px;
 }
+.client-generated-layout { grid-template-columns:minmax(0,1fr); }
+.client-generated-layout > .client-card { min-width:0; }
 .client-link-card {
   padding: 0;
 }
@@ -499,6 +506,7 @@
 }
 .client-detail-panel {
   align-self: start;
+  min-width:0;
 }
 .client-export-idle {
   position: absolute;

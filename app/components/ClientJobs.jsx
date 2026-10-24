@@ -47,6 +47,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     [detailError, setDetailError] = useState(''),
     [detailAttempt, setDetailAttempt] = useState(0),
     [exporting, setExporting] = useState(false),
+    [exportProgress, setExportProgress] = useState(''),
     [error, setError] = useState(''),
     [message, setMessage] = useState(''),
     [now, setNow] = useState(Date.now()),
@@ -60,11 +61,13 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     blobs = useRef({}),
     authRef = useRef(auth),
     exportJob = useRef(null),
+    exportController = useRef(null),
     loadEpoch = useRef(0),
     links = useRef([]);
   authRef.current = auth;
   const accountId = auth.session?.user?.id || auth.email || '';
   useEffect(() => {
+    exportController.current?.abort();
     setData(null);
     setConfig(null);
     setProfileId(''); setProfileName(null); setCreatingProfile(false);
@@ -226,6 +229,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
   }, [selected, open, request, auth.accessToken, detailAttempt]);
   useEffect(
     () => () => {
+      exportController.current?.abort();
       links.current.forEach(URL.revokeObjectURL);
     },
     []
@@ -289,10 +293,16 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     if (!detail || exporting) return;
     setError('');
     setExporting(true);
+    setExportProgress('Checking export access…');
     exportJob.current = detail.id;
+    exportController.current = new AbortController();
     try {
       await request(`?id=${detail.id}&exportSheet=${sheet}`);
-      await frame.current.contentWindow.smartSheetClientJob.exportJob(
+      if (detail.manifest.mediaMode === 'continuous') {
+        await frame.current.contentWindow.smartSheetClientJob.exportRollJob(detail, kind, body => fetch(`/api/client-jobs/${detail.id}/render`, {
+          method:'POST', cache:'no-store', signal:exportController.current.signal, headers:{Authorization:`Bearer ${authRef.current.accessToken}`,'Content-Type':'application/json'}, body:JSON.stringify(body)
+        }), setExportProgress);
+      } else await frame.current.contentWindow.smartSheetClientJob.exportJob(
         detail,
         blobs.current,
         sheet,
@@ -303,6 +313,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
       setError(e.message);
     } finally {
       exportJob.current = null;
+      exportController.current = null;
       setExporting(false);
     }
   }
@@ -585,7 +596,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
               })}
             </div>
           </section>
-          <section className="client-card client-detail-panel" aria-busy={detailLoading || previewBusy}>
+          <section className="client-card client-detail-panel" aria-busy={detailLoading || previewBusy || exporting}>
             <h2>{detail?.reference || 'Print layout'}</h2>
             {detailLoading && <PrintLayoutLoading stage="Preparing artwork…" />}
             {detailError && <div role="alert" className="client-error">We couldn’t load this print layout. {detailError} <button type="button" className="secondary" onClick={() => setDetailAttempt(value => value + 1)}>Retry layout</button></div>}
@@ -612,15 +623,16 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                   onReadyChange={setPreviewReady}
                 />
                 <label>
-                  Export sheet
+                  {detail.manifest.mediaMode === 'continuous' ? 'Export roll job' : 'Export sheet'}
                   <select
+                    aria-label={detail.manifest.mediaMode === 'continuous' ? 'Export roll job' : 'Export sheet'}
                     disabled={exporting}
                     value={sheet}
                     onChange={(e) => setSheet(Number(e.target.value))}
                   >
                     {detail.manifest.sheets.map((s, i) => (
                       <option key={i} value={i}>
-                        Sheet {i + 1} · {s.widthPx} × {s.heightPx} px
+                        {detail.manifest.mediaMode === 'continuous' ? 'Roll job' : `Sheet ${i + 1}`} · {s.widthPx} × {s.heightPx} px
                       </option>
                     ))}
                   </select>
@@ -641,6 +653,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                   Each final file uses your normal export access / credit
                   allowance. Previewing is free.
                 </p>
+                {exporting && <p role="status" aria-live="polite" className="client-render-progress">{exportProgress}</p>}
               </>
             ) : !detailLoading && !detailError && (
               <p>Select a confirmed client submission to view its locked print layout.</p>
@@ -652,7 +665,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
             ref={frame}
             src="/builder.html?clientJob=1"
             title="Client submission production export"
-            className={exporting ? 'client-export-frame' : 'client-export-idle'}
+            className={exporting && (detail?.manifest.mediaMode !== 'continuous' || ['Review TIFF settings…','Saving full-resolution print file…'].includes(exportProgress)) ? 'client-export-frame' : 'client-export-idle'}
           />
         )}
       </dialog>, document.body)}

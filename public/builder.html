@@ -4235,6 +4235,34 @@ window.SmartSheetPreflight = (function () {
   // is never replaced. Sources and positions come from the confirmed manifest;
   // no packer, optimizer or trimming pass runs during reconstruction.
   window.smartSheetClientJob = {
+    exportRollJob: async function(job, kind, request, notify){
+      if(!new URLSearchParams(location.search).has('clientJob')||exportInProgress)throw new Error('Client roll export is not ready.');
+      exportInProgress=true;
+      var report=notify;notify=function(message){document.getElementById('clientJobExportStatus').textContent=message;report(message);};
+      var locked=job.manifest.sheets[0],profile=null,descriptor={width:locked.widthPx,height:locked.heightPx,_ssbExportRecipe:['client-roll-strips-v1',job.id,job.confirmed_at,job.manifest,job.assets.map(function(a){return [a.id,a.sha256];})]};
+      try{
+        machinePresetSelect.value=job.manifest.config.machine;dpiGlobal=job.manifest.dpi;
+        notify('Checking export access…');
+        var ticket=await exportDelivery.prepare(kind,descriptor,[kind,'roll']);
+        if(!ticket)throw new Error('Export blocked. Check Account & exports.');
+        if(kind==='tiff'){
+          notify('Review TIFF settings…');
+          profile=await new Promise(function(resolve){showDtfCheck(locked,0,resolve);});
+          if(!profile)return;
+          ticket=await exportDelivery.prepare(kind,descriptor,[profile,'roll']);
+          if(!ticket)throw new Error('Export blocked. Check Account & exports.');
+        }
+        notify('Preparing full-resolution print file…');
+        if(!window.SmartSheetRollExport)await new Promise(function(resolve,reject){var script=document.createElement('script');script.src='/client-roll-export.js';script.onload=resolve;script.onerror=function(){reject(new Error('The roll renderer could not load. Reconnect and retry.'));};document.head.appendChild(script);});
+        var color=profile&&profile.baseMode==='cmyk'?await getColorAssets():null;
+        var blob=await SmartSheetRollExport.encode({job:job,kind:kind,profile:profile,color:color,progress:notify,
+          request:function(){return request(Object.assign({},ticket,{exportKind:kind,jobId:job.id}));},
+          helpers:{spot:spotMaskValue,pack:packBitsRow,concat:concatBytes,u16:u16le,shorts:shortsLE,layer:buildPhotoshopLayerBlock,prefix:buildTiffPrefix,resources:buildPhotoshopResources}});
+        notify('Saving full-resolution print file…');
+        if(!(await exportDelivery.deliver(blob,kind==='png'?'continuous-roll-'+job.manifest.dpi+'ppi.png':filenameForExport(profile,0),undefined,kind,descriptor,[profile||kind,'roll'],ticket)))throw new Error('Export blocked. Check Account & exports.');
+        notify('Full-resolution print file ready.');
+      }finally{exportInProgress=false;}
+    },
     settings: function(){return {machine:machinePresetSelect.value,widthIn:getSheetWidthIn(),lengthIn:getSheetLengthIn(),dpi:parseFloat(dpiInput.value)||300,gapIn:getGapIn(),edgeIn:getAutoLayoutEdgeAllowanceIn(),rotate:document.getElementById('autoRotate').checked,autoExtend:document.getElementById('autoExtend').checked};},
     exportJob: async function(job, blobs, index, kind){
       if (!new URLSearchParams(location.search).has('clientJob') || exportInProgress) throw new Error('Client Job export is not ready.');

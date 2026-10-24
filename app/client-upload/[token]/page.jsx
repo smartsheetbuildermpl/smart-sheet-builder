@@ -257,7 +257,7 @@ export default function ClientUpload({ params }) {
       <p className="client-muted">Files expire at {new Date(job.expires_at).toLocaleString()}.</p>
       {finished ? <p role="status">All done. You can close this page.</p> : <button type="button" className="secondary" onClick={() => setFinished(true)}>Done</button>}
       <button type="button" onClick={startAnother}>Create another gang sheet</button>
-    </section> : <div className="client-columns">
+    </section> : <div className={`client-columns${job?.manifest?.mediaMode === 'continuous' && !dirty ? ' client-generated-layout' : ''}`}>
       <section className="client-card">
         <label>Project / Client Name *<input required placeholder="Example: Mikael – Company Uniform" value={reference} maxLength={120} disabled={busy} aria-invalid={invalidReference} aria-describedby={invalidReference ? 'client-project-error' : undefined} onChange={(e) => { setReference(e.target.value); setDirty(true); }} /></label>
         {invalidReference && <span id="client-project-error" className="client-project-error">Enter a Project / Client Name to preview and submit your gang sheet.</span>}

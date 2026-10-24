@@ -89,6 +89,18 @@ The server finds nonzero-alpha bounds with the builder's one-native-pixel paddin
 
 ## API / UI file inventory
 
+### Continuous-roll full-resolution output
+
+Continuous rolls use the owner-only `POST /api/client-jobs/[id]/render` stream after the existing export-credit preparation. The signed authorization binds the owner, job, format, request key and fingerprint. Original SHA-256/dimensions are verified. Static non-interlaced 8-bit PNG scanlines are decoded into cropped RGBA scratch files; originals in private Storage remain unchanged. No browser full-original bitmap or full-roll canvas is allocated.
+
+The renderer composes 32 output rows at a time, with source windows capped at 4 MiB. TIFF strips include a one-row read halo for the existing W1/UV contraction; those halo rows are never duplicated in output. Premultiplied-alpha interpolation uses the same global placement coordinates at every boundary. Meter markers do not participate in rendering. The isolated browser export iframe reuses the current RGB/CMYK LUT/ICC, spot-mask, Photoshop-layer and TIFF metadata helpers, assembling losslessly Deflate-compressed strips. PNG receives one continuous lossless zlib stream and the selected DPI in `pHYs`. Fixed-sheet reconstruction and all main Builder encoder functions remain unchanged.
+
+Progress reports original preparation and real strip X/Y counts. No downloadable Blob is accepted until all strips, final dimensions and the server completion/expiry check succeed. The existing consume/saved/refund flow still controls credit accounting. Every render checks server expiry during decoding/rendering/delivery, and authorization is rechecked before saving. No public source URL or public output object is created. Scratch files are removed after success, error, request cancellation or expiry.
+
+No migration, new provider, dependency or environment variable is required. Vercel route duration is 60 seconds, with a 55-second application deadline. Genuine remaining limits have explicit errors: 448 MiB private scratch disk per render (cropped native RGBA sources plus the largest compressed upload), 128 MiB total encoded browser delivery, 37800 output pixels across, and static non-interlaced 8-bit PNG input. Parallel renders on the same warm instance are rejected with Retry to keep scratch usage bounded. The old 32 Mi-pixel distinct-source and 128 MP full-canvas gates apply only to the existing fixed-sheet path. A 77.22 MP source is supported by the strip path without reducing source resolution. Very long jobs may still need a larger renderer if they exceed the time/disk/encoded-file limits; partial or reduced files are never offered.
+
+Run `node tests/client-roll-render.test.cjs` with the local app on port 3114. It uses `Downloads/BORACAY 22x39.png` when available, or a 6600 × 11700 synthetic PNG otherwise (`ROLL_RENDER_FILE` overrides; `ROLL_RENDER_LARGE=0` runs smaller coverage). It checks the real owner Convert action, original checksum, every TIFF strip's sample digest, RGB/CMYK/W1/layer resources, PNG resolution metadata, native alpha identity, truncated streams, owner isolation, credit tickets and expiry. Browser and file artifacts go to the reported temporary directory. `client-roll-layout.test.cjs` also verifies full-width owner details, mobile overflow and unchanged fixed manifests/packer/Builder encoder functions.
+
 - `app/api/client-jobs/route.js`: verified-owner link/settings/list and confirmed job detail (GET/POST).
 - `app/api/client-upload/[token]/route.js`: public shop name and signed draft create/upload/remove/preview/confirm (GET/POST).
 - `app/api/client-jobs/[id]/files/[file]/route.js`: checked private source proxy (GET).
