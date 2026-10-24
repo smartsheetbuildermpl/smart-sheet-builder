@@ -464,7 +464,8 @@ const jwt = (user) =>
       path: path.join(out, 'owner-desktop.png'),
       fullPage: true
     });
-    await owner.page.getByText('Confirmed', { exact: true }).waitFor();
+    await owner.page.getByRole('button', { name: 'Done', exact: true }).click();
+    await owner.page.locator('.client-submission-list').getByText('Confirmed', { exact: true }).waitFor();
     assert.match(
       await owner.page.locator('.client-submission-row').first().innerText(),
       /Browser jersey order[\s\S]*2[\s\S]*5[\s\S]*0\.076 m/
@@ -472,10 +473,9 @@ const jwt = (user) =>
     await owner.page.setViewportSize({ width: 1100, height: 520 });
     assert(
       await owner.page.locator('.client-jobs-dialog').evaluate((el) => {
-        el.scrollTop = el.scrollHeight;
-        return el.scrollHeight > el.clientHeight && el.scrollTop > 0;
+        return el.scrollHeight <= el.clientHeight + 1 && el.scrollTop === 0;
       }),
-      'owner modal scrolls internally on a short desktop viewport'
+      'owner modal stays fixed while panes manage scrolling on a short desktop viewport'
     );
     await owner.page.setViewportSize({ width: 1360, height: 900 });
     // Original builder iframe stays intact while a separate export instance rebuilds the manifest.
@@ -613,8 +613,8 @@ const jwt = (user) =>
     await owner.page.locator('.access-reveal-handle').hover();
     await owner.page.getByRole('button', { name: /^Client Portal/ }).click();
     await owner.page.locator('.client-status-badge.expired').getByText('Expired', { exact: true }).waitFor();
-    await owner.page.getByRole('button', { name: 'Shop portal settings' }).click();
     await owner.page.getByText('Expired — files are no longer available.', { exact: true }).waitFor();
+    await owner.page.getByRole('button', { name: 'Shop portal settings' }).click();
     assert(f.objects.size > 0, 'opening Client Portal does not invoke physical cleanup');
     const maintenance = await f.maintenance.GET(
       new NextRequest('https://shop.test/api/client-jobs/maintenance', {

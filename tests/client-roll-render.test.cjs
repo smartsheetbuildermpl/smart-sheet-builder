@@ -171,7 +171,7 @@ async function eventsFile(job,kind,source){
       await owner.getByRole('region',{name:'Roll usage estimate'}).waitFor({timeout:60000});
       await owner.waitForFunction(()=>document.querySelector('.client-preview canvas')&&!document.querySelector('.client-preview[hidden]'),{},{timeout:60000});
       const bounds=await owner.locator('.client-detail-panel').evaluate(el=>[el.getBoundingClientRect().width,el.parentElement.getBoundingClientRect().width]);
-      assert(bounds[0]>bounds[1]*.9);
+      assert(bounds[0]>bounds[1]*.5 && bounds[0]<bounds[1]*.8,'owner preview fills the right pane beside the compact submissions list');
       await owner.locator('.client-detail-panel').scrollIntoViewIfNeeded();
       await owner.screenshot({path:path.join(out,'boracay-owner-preview.png')});
       const download=owner.waitForEvent('download',{timeout:120000});

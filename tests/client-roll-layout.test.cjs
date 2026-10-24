@@ -135,7 +135,7 @@ const out = fs.mkdtempSync(path.join(os.tmpdir(), 'client-roll-'));
       await owner.getByRole('region',{name:'Roll usage estimate',exact:true}).waitFor();
       await owner.waitForFunction(()=>document.querySelector('.client-preview canvas')&&!document.querySelector('.client-preview[hidden]'));
       const geometry=await owner.locator('.client-detail-panel').evaluate(el=>({width:el.getBoundingClientRect().width,parent:el.parentElement.getBoundingClientRect().width}));
-      assert(geometry.width>geometry.parent*.9,'confirmed preview uses full modal width, without an empty left column');
+      assert(geometry.width>geometry.parent*.5 && geometry.width<geometry.parent*.8,'confirmed preview uses the right workspace beside the compact submissions pane');
       assert.equal(await owner.getByLabel('Export roll job',{exact:true}).count(),1);
       await owner.locator('.client-detail-panel').screenshot({path:path.join(out,'owner-roll-preview-desktop.png')});
       await owner.setViewportSize({width:390,height:750});

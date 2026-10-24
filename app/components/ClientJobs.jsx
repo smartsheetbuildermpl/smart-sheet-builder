@@ -161,6 +161,13 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
     else dialog.current?.close();
   }, [open]);
   useEffect(() => {
+    if (!open) return;
+    const body = document.body.style.overflow, root = document.documentElement.style.overflow;
+    document.body.style.overflow = 'hidden';
+    document.documentElement.style.overflow = 'hidden';
+    return () => { document.body.style.overflow = body; document.documentElement.style.overflow = root; };
+  }, [open]);
+  useEffect(() => {
     if (detail && new Date(detail.expires_at) <= now) {
       loadEpoch.current++;
       setDetail(null);
@@ -337,7 +344,7 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
         Client Portal{count > 0 && <span className="client-submission-badge" aria-label={`${count} new client submissions`}>{count}</span>}
       </button>
       {typeof document !== 'undefined' && createPortal(<dialog
-        className="client-jobs-dialog"
+        className="client-jobs-dialog client-owner-dialog"
         ref={dialog}
         aria-labelledby="client-jobs-title"
         onCancel={(e) => {
@@ -365,12 +372,10 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
             <button aria-label="Close Client Portal" disabled={exporting} onClick={() => setOpen(false)}>×</button>
           </div>
         </header>
-        {error && (
-          <p role="alert" className="client-error">
-            {error}
-          </p>
-        )}
-        {message && <p role="status">{message}</p>}
+        {(error || message) && <div className="client-owner-notices">
+          {error && <div role="alert" className="client-error"><span>{error}</span><button type="button" className="secondary" aria-label="Dismiss error" onClick={() => setError('')}>×</button></div>}
+          {message && <div role="status" className="client-message"><span>{message}</span><button type="button" className="secondary" aria-label="Dismiss message" onClick={() => setMessage('')}>×</button></div>}
+        </div>}
         {settingsOpen && <section className="client-card client-settings-panel" aria-label="Shop portal settings">
           <div className="client-settings-panel-heading"><div><h2>Shop portal settings</h2><p>Manage the private upload link and print layout defaults.</p></div><button type="button" className="secondary" onClick={() => setSettingsOpen(false)}>Done</button></div>
           {!!data?.serviceWarnings?.length && (
@@ -524,14 +529,11 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
           </PortalActionDialog>}
           </PortalActionDialog>}
         </section>}
-        <div className="client-columns client-owner-grid">
-          <section>
+        <div className="client-columns client-owner-grid" hidden={settingsOpen}>
+          <section className="client-owner-submissions" aria-labelledby="client-submissions-heading">
             <div className="client-section-heading">
               <div>
-                <h2>Client submissions</h2>
-                <p>
-                  Review confirmed layouts and monitor temporary file access.
-                </p>
+                <h2 id="client-submissions-heading">Client submissions</h2>
               </div>
               <small>{data?.jobs.length || 0} total · newest first</small>
             </div>
@@ -548,6 +550,10 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                   <article
                     className={`client-submission-row ${selected === j.id ? 'selected' : ''}`}
                     key={j.id}
+                    aria-current={selected === j.id ? 'true' : undefined}
+                    onClick={e => {
+                      if (!e.target.closest('button,a,input,select') && !(busy || detailLoading || previewBusy || exporting || !j.confirmed_at || expired)) setSelected(j.id);
+                    }}
                   >
                     <div className="client-submission-identity">
                       <h3 title={j.reference || 'Client submission'}>
@@ -596,32 +602,26 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
               })}
             </div>
           </section>
-          <section className="client-card client-detail-panel" aria-busy={detailLoading || previewBusy || exporting}>
-            <h2>{detail?.reference || 'Print layout'}</h2>
+          <section className="client-card client-detail-panel" aria-label="Selected submission workspace" aria-busy={detailLoading || previewBusy || exporting}>
             {detailLoading && <PrintLayoutLoading stage="Preparing artwork…" />}
             {detailError && <div role="alert" className="client-error">We couldn’t load this print layout. {detailError} <button type="button" className="secondary" onClick={() => setDetailAttempt(value => value + 1)}>Retry layout</button></div>}
             {detail ? (
               <>
-                <p>
-                  {countdown(detail, now)} · exact expiry{' '}
-                  {stamp(detail.expires_at)}
-                </p>
-                <p>
-                  {detail.quantity} pieces · {Number(detail.meters).toFixed(3)}{' '}
-                  m · {detail.manifest.dpi} DPI
-                </p>
-                <p className="client-profile-badge">{detail.profile_name || 'Legacy / Default Profile'} · {machineLabel(detail.machine || detail.manifest.config?.machine)}</p>
-                <p>
-                  Locked at confirmation. Final files use original PNG sources,
-                  never this scaled preview.
-                </p>
+                <header className="client-owner-detail-header">
+                  <div className="client-owner-title"><h2>{detail.reference || (detail.manifest.mediaMode === 'continuous' ? 'Roll job' : 'Sheet layout')}</h2><span className={`client-status-badge ${statusTone(detail, now)}`}>{statusLabel(detail, now)}</span></div>
+                  <p>{detail.profile_name || 'Legacy / Default Profile'} · {machineLabel(detail.machine || detail.manifest.config?.machine)}</p>
+                  <div className="client-owner-detail-meta"><span>{detail.quantity} {detail.quantity === 1 ? 'piece' : 'pieces'} · {detail.manifest.dpi} PPI</span><time dateTime={detail.expires_at} title={`Exact expiry: ${stamp(detail.expires_at)}`}>{countdown(detail, now)}</time></div>
+                </header>
                 <ClientJobPreview
+                  ownerWorkspace
                   manifest={detail.manifest}
                   assets={detail.assets}
                   urls={urls}
                   onBusyChange={setPreviewBusy}
                   onReadyChange={setPreviewReady}
                 />
+                <footer className="client-owner-export">
+                <div className="client-owner-export-actions">
                 <label>
                   {detail.manifest.mediaMode === 'continuous' ? 'Export roll job' : 'Export sheet'}
                   <select
@@ -649,14 +649,15 @@ export default function ClientJobs({ auth, builderRef, hidden, onSignIn }) {
                 >
                   Convert layout to TIFF
                 </button>
+                </div>
                 <p className="client-muted">
-                  Each final file uses your normal export access / credit
-                  allowance. Previewing is free.
+                  Full-resolution originals · normal export credits. Previewing is free.
                 </p>
                 {exporting && <p role="status" aria-live="polite" className="client-render-progress">{exportProgress}</p>}
+                </footer>
               </>
             ) : !detailLoading && !detailError && (
-              <p>Select a confirmed client submission to view its locked print layout.</p>
+              <div className="client-owner-empty"><h2>Print layout</h2><p>Select a submission to review its print layout.</p></div>
             )}
           </section>
         </div>

@@ -2,7 +2,8 @@
 import { useEffect, useRef, useState } from 'react';
 import PrintLayoutLoading from './PrintLayoutLoading';
 import { METER_LENGTH_IN } from '../lib/client-roll-layout';
-export default function ClientJobPreview({ manifest, assets, urls, onBusyChange, onReadyChange }) {
+import OwnerPreviewViewport from './OwnerPreviewViewport';
+export default function ClientJobPreview({ manifest, assets, urls, onBusyChange, onReadyChange, ownerWorkspace = false }) {
   const box = useRef(null),
     [error, setError] = useState(''),
     [stage, setStage] = useState('Preparing artwork…'),
@@ -14,7 +15,7 @@ export default function ClientJobPreview({ manifest, assets, urls, onBusyChange,
   // At most two meters per display window. This never slices the manifest or
   // original artwork; exports still receive the one continuous locked roll.
   const windowLengthIn = 2 * METER_LENGTH_IN;
-  const viewCount = roll ? Math.ceil(roll.lengthIn / windowLengthIn) : 1;
+  const viewCount = roll && !ownerWorkspace ? Math.ceil(roll.lengthIn / windowLengthIn) : 1;
   const selectedView = Math.min(rollView, viewCount - 1);
   useEffect(() => {
     let cancelled = false;
@@ -33,8 +34,8 @@ export default function ClientJobPreview({ manifest, assets, urls, onBusyChange,
     box.current.replaceChildren();
     (async () => {
       const sheet = manifest.sheets[selectedSheet];
-      const startY = roll ? selectedView * windowLengthIn * manifest.dpi : 0;
-      const viewHeight = roll ? Math.min(sheet.heightPx - startY, windowLengthIn * manifest.dpi) : sheet.heightPx;
+      const startY = roll && !ownerWorkspace ? selectedView * windowLengthIn * manifest.dpi : 0;
+      const viewHeight = roll && !ownerWorkspace ? Math.min(sheet.heightPx - startY, windowLengthIn * manifest.dpi) : sheet.heightPx;
       const visiblePlacements = sheet.placements.filter(p => p.y < startY + viewHeight && p.y + p.h > startY);
       const sources = {};
       for (const a of assets.filter((a) =>
@@ -66,8 +67,8 @@ export default function ClientJobPreview({ manifest, assets, urls, onBusyChange,
         if (cancelled) return;
         const canvas = document.createElement('canvas'),
           scale = Math.min(1, 1000 / s.widthPx, 1600 / viewHeight);
-        canvas.width = Math.round(s.widthPx * scale);
-        canvas.height = Math.round(viewHeight * scale);
+        canvas.width = Math.max(1, Math.round(s.widthPx * scale));
+        canvas.height = Math.max(1, Math.round(viewHeight * scale));
         canvas.setAttribute(
           'aria-label',
           roll ? `Read-only continuous roll preview, view ${selectedView + 1}` : `Read-only print preview, Sheet ${i + 1}`
@@ -133,7 +134,22 @@ export default function ClientJobPreview({ manifest, assets, urls, onBusyChange,
         img.close();
       });
     };
-  }, [manifest, assets, urls, attempt, selectedSheet, selectedView, roll, windowLengthIn, onBusyChange, onReadyChange]);
+  }, [manifest, assets, urls, attempt, selectedSheet, selectedView, roll, windowLengthIn, onBusyChange, onReadyChange, ownerWorkspace]);
+  if (ownerWorkspace) {
+    const s = manifest.sheets[selectedSheet], scale = Math.min(1, 1000 / s.widthPx, 1600 / s.heightPx);
+    return <div className="owner-preview-workspace">
+      <section className="owner-layout-summary" aria-label={roll ? 'Roll usage estimate' : 'Sheet summary'}>
+        {roll ? <><strong>Roll job · {roll.meters.toFixed(6)} m</strong><span>{roll.widthIn.toFixed(2)} × {roll.lengthIn.toFixed(2)} in · {roll.efficiency.toFixed(1)}% efficiency</span><small>{roll.fullMeters} full {roll.fullMeters === 1 ? 'meter' : 'meters'} + {roll.nextMeterPercent.toFixed(3)}% of the next meter. Meter lines are informational only.</small></>
+          : <><strong>Sheet {selectedSheet + 1} of {manifest.sheets.length}</strong><span>{s.widthIn.toFixed(2)} × {s.heightIn.toFixed(2)} in</span></>}
+        {manifest.sheets.length > 1 && <label>Preview sheet<select aria-label="Preview sheet" value={selectedSheet} onChange={e => setSheetIndex(Number(e.target.value))}>{manifest.sheets.map((_, i) => <option key={i} value={i}>Sheet {i + 1} of {manifest.sheets.length}</option>)}</select></label>}
+      </section>
+      <OwnerPreviewViewport key={`${selectedSheet}:${manifest.mediaMode}:${s.widthPx}:${s.heightPx}`} width={Math.max(1, Math.round(s.widthPx * scale))} height={Math.max(1, Math.round(s.heightPx * scale))}>
+        <div className="client-preview" ref={box} hidden={Boolean(stage || error)} aria-busy={Boolean(stage)} />
+      </OwnerPreviewViewport>
+      {stage && <div className="owner-preview-feedback"><PrintLayoutLoading stage={stage} /></div>}
+      {error && <div className="client-error owner-preview-feedback" role="alert">We couldn’t create the print preview. {error} <button type="button" className="secondary" onClick={() => setAttempt(value => value + 1)}>Retry preview</button></div>}
+    </div>;
+  }
   return (
     <>
       {roll && <section className="client-roll-summary" aria-label="Roll usage estimate">
